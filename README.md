@@ -5,7 +5,16 @@ accounts. Clients authenticate to the router with revocable gateway tokens;
 the router selects an account and authenticates upstream with that account's
 current provider credential.
 
-**Status: design and research only. There is no executable service yet.**
+**Status: early prototype.** A headless Node/TypeScript slice exists and is
+tested only against synthetic credentials, fake helpers and mock upstreams.
+It has not been used with real accounts or real clients. See
+[prototype status](docs/prototype.md).
+
+```sh
+npm install
+npm run check          # typecheck + tests
+npm run aar -- --help
+```
 
 The implementation direction is Node.js with TypeScript, headless first, with
 a small embedded HTML/CSS/JavaScript dashboard. A desktop tray application can
@@ -46,6 +55,7 @@ model request.
 
 ## Read next
 
+- [Prototype status, observations and next experiment](docs/prototype.md)
 - [Architecture and security boundaries](docs/architecture.md)
 - [Credential lifecycle and refresh experiment](docs/auth-lifecycle.md)
 - [Implementation and validation plan](docs/plan.md)

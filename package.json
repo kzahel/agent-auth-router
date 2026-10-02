@@ -1,0 +1,24 @@
+{
+  "name": "agent-auth-router",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Prototype gateway that routes Claude Code and Codex clients to subscription accounts whose credentials are renewed by the official CLIs",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "aar": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --test-concurrency=1 'test/**/*.test.ts'",
+    "check": "npm run typecheck && npm test",
+    "aar": "node src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "typescript": "^7.0.2"
+  }
+}

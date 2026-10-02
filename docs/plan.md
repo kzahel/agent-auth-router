@@ -1,7 +1,9 @@
 # Implementation and validation plan
 
-Status: proposed, no implementation started. Ordered to resolve credential and
-protocol uncertainty before investing in UI or release packaging.
+Status: proposed. Synthetic-fixture parts of phases 1–3 are prototyped; see
+[prototype status](prototype.md). No phase's real-credential or real-client
+acceptance has been met. Ordered to resolve credential and protocol
+uncertainty before investing in UI or release packaging.
 
 ## 1 — Prove official CLI credential renewal
 
