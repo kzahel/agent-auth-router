@@ -1,9 +1,9 @@
 # Router-owned pools, live accounts and desktop app
 
-Status: implementation in progress on 2026-10-03. Router ownership, live
-management, YA authority gates and the first Tauri app are implemented.
+Status: first signed Mac candidate verified on 2026-10-03. Router ownership,
+live management, YA authority gates and the first Tauri app are implemented.
 See [owner management](owner-management.md) and [desktop setup and acceptance](../desktop/README.md).
-Signed GitHub candidate and installed upgrade acceptance remain separate gates;
+Installed upgrade acceptance remains a separate gate;
 this document does not authorize public release publication.
 
 ## Goal and correction
@@ -199,8 +199,17 @@ retain the later candidates. This plan does not reprioritize unrelated YA work.
 - Local ARM64 app and DMG signing/notarization/stapling and Gatekeeper checks
   passed. This is a dirty-development-tree rehearsal, not a published release.
   The signed app also runs the isolated installed smoke successfully.
-- GitHub candidate workflow, per-product updater key and product routing config
-  are implemented. Candidate CI still needs the private certificate password.
+- GitHub signing credentials are provisioned. The reusable certificate upload
+  helper validates the publisher identity and export password locally and sends
+  the matched pair through stdin; its synthetic validation/upload tests pass.
+- [Signed candidate run 37118285252](https://github.com/kzahel/agent-auth-router/actions/runs/37118285252)
+  passed for ARM64 and Intel at source `a8e4dfcb2b6be2d1e4dbd5e9700901e6da40cd70`.
+  Both downloaded candidates pass hash, updater-signature, app-signature,
+  stapling, Gatekeeper and package-identity checks. The ARM64 candidate also
+  passes isolated installed startup/enrollment/reattachment/stop smoke with no
+  system Node dependency. App version is `0.1.0`, bundled Node is `24.19.0`,
+  and the minimum macOS version is `13.5`.
+- Per-product updater key and product routing config are implemented.
   Production route registration, exact signed older-to-newer installed upgrade,
   Intel execution, human browser consent and Windows acceptance are not yet
   established by these tests. No public release is published by this workflow.
