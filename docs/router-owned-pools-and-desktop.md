@@ -15,6 +15,15 @@ cards, used-quota bars and piped browser-only login action. Terminal sign-in use
 normal official CLI authentication with the selected profile; it does not import
 the user's default login or implement OAuth exchange/refresh itself.
 
+Version 0.1.1 verification: 91 core tests and 10 pinned YA integration tests pass;
+Mac and Linux CI both pass. Desktop browser tests cover optional nickname edits,
+profile labels, remaining-quota extremes/unknown values and terminal dispatch.
+PTY fixtures exercise both providers, interactive input, device-code selection,
+clean environments, cancellation, terminal hangup and renewal/stop exclusion.
+The local packaged app passes startup, enrollment, retained-core reattachment and
+stop checks in a temporary profile. Native shell quoting and package composition
+checks pass. Actual provider consent remains a user-driven verification step.
+
 ## Goal and correction
 
 Install AAR, add and sign in to work accounts, create a Work pool, grant YA

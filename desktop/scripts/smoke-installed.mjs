@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, existsSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 const app = resolve(process.argv[2]),
@@ -50,7 +50,9 @@ try {
   }
   assert.ok(first, "installed shell must start its bundled core");
   assert.match(first.node, /^v24\.19\.0$/);
-  assert.equal(first.build.version, "0.1.0");
+  const bundledBuild = JSON.parse(readFileSync(join(resources, "build.json"), "utf8"));
+  assert.equal(first.build.version, bundledBuild.version);
+  assert.equal(first.build.source, bundledBuild.source);
   request("accounts/add", { id: "work", provider: "codex" });
   assert.equal(request("overview").accounts[0].id, "work");
   child.kill("SIGTERM");
