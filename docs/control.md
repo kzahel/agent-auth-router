@@ -52,6 +52,11 @@ The YA integration uses an immutable allocation ID independent of provider/YA
 session-ID remapping. Downgrading YA with routed app data is unsupported. Native
 compatibility and real renewal evidence remain separately recorded observations.
 
+The agreed [router ownership and desktop plan](router-owned-pools-and-desktop.md)
+replaces integration-owned pools and restart/re-pair enrollment as the target
+architecture. That correction is not implemented yet; this document describes
+the current behavior.
+
 ## Yep Anywhere manual integration
 
 The repeatable [cross-repository integration suite](../integration/yepanywhere/README.md)

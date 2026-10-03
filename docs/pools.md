@@ -2,6 +2,11 @@
 
 AAR engine and YA integration implemented 2026-10-03.
 
+The agreed [router ownership and desktop plan](router-owned-pools-and-desktop.md)
+replaces integration-owned pools and restart/re-pair enrollment as the target
+architecture. That correction is not implemented yet; this document describes
+the current behavior.
+
 AAR owns integration-scoped, single-provider pools and the same eligibility
 projection used by its metadata overview and allocator. YA renders that overview
 and exposes explicit pool edits and refresh. No independent HTTP dashboard,
