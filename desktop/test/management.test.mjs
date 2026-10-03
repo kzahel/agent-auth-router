@@ -72,6 +72,7 @@ test("management UI preserves typing while observations update, and offers owner
         },
       ],
     };
+    window.fixtureState = state;
     window.operations = [];
     window.__TAURI__ = {
       core: {
@@ -96,6 +97,7 @@ test("management UI preserves typing while observations update, and offers owner
     };
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.getByRole("tab", { name: "Pools", exact: true }).click();
   await page.getByRole("button", { name: "Edit pool", exact: true }).click();
   const input = page.getByRole("textbox", { name: "Pool name" });
   await input.clear();
@@ -125,6 +127,7 @@ test("management UI preserves typing while observations update, and offers owner
   );
   await page.getByRole("button", { name: "Save pool", exact: true }).click();
   await page.getByRole("heading", { name, exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Connections", exact: true }).click();
   await page.getByRole("button", { name: "Manage access", exact: true }).click();
   await page.locator("#grant-pools input").check();
   await page.getByRole("button", { name: "Save access", exact: true }).click();
@@ -134,6 +137,7 @@ test("management UI preserves typing while observations update, and offers owner
     ),
   );
   await page.getByText("1 pool grants · 0 direct account grants", { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Accounts", exact: true }).click();
   const account = page.locator("#accounts article").first();
   assert.equal(await account.getByRole("heading").textContent(), "/Users/example/.agent-auth-router/profiles/work-1");
   assert.equal(await account.getByRole("progressbar").getAttribute("value"), "68");
@@ -141,6 +145,7 @@ test("management UI preserves typing while observations update, and offers owner
   assert.equal(await page.locator("#accounts article").nth(1).getByRole("progressbar").getAttribute("value"), "0");
   assert.equal(await page.locator("#accounts article").nth(2).getByRole("progressbar").getAttribute("value"), "100");
   assert.equal(await page.locator("#accounts article").nth(3).getByRole("progressbar").getAttribute("value"), null);
+  await account.getByText("More", { exact: true }).click();
   await account.getByRole("button", { name: "Edit nickname" }).click();
   const nickname = page.locator("#nickname-form input[name=nickname]");
   await nickname.fill("Work account");
@@ -151,6 +156,7 @@ test("management UI preserves typing while observations update, and offers owner
   await account.getByRole("button", { name: "Sign in", exact: true }).click();
   assert.ok((await page.evaluate(() => window.operations)).some(o => o.operation === "accounts/terminal-login" && o.body.id === "work-1"));
   assert.ok(!(await page.evaluate(() => window.operations)).some(o => o.operation === "accounts/login"));
+  await account.getByText("More", { exact: true }).click();
   await account.getByRole("button", { name: "Edit nickname" }).click();
   await nickname.fill("");
   await page.getByRole("button", { name: "Save nickname" }).click();
@@ -159,23 +165,38 @@ test("management UI preserves typing while observations update, and offers owner
   await page.locator("#account-form button").click();
   const enrollment = (await page.evaluate(() => window.operations)).find(o => o.operation === "accounts/add");
   assert.deepEqual(enrollment.body, { nickname: "", provider: "codex" });
-  await page.locator("details summary").click();
+  await page.getByText("Add account", { exact: true }).first().click();
   // Present a compact account slice for visual inspection while preserving the volume test above.
-  await page.evaluate(() =>
-    [...document.querySelectorAll("#accounts article")].slice(4).forEach((el) => el.remove()),
-  );
+  await page.evaluate(() => { window.fixtureState.accounts = window.fixtureState.accounts.slice(0, 4); });
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll("#accounts article").length === 4);
+  await page.getByRole("tab", { name: "Accounts", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await page.getByRole("tab", { name: "Pools", exact: true }).getAttribute("aria-selected"), "true");
+  await page.keyboard.press("Home");
+  assert.equal(await page.getByRole("tab", { name: "Accounts", exact: true }).getAttribute("aria-selected"), "true");
   const captures = process.env.AAR_UI_CAPTURE_DIR;
-  if (captures) {
-    await mkdir(captures, { recursive: true });
-    for (const size of [
-      { width: 1000, height: 900 },
-      { width: 520, height: 900 },
-    ]) {
+  if (captures) await mkdir(captures, { recursive: true });
+  const colors = [];
+  for (const scheme of ["light", "dark"]) {
+    await page.emulateMedia({ colorScheme: scheme });
+    colors.push(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor));
+    for (const size of [{ width: 680, height: 640 }, { width: 520, height: 900 }]) {
       await page.setViewportSize(size);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-      await page.screenshot({ path: join(captures, `desktop-${size.width}.png`), fullPage: true });
+      assert.ok((await account.boundingBox()).height < 155, "account rows should stay compact");
+      if (captures) {
+        await page.screenshot({ path: join(captures, `desktop-${scheme}-${size.width}.png`), fullPage: true });
+        await page.getByRole("tab", { name: "Pools", exact: true }).click();
+        await page.getByRole("button", { name: "Edit pool", exact: true }).click();
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        await page.screenshot({ path: join(captures, `pool-editor-${scheme}-${size.width}.png`), fullPage: true });
+        await page.getByRole("button", { name: "Cancel", exact: true }).click();
+        await page.getByRole("tab", { name: "Accounts", exact: true }).click();
+      }
     }
   }
+  assert.notEqual(colors[0], colors[1], "palette follows system color scheme without reload");
   assert.deepEqual(errors, []);
   t.diagnostic(
     `${samples.length} sequential keystrokes; maximum ${Math.max(...samples.map((s) => s.elapsed)).toFixed(1)} ms`,

@@ -8,6 +8,12 @@ pools, grants and sessions live in the same default state directory as `aar`.
 
 ## Use
 
+The compact window has Accounts, Pools, Connections and App tabs. Appearance
+follows the system's light/dark theme, including changes while the app is open.
+Accounts keep Sign in and Refresh usage visible; **More** holds sign-in checks,
+nickname editing and disable/retire actions. CLI setup help is under **Account
+setup**, and launch/update/stop controls are on **App**.
+
 1. Open the app. It attaches to an available local router or starts its core.
 2. Choose **Check installed CLIs**, then **Add account**. Select a profile folder
    (or let AAR create a dedicated one) and an optional nickname. The folder is

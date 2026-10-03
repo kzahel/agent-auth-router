@@ -136,7 +136,7 @@ async function reload() {
     }
     if (!a.windows.length)
       card.append(
-        element("p", "Usage has not been observed. Refresh to check quota and models.", "hint"),
+        element("p", "Quota not checked", "hint"),
       );
     if (a.error || a.blocked) card.append(element("p", a.blocked ?? a.error, "unknown"));
     const login = next.logins.find((l) => l.id === a.id);
@@ -205,6 +205,16 @@ async function reload() {
           await reload();
         }),
       );
+    if (!a.retired) {
+      const more = element("details", undefined, "account-more");
+      more.append(element("summary", "More"));
+      const secondary = element("div", undefined, "actions");
+      for (const action of [...actions.children]) {
+        if (!["Sign in", "Refresh usage", "Cancel sign-in"].includes(action.textContent)) secondary.append(action);
+      }
+      more.append(secondary);
+      actions.append(more);
+    }
     card.append(actions);
     $("accounts").append(card);
   }
@@ -226,7 +236,7 @@ async function reload() {
   }
   if (!next.pools.length)
     $("pools").append(
-      element("p", "Create a Work pool, then grant an integration access.", "hint"),
+      element("p", "No pools", "hint"),
     );
   for (const i of next.integrations) {
     const card = element("article", undefined, "card");
@@ -264,7 +274,7 @@ async function reload() {
     $("integrations").append(card);
   }
   if (!next.integrations.length)
-    $("integrations").append(element("p", "No integrations connected yet.", "hint"));
+    $("integrations").append(element("p", "No connections. Pair from Yep Anywhere to get started.", "hint"));
 }
 function editNickname(a) {
   const form = $("nickname-form");
@@ -428,3 +438,27 @@ void invoke("startup", { enabled: null })
     $("startup").checked = enabled;
   })
   .catch(error);
+
+const tabs = [...document.querySelectorAll('[role="tab"]')];
+function selectTab(tab) {
+  for (const item of tabs) {
+    const selected = item === tab;
+    item.setAttribute("aria-selected", String(selected));
+    item.tabIndex = selected ? 0 : -1;
+    $(item.getAttribute("aria-controls")).hidden = !selected;
+  }
+}
+for (const tab of tabs) {
+  tab.onclick = () => selectTab(tab);
+  tab.onkeydown = event => {
+    const index = tabs.indexOf(tab);
+    const next = event.key === "ArrowRight" ? (index + 1) % tabs.length
+      : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length
+      : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
+    if (next !== null) {
+      event.preventDefault();
+      selectTab(tabs[next]);
+      tabs[next].focus();
+    }
+  };
+}
