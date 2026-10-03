@@ -169,6 +169,26 @@ as a shortcut for migration.
 
 ## Deliberate deferrals
 
+### Signing-key passphrase follow-up
+
+Deferred by the maintainer on 2026-10-03; current signing remains in use.
+
+- [ ] Protect AAR's existing empty-password updater key with a nonempty
+  passphrase, preserving the signing identity and embedded public key.
+- [ ] Stage protected copies first, verify signatures with the original public
+  keys and test the Tauri encoding. A synthetic copy-only rehearsal passed;
+  production keys and GitHub secrets were not changed by that rehearsal.
+- [ ] Coordinate Machine Control's separate manifest-signing key protection:
+  add passphrase support to its signing workflows before changing its release
+  environment secrets. Account for duplicate local backups through the private
+  signing runbook; keep private backup locations out of this repository.
+- [ ] Update each GitHub key/passphrase pair while signing jobs are idle, then
+  prove signed candidate CI and downloaded-artifact verification still pass.
+  Preserve existing originals/backups until a separate, explicit cleanup
+  decision; staging encrypted copies alone does not protect the old copies.
+
+### Product and policy follow-ups
+
 Most remaining, Earliest reset, combined Auto scoring, clone/helper inheritance,
 cross-account continuation, durable renewal research and a separate browser-served
 HTML dashboard remain outside this slice. Pool-wide refresh and refresh during
