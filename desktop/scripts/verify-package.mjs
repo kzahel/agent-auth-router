@@ -20,6 +20,15 @@ const appVersion = execFileSync(
   { encoding: "utf8" },
 ).trim();
 assert.equal(appVersion, build.version);
+const minimumMacOS = execFileSync("/usr/libexec/PlistBuddy", [
+  "-c", "Print LSMinimumSystemVersion", join(app, "Contents/Info.plist"),
+], { encoding: "utf8" }).trim();
+const nodeMinimumMacOS = execFileSync("vtool", ["-show-build", join(resource, "node")], {
+  encoding: "utf8",
+}).match(/\bminos\s+([\d.]+)/)?.[1];
+assert.ok(nodeMinimumMacOS, "bundled Node must declare its minimum macOS version");
+const versionNumber = (v) => v.split(".").concat("0", "0").slice(0, 3).reduce((n, part) => n * 1000 + Number(part), 0);
+assert.ok(versionNumber(minimumMacOS) >= versionNumber(nodeMinimumMacOS), "app minimum macOS must support bundled Node");
 const arch = execFileSync("lipo", ["-archs", join(resource, "node")], { encoding: "utf8" }).trim();
 assert.equal(arch, build.architecture === "x64" ? "x86_64" : build.architecture);
 assert.equal(
@@ -59,7 +68,7 @@ if (process.argv.includes("--signed")) {
 }
 console.log(
   JSON.stringify(
-    { ...build, appVersion, arch, signed: process.argv.includes("--signed") },
+    { ...build, appVersion, arch, minimumMacOS, nodeMinimumMacOS, signed: process.argv.includes("--signed") },
     null,
     2,
   ),

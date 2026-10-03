@@ -2,6 +2,7 @@
 
 Mac-first Tauri app with a bundled Node 24.19.0 runtime and the independently
 runnable TypeScript core. The UI never reads owner tokens or provider files.
+Requires macOS 13.5 or newer, matching the pinned Node binary's minimum OS.
 The Rust bridge invokes the bundled CLI through private local IPC. Accounts,
 pools, grants and sessions live in the same default state directory as `aar`.
 
