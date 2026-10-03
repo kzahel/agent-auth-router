@@ -95,6 +95,10 @@ test("unknown evidence refuses automatic admission but explicit Manual uses vali
   const f = fixture();
   assert.throws(() => f.registry.preparePool(f.integration, f.allocation(), f.evidence), /no eligible/);
   f.evidence.setCatalog("a", [{ id: "claude-sonnet-fixture", name: "Fixture" }]);
+  const manualView = f.registry.overview(f.integration, f.evidence, { poolId: f.pool.id, model: "claude-sonnet-fixture", policy: "manual" }) as any;
+  assert.equal(manualView.selection.decisions[0].reason, "eligible");
+  const autoView = f.registry.overview(f.integration, f.evidence, { poolId: f.pool.id, model: "claude-sonnet-fixture" }) as any;
+  assert.equal(autoView.selection.decisions[0].reason, "quota-unknown");
   const selected = f.registry.preparePool(f.integration, { ...f.allocation(), policy: "manual", accountId: "a" }, f.evidence) as any;
   assert.equal(selected.accountId, "a");
   f.store.saveAccounts(f.store.loadAccounts().map(a => ({ ...a, enabled: false })));

@@ -1,6 +1,6 @@
 # Pools and quota overview
 
-AAR engine implemented 2026-10-03; YA integration is being added.
+AAR engine and YA integration implemented 2026-10-03.
 
 AAR owns integration-scoped, single-provider pools and the same eligibility
 projection used by its metadata overview and allocator. YA renders that overview
@@ -43,13 +43,16 @@ admission/commit. Inference authorization also enforces current pool membership.
 
 Synthetic engine tests cover quota scopes/freshness, concurrent allocation,
 retry/cancellation boundaries, pool ownership/edits and the authenticated HTTP
-overview. YA browser and SHA-pinned integration verification follow separately.
+overview. YA browser coverage checks desktop/phone rendering and sequential
+typing under concurrent updates. The SHA-pinned integration suite exercises
+parallel pool launches, same-pin restart/resume, exhaustion and pool deletion
+through both native provider adapters.
 
 ## Control API
 
 `pools-v1` is an additive `/v1/info` capability. Authenticated owner-socket
 operations are POST `/v1/pools/save` (id/name/provider/accountIds/policy/revision),
-`/v1/pools/remove` (id/revision), `/v1/overview` (optional poolId/model),
+`/v1/pools/remove` (id/revision), `/v1/overview` (optional poolId/model/policy),
 `/v1/overview/refresh` (accountId), and `/v1/pools/prepare` (allocation UUID,
 poolId/provider/model/tokenHash, optional policy and manual accountId).
 Save uses revision 0 for creation and the current revision for updates/deletion.

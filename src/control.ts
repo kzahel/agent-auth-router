@@ -126,11 +126,13 @@ export class ControlRegistry {
       freshness: !o.quota ? "unknown" : o.error || now - Date.parse(o.quota.observedAt) >= QUOTA_FRESH_MS ? "stale" : "fresh",
       windows: o.quota?.windows.map(w => ({ ...w, scope: windowScope(a.provider, w.bucket) })) ?? [] }; });
     const pool = body.poolId === undefined ? undefined : this.pool(integration, field(body, "poolId", UUID));
+    const policy = body.policy ?? pool?.policy;
+    if (policy !== undefined && policy !== "manual" && policy !== "round-robin") reject(400, "invalid pool policy");
     const decisions = pool?.accountIds.map(accountId => { const a = accounts.find(a => a.id === accountId); return { accountId,
-      reason: eligibility(pool.provider, !!a?.enabled && integration.accountIds.includes(accountId), model, evidence.get(accountId), true, now) }; });
+      reason: eligibility(pool.provider, !!a?.enabled && integration.accountIds.includes(accountId), model, evidence.get(accountId), policy !== "manual", now) }; });
     return { observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
       pools: this.pools(integration).map(p => this.poolMetadata(p)), accounts,
-      ...(pool ? { selection: { poolId: pool.id, model: model ?? null, decisions } } : {}) };
+      ...(pool ? { selection: { poolId: pool.id, policy, model: model ?? null, decisions } } : {}) };
   }
   preparePool(integration: Integration, body: Record<string, unknown>, evidence: PoolEvidence): object {
     const id = field(body, "id", UUID), poolId = field(body, "poolId", UUID), model = field(body, "model"), tokenHash = field(body, "tokenHash", HASH);

@@ -41,6 +41,9 @@ are uploaded by CI.
 
 Each provider exercises:
 
+- Scoped pool creation, passive overview, explicit quota/catalog refresh,
+  parallel Round robin starts on distinct accounts, restart/resume after a
+  default-policy change, exhaustion refusal, and deletion revoking old pins.
 - Pairing, account/catalog discovery and manual selection among two accounts.
 - Real native launch overrides, overriding poisoned direct-auth environment
   variables, streamed replies and YA's persisted transcript reader.
@@ -65,7 +68,7 @@ Each provider exercises:
 
 The network tripwire also has focused tests for Node's socket argument forms.
 CI runs the suite on both Linux and macOS. UI behavior, official CLI compatibility,
-credential renewal, automatic pools and balancing remain outside this suite.
+credential renewal and advanced balancing remain outside this suite.
 
 ## Update the YA pin
 

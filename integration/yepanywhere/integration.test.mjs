@@ -2,7 +2,7 @@ import "./offline.mjs";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -84,6 +84,7 @@ async function fixture(t, provider) {
   const upstreamRequests = [];
   const credentials = [];
   let abandoned = 0;
+  let quotaUsed = 25;
   const upstream = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -94,6 +95,11 @@ async function fixture(t, provider) {
       account: request.headers["chatgpt-account-id"],
       body,
     });
+    if (request.url === "/api/oauth/usage") {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ five_hour: { utilization: quotaUsed, resets_at: new Date(Date.now() + 3600000).toISOString() }, seven_day: { utilization: 40, resets_at: new Date(Date.now() + 86400000).toISOString() } }));
+      return;
+    }
     if (request.url.includes("models")) {
       response.setHeader("content-type", "application/json");
       response.end(
@@ -335,6 +341,11 @@ async function fixture(t, provider) {
     store,
     accounts,
     credentials,
+    setQuota: (used) => {
+      for (const account of accounts) { writeFileSync(join(account.home, "quota-used.json"), JSON.stringify(used)); }
+      // Claude responses use the fixture's shared value; both accounts are changed.
+      quotaUsed = used;
+    },
     output,
     apiBodies,
     upstreamRequests,
@@ -831,5 +842,49 @@ for (const provider of ["codex", "claude"]) {
       1,
       "Only the recovered new launch reaches inference",
     );
+  });
+}
+
+
+for (const provider of ["codex", "claude"]) {
+  test(`${provider}: pools expose quotas, rotate fresh starts and preserve resumed pins`, { timeout: 180_000 }, async t => {
+    const f = await fixture(t, provider);
+    await f.api("/agent-auth-router/connect", { socketPath: f.router().socket });
+    const pool = { id: randomUUID(), name: "Personal", provider, policy: "round-robin", accountIds: ["selected", "other"], revision: 0 };
+    await f.api("/agent-auth-router/pools/save", pool);
+    const overview = () => f.api("/agent-auth-router/overview", { poolId: pool.id, model: "synthetic-model" });
+    const before = f.upstreamRequests.length;
+    assert.equal((await overview()).value.selection.decisions[0].reason, "catalog-unknown");
+    assert.equal(f.upstreamRequests.length, before, "Reading the overview is passive");
+    for (const accountId of pool.accountIds) await f.api("/agent-auth-router/overview/refresh", { accountId });
+    assert.deepEqual((await overview()).value.selection.decisions.map(d => d.reason), ["eligible", "eligible"]);
+    assert.equal((await overview()).value.accounts[0].windows[0].remainingPercent, 75);
+    const startPath = `/projects/${Buffer.from(f.project).toString("base64url")}/sessions`;
+    const launch = message => f.api(startPath, { message, provider, model: "synthetic-model", routerPoolId: pool.id, routerPolicy: "round-robin", mode: "bypassPermissions" });
+    const starts = await Promise.all([launch("pool-one"), launch("pool-two")]);
+    const sessions = [];
+    for (const start of starts) {
+      const idle = await eventually(async () => (await f.api("/processes")).value.processes.find(p => p.id === start.value.processId && p.state === "idle"), "pooled native turn finishes");
+      sessions.push(idle.sessionId);
+    }
+    const pins = Object.values(f.privateState().allocations);
+    assert.deepEqual(new Set(pins.map(p => p.accountId)), new Set(["selected", "other"]));
+    assert.ok(pins.every(p => p.poolId === pool.id));
+    const originalPins = pins.map(p => ({ id: p.id, accountId: p.accountId, token: p.token }));
+    for (const start of starts) await f.api(`/processes/${start.value.processId}/abort`, {});
+    await f.restartYA(); await f.restartRouter();
+    await f.api("/agent-auth-router/pools/save", { ...pool, revision: 1, policy: "manual" });
+    await f.api(`/projects/${Buffer.from(f.project).toString("base64url")}/sessions/${sessions[0]}/resume`, { message: "pool-resume", provider, model: "synthetic-model" });
+    await eventually(() => f.upstreamRequests.some(r => r.body.includes("pool-resume")), "resume preserves the original pool pin without fresh quota or re-selection");
+    assert.deepEqual(Object.values(f.privateState().allocations).map(p => ({ id: p.id, accountId: p.accountId, token: p.token })), originalPins);
+    f.setQuota(100);
+    for (const accountId of pool.accountIds) await f.api("/agent-auth-router/overview/refresh", { accountId });
+    assert.ok((await overview()).value.selection.decisions.every(d => d.reason === "exhausted"));
+    const launches = f.launches().length;
+    assert.ok((await f.api(startPath, { message: "must-not-start", provider, model: "synthetic-model", routerPoolId: pool.id, routerPolicy: "round-robin" }, null)).status >= 400);
+    assert.equal(f.launches().length, launches);
+    await f.api("/agent-auth-router/pools/remove", { id: pool.id, revision: 2 });
+    const response = await fetch(`${f.router().origin}/${provider}${provider === "claude" ? "/v1/messages" : "/responses"}`, { method: "POST", headers: { authorization: `Bearer ${pins[0].token}` }, body: "{}" });
+    assert.equal(response.status, 401, "Pool deletion revokes every derived pin");
   });
 }
