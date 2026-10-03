@@ -69,3 +69,11 @@ unknown-quota override, not an authentication bypass.
 Control storage upgrades version 1 to version 2 in place, preserving manual
 pins and grants. Older AAR versions refuse version 2 rather than ignoring pool
 authorization. Downgrading routed state is unsupported.
+
+## Deferred follow-ups
+
+The maintainer deferred further extensions on 2026-10-03. The YA owning topic
+records [pool refresh/admission, Most remaining, and clone/helper inheritance](https://github.com/kzahel/yepanywhere/blob/main/topics/agent-auth-router.md#deferred-follow-ups)
+as candidates for this workstream, with motivation, boundaries and a suggested
+sequence. That section is the follow-up register; these are not scheduled work
+or changes to the implemented contract above.
