@@ -80,3 +80,7 @@ model request.
 Initial focus is a local macOS host. Private access from other devices and
 cross-platform packaging are later extensions. This project stays separate
 from Yep Anywhere's CLI profile-directory work.
+
+## License
+
+[MIT](LICENSE), copyright (c) 2026 Kyle Graehl.
