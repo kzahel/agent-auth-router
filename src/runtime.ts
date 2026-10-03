@@ -1,3 +1,4 @@
+import { startControl } from "./control.ts";
 import type { AddressInfo } from "node:net";
 import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
@@ -30,6 +31,7 @@ export function buildCoordinators(
 export interface RunningRouter extends RouterServer {
   origin: string;
   coordinators: Map<string, CredentialCoordinator>;
+  controlSocket?: string;
   close(): Promise<void>;
 }
 
@@ -39,7 +41,8 @@ export async function startRouter(store: StateStore): Promise<RunningRouter> {
   const origin = `http://${config.listen.host.includes(":") ? `[${config.listen.host}]` : config.listen.host}:${config.listen.port}`;
   const coordinators = buildCoordinators(store.loadAccounts(), store.workDir, origin);
   const clients = new LiveClients(store);
-  const router = createRouter({ config, clients: () => clients.current(), coordinators });
+  let control: Awaited<ReturnType<typeof startControl>> | undefined;
+  const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators });
 
   await new Promise<void>((resolve, reject) => {
     router.server.once("error", reject);
@@ -47,16 +50,23 @@ export async function startRouter(store: StateStore): Promise<RunningRouter> {
   });
   const address = router.server.address() as AddressInfo;
   const boundOrigin = `http://${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}`;
+  if (process.platform !== "win32") {
+    try { control = await startControl(store, boundOrigin, coordinators); }
+    catch (error) { router.server.close(); throw error; }
+  }
   log("router.listening", { origin: boundOrigin, accounts: coordinators.size });
 
   return {
     ...router,
     origin: boundOrigin,
     coordinators,
-    close: () =>
-      new Promise<void>((resolve) => {
+    ...(control ? { controlSocket: control.socketPath } : {}),
+    close: async () => {
+      await control?.close();
+      return new Promise<void>((resolve) => {
         router.server.close(() => resolve());
         router.server.closeIdleConnections();
-      }),
+      });
+    },
   };
 }
