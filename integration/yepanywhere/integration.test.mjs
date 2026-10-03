@@ -370,6 +370,11 @@ for (const provider of ["codex", "claude"]) {
     await f.api("/agent-auth-router/connect", {
       socketPath: f.router().socket,
     });
+    const healthy = (await f.api("/agent-auth-router/recovery")).value;
+    assert.equal(healthy.state, "connected");
+    assert.equal(healthy.reachable, true);
+    assert.equal(healthy.pendingCancellations, 0);
+    assert.equal(healthy.accounts.length, 2);
     assert.deepEqual(
       (await f.api("/agent-auth-router/accounts")).value.accounts.map(
         (a) => a.id,
@@ -429,6 +434,14 @@ for (const provider of ["codex", "claude"]) {
     await f.api(`/processes/${created.processId}/abort`, {});
     await f.router().stop();
     await f.restartYA();
+    const offline = (await f.api("/agent-auth-router/recovery")).value;
+    assert.equal(
+      offline.state,
+      "connected",
+      "An outage does not erase the pairing",
+    );
+    assert.equal(offline.reachable, false);
+    assert.equal(offline.issue.code, "unavailable");
     const beforeOutage = {
       launches: f.launches().length,
       requests: f.upstreamRequests.length,
@@ -451,6 +464,12 @@ for (const provider of ["codex", "claude"]) {
     await f.restartRouter();
     f.store.saveAccounts(
       f.accounts.map((a) => ({ ...a, enabled: a.id !== "selected" })),
+    );
+    assert.equal(
+      (await f.api("/agent-auth-router/recovery")).value.accounts.find(
+        (a) => a.id === "selected",
+      ).enabled,
+      false,
     );
     assert.ok(
       (
@@ -654,6 +673,13 @@ for (const provider of ["codex", "claude"]) {
       "revocation-pending",
     );
     await f.restartRouter();
+    const pending = (await f.api("/agent-auth-router/recovery")).value;
+    assert.equal(pending.state, "revocation-pending");
+    assert.equal(
+      pending.reachable,
+      true,
+      "Reachability alone never claims revocation acknowledgement",
+    );
     const launches = f.launches().length,
       requests = f.upstreamRequests.length;
     assert.equal(
@@ -746,7 +772,18 @@ for (const provider of ["codex", "claude"]) {
     f.store.saveAccounts(
       f.accounts.map((a) => ({ ...a, enabled: a.id !== "selected" })),
     );
-    assert.ok((await f.api(startPath, body, null)).status >= 400);
+    const beforeRetry = (await f.api("/agent-auth-router/recovery")).value;
+    assert.equal(beforeRetry.pendingCancellations, 1);
+    assert.equal(
+      f.controlState().bindings[0].state,
+      "committed",
+      "Reading status cannot retry cleanup",
+    );
+    await f.api("/agent-auth-router/retry-cancellations", {});
+    assert.equal(
+      (await f.api("/agent-auth-router/recovery")).value.pendingCancellations,
+      0,
+    );
     assert.equal(
       f.privateState().allocations[allocation.id].cancellationAcknowledged,
       true,
@@ -756,6 +793,16 @@ for (const provider of ["codex", "claude"]) {
       "cancelled",
     );
     assert.equal(f.native().length, 0);
+    assert.equal(
+      f.launches().length,
+      1,
+      "Explicit cleanup starts no provider",
+    );
+    assert.equal(
+      Object.keys(f.privateState().allocations).length,
+      1,
+      "Explicit cleanup allocates no new session",
+    );
     const response = await fetch(
       `${f.router().origin}/${provider}${provider === "claude" ? "/v1/messages" : "/responses"}`,
       {

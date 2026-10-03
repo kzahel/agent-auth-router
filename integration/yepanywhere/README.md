@@ -51,7 +51,10 @@ Each provider exercises:
 - Interrupting an unfinished response, closing its upstream connection, then
   continuing with the same committed binding.
 - Failed native launch cancellation and rejection of its inference token, plus
-  durable cancellation retry after control recovers and the account is disabled.
+  explicit durable cancellation retry after control recovers and the account
+  is disabled, without starting a provider or allocating a new session.
+- Read-only recovery status distinguishes saved pairing from reachability and
+  reports pending cleanup and disabled accounts without mutating them.
 - Disconnect invalidating a running worker's token and surviving restart.
 - Pending disconnect surviving a YA restart, blocking launches and re-pairing,
   explicit retry after AAR recovers, and refusal to adopt an old session into a
