@@ -52,6 +52,11 @@ compatibility and real renewal evidence remain separately recorded observations.
 
 ## Yep Anywhere manual integration
 
+The repeatable [cross-repository integration suite](../integration/yepanywhere/README.md)
+runs real AAR and pinned YA sources with synthetic native processes and upstreams
+on Linux and macOS. It covers manual bindings, continuation, restart, interruption,
+failed-launch cancellation, revocation and refusal to fall back to direct auth.
+
 With AAR running, connect from YA's **Settings → Providers → Agent Auth Router**.
 Choose an enrolled account and its model in **New Session → advanced options**.
 YA keeps an independent client home and sends only derived inference credentials

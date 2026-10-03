@@ -26,3 +26,23 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run build
+
+  yepanywhere-integration:
+    name: YA integration (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Fetch pinned YA and install its frozen dependencies
+        run: npm run integration:prepare
+      - name: Exercise real YA and AAR with synthetic native processes
+        run: npm run test:integration
