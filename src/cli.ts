@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// Local administration is filesystem access to the private state directory;
-// there is no network administration surface in this prototype.
+// Local administration shares the running owner service over private IPC.
 
+import { ownerRequest } from "./owner.ts";
 import { randomUUID } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
 import { credentialReaderFor } from "./credentials.ts";
 import { generateGatewayToken, hashGatewayToken } from "./gateway-auth.ts";
 import { fetchAccountQuotas } from "./quotas.ts";
-import { buildCoordinators, startRouter } from "./runtime.ts";
-import { defaultStateDir, ensurePrivateDir, StateStore } from "./state.ts";
+import { startRouter } from "./runtime.ts";
+import { defaultStateDir, StateStore } from "./state.ts";
 import { isProvider, PROVIDERS, type AccountConfig, type GatewayClientRecord, type Provider } from "./types.ts";
 
 const USAGE = `usage: aar [--state DIR] <command>
@@ -20,6 +20,7 @@ const USAGE = `usage: aar [--state DIR] <command>
   account add <id> --provider P [--home DIR] [--helper codex-app-server|none]
                   [--credential-store file|claude-keychain]
   account list                           show enrollment and expiry metadata
+  owner <operation>                      administer via the router; JSON on stdin
   account quotas [id]                    fetch quota percentages and reset times (JSON)
   account login-command <id>             print the official CLI login command
   renew <id>                             run the renewal helper once and verify
@@ -89,6 +90,15 @@ async function main(argv: string[]): Promise<void> {
   }
   const store = new StateStore(values.state ? resolve(values.state) : defaultStateDir());
 
+  // Live and offline writes use the same socket owner. Offline administration
+  // briefly starts the core; socket ownership prevents a competing writer.
+  const administer = async (operation: string, body: object) => {
+    if (existsSync(join(store.dir, "control.sock"))) return ownerRequest(store, operation, body);
+    if (operation === "accounts/login") throw new Error("Start aar serve or the desktop app before starting an interactive login");
+    const router = await startRouter(store);
+    try { return await ownerRequest(store, operation, body); } finally { await router.close(); }
+  };
+
   switch (command) {
     case "init": {
       store.init();
@@ -107,19 +117,9 @@ async function main(argv: string[]): Promise<void> {
         if (credentialStore === "claude-keychain" && (values.provider !== "claude" || process.platform !== "darwin")) {
           fail("claude-keychain requires a Claude account on macOS");
         }
-        store.init();
         const home = resolve(values.home ?? join(store.profilesDir, arg));
-        ensurePrivateDir(home);
-        const helperKind = values.helper ?? (values.provider === "codex" ? "codex-app-server" : "none");
-        const account: AccountConfig = { id: arg, provider: values.provider, home };
-        if (credentialStore) account.credentialStore = credentialStore;
-        if (helperKind === "codex-app-server") account.helper = { kind: "codex-app-server" };
-        else if (helperKind !== "none") fail("--helper must be codex-app-server or none");
-        if (values.provider === "codex" && !existsSync(join(home, "config.toml"))) {
-          // Dedicated profile: pin file storage so the reader has a known store.
-          writeFileSync(join(home, "config.toml"), 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
-        }
-        store.saveAccounts([...accounts, account]);
+        await administer("accounts/add", { id: arg, provider: values.provider, home, ...(credentialStore ? { credentialStore } : {}), ...(values.helper ? { helper: values.helper } : {}) });
+        const account = store.loadAccounts().find(a => a.id === arg)!;
         process.stdout.write(`added ${account.provider} account ${account.id}\nprofile home: ${home}\n\nSign in with the official CLI:\n  ${loginCommand(account)}\n`);
         return;
       }
@@ -150,32 +150,19 @@ async function main(argv: string[]): Promise<void> {
       }
       fail("account requires add, list, quotas or login-command");
     }
+    case "owner-request":
+    case "owner": {
+      if (!sub) fail("owner requires an operation (for example overview or pools/save); JSON body on stdin");
+      const chunks: Buffer[] = []; let size = 0;
+      for await (const chunk of process.stdin) { size += chunk.length; if (size > 16_384) fail("owner request too large"); chunks.push(Buffer.from(chunk)); }
+      const input = Buffer.concat(chunks).toString();
+      const result = await (command === "owner-request" ? ownerRequest(store, sub, input.trim() ? JSON.parse(input) : {}) : administer(sub, input.trim() ? JSON.parse(input) : {}));
+      process.stdout.write(JSON.stringify(result) + "\n"); return;
+    }
     case "renew": {
-      // Phase-1 experiment: force one helper run and report what changed,
-      // without printing any credential material.
       const id = sub ?? fail("renew requires an account id");
-      store.init();
-      const coordinators = buildCoordinators(store.loadAccounts(), store.workDir, undefined);
-      const coordinator = coordinators.get(id) ?? fail(`unknown account ${id}`);
-      const before = await credentialReaderFor(coordinator.account.provider, coordinator.account.home, coordinator.account.credentialStore)();
-      if (before.status !== "ok") fail(`credential not readable before renewal: ${before.reason}`);
-      const renewed = await coordinator.recoverFromUnauthorized(before.credential);
-      const status = coordinator.status();
-      const iso = (ms: number | undefined) => (ms ? new Date(ms).toISOString() : "unknown");
-      process.stdout.write(
-        [
-          `account: ${id}`,
-          `expiry before: ${iso(before.credential.expiresAt)}`,
-          `expiry after: ${iso(renewed?.expiresAt)}`,
-          `credential replaced: ${renewed ? "yes" : "no"}`,
-          `state: ${status.state}`,
-          status.lastError ? `last error: ${status.lastError}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n") + "\n",
-      );
-      if (!renewed) process.exitCode = 2;
-      return;
+      const result = await administer("accounts/renew", { id });
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n"); if (!result.replaced) process.exitCode = 2; return;
     }
     case "client": {
       const clients = store.loadClients();
@@ -200,7 +187,7 @@ async function main(argv: string[]): Promise<void> {
           accounts,
         };
         store.init();
-        store.saveClients([...clients, record]);
+        await administer("clients/add", { record });
         const config = store.loadConfig();
         const origin = `http://${config.listen.host}:${config.listen.port}`;
         process.stdout.write(
@@ -221,7 +208,7 @@ async function main(argv: string[]): Promise<void> {
         const matches = clients.filter((client) => !client.revokedAt && (client.id === arg || client.name === arg));
         if (matches.length !== 1) fail(matches.length ? "ambiguous client" : `no active client ${arg}`);
         matches[0]!.revokedAt = new Date().toISOString();
-        store.saveClients(clients);
+        await administer("clients/revoke", { id: matches[0]!.id });
         process.stdout.write(`revoked ${matches[0]!.name}\n`);
         return;
       }

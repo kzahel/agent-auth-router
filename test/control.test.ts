@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { ownerRequest } from "../src/owner.ts";
 import { ControlRegistry, startControl } from "../src/control.ts";
 import { authorize, generateGatewayToken, hashGatewayToken } from "../src/gateway-auth.ts";
 import { startRouter } from "../src/runtime.ts";
@@ -34,6 +35,7 @@ test("manual bindings: lost responses, isolation, persistence and terminal revoc
   let registry = new ControlRegistry(store);
   const token = ctlToken(), id = randomUUID(), pair = { id, name: "test", tokenHash: hashGatewayToken(token) };
   assert.deepEqual(registry.pair(pair), registry.pair(pair));
+  registry.grant({ id, revision: 1, poolIds: [], accountIds: ["fixture"] });
   const integration = registry.authenticate(`Bearer ${token}`);
   const other = ctlToken(); registry.pair({ id: randomUUID(), name: "other", tokenHash: hashGatewayToken(other) });
   const gateway = generateGatewayToken();
@@ -73,6 +75,7 @@ test("private control socket routes catalogs before allocation and revokes infer
   const pair = { id: randomUUID(), name: "YA fixture", tokenHash: hashGatewayToken(token) };
   assert.equal((await request(socket, "/v1/pair", undefined, pair)).status, 200);
   assert.equal((await request(socket, "/v1/catalog", token, { accountId: "ungranted" })).status, 403);
+  await ownerRequest(store, "grants/save", { id: pair.id, revision: 1, poolIds: [], accountIds: ["fixture"] });
   const catalog = await request(socket, "/v1/catalog", token, { accountId: "fixture" });
   assert.deepEqual(catalog.value.models, [{ id: "synthetic-model", name: "Synthetic" }]);
   assert.equal(upstream.requests[0]?.headers.authorization, "Bearer synthetic-provider-secret");
@@ -107,6 +110,7 @@ test("control credentials cannot become inference credentials even if their hash
 test("failed launches can be cancelled after their account is disabled", {skip: process.platform === "win32"}, () => {
   const store = storeFixture(), registry = new ControlRegistry(store), token = ctlToken();
   registry.pair({id: randomUUID(), name:"YA", tokenHash:hashGatewayToken(token)});
+  registry.grant({ id: registry.authenticate(`Bearer ${token}`).id, revision: 1, poolIds: [], accountIds: ["fixture"] });
   const integration = registry.authenticate(`Bearer ${token}`), id = randomUUID();
   registry.prepare(integration, {id, accountId:"fixture", provider:"claude", model:"synthetic", tokenHash:hashGatewayToken(generateGatewayToken())});
   registry.transition(integration, id, "commit");
@@ -125,10 +129,13 @@ test("pool HTTP overview is cached metadata and shares eligibility with native a
   writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
   const router = await startRouter(store, { claudeOrigin: upstream.origin }); t.after(() => router.close());
   const token = ctlToken(), socket = router.controlSocket!;
-  await request(socket, "/v1/pair", undefined, { id: randomUUID(), name: "YA", tokenHash: hashGatewayToken(token) });
+  const integrationId = randomUUID();
+  await request(socket, "/v1/pair", undefined, { id: integrationId, name: "YA", tokenHash: hashGatewayToken(token) });
   const pool = { id: randomUUID(), name: "Personal", provider: "claude", policy: "round-robin", accountIds: ["fixture"], revision: 0 };
   for (const path of ["/v1/overview", "/v1/overview/refresh", "/v1/pools/save", "/v1/pools/remove", "/v1/pools/prepare"]) assert.equal((await request(socket, path, undefined, {})).status, 401);
-  assert.equal((await request(socket, "/v1/pools/save", token, pool)).status, 200);
+  assert.equal((await request(socket, "/v1/pools/save", token, pool)).status, 403);
+  await ownerRequest(store, "pools/save", pool);
+  await ownerRequest(store, "grants/save", { id: integrationId, revision: 1, poolIds: [pool.id] });
   const read = () => request(socket, "/v1/overview", token, { poolId: pool.id, model: "claude-sonnet-fixture" });
   assert.equal((await read()).value.selection.decisions[0].reason, "catalog-unknown"); assert.equal(upstream.requests.length, 0);
   await request(socket, "/v1/overview/refresh", token, { accountId: "fixture" });
@@ -139,7 +146,7 @@ test("pool HTTP overview is cached metadata and shares eligibility with native a
   const allocation = { id: randomUUID(), poolId: pool.id, provider: "claude", model: "claude-sonnet-fixture", tokenHash: hashGatewayToken(generateGatewayToken()) };
   assert.equal((await request(socket, "/v1/pools/prepare", token, allocation)).value.accountId, "fixture");
   assert.equal((await request(socket, "/v1/bindings/commit", token, { id: allocation.id })).status, 200);
-  await request(socket, "/v1/pools/remove", token, { id: pool.id, revision: 1 });
+  await ownerRequest(store, "pools/remove", { id: pool.id, revision: 1 });
   assert.equal((await request(socket, "/v1/bindings/inspect", token, { id: allocation.id })).status, 409);
   assert.equal((await request(socket, "/v1/bindings/cancel", token, { id: allocation.id })).status, 200);
 });

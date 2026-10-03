@@ -59,6 +59,9 @@ export class CredentialCoordinator {
   private failures = 0;
   private retryAt = 0;
   private helperRuns = 0;
+  private externalLogin = false;
+  beginLogin(): boolean { if (this.inflight || this.externalLogin) return false; this.externalLogin = true; return true; }
+  endLogin(): void { this.externalLogin = false; this.retryAt = 0; this.failures = 0; }
   private inflight: Promise<UpstreamCredential> | undefined;
 
   constructor(options: CoordinatorOptions) {
@@ -91,6 +94,7 @@ export class CredentialCoordinator {
    * window. Rereads the store on every call rather than caching tokens.
    */
   async credential(): Promise<UpstreamCredential> {
+    if (this.externalLogin) throw new CredentialUnavailable("login_required", "Official CLI login in progress", undefined);
     if (this.inflight) return this.inflight;
     const current = await this.readUsable();
     if (!this.isDue(current)) {
@@ -106,6 +110,7 @@ export class CredentialCoordinator {
    * Returns undefined when no different credential could be obtained.
    */
   async recoverFromUnauthorized(rejected: UpstreamCredential): Promise<UpstreamCredential | undefined> {
+    if (this.externalLogin) return undefined;
     try {
       const current = this.inflight ? await this.inflight : await this.readUsable();
       if (current.revision !== rejected.revision) return current;
@@ -152,6 +157,7 @@ export class CredentialCoordinator {
   }
 
   private renew(current: UpstreamCredential, force: boolean): Promise<UpstreamCredential> {
+    if (this.externalLogin) return Promise.reject(new CredentialUnavailable("login_required", "Official CLI login in progress", undefined));
     this.inflight ??= this.renewOnce(current, force).finally(() => {
       this.inflight = undefined;
     });

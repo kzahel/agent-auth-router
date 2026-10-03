@@ -43,6 +43,8 @@ export interface AccountConfig {
   /** Explicit, version-specific Keychain opt-in; absent selects file storage. */
   credentialStore?: "file" | "claude-keychain";
   enabled?: boolean;
+  revision?: number;
+  retired?: boolean;
   /** Absent means the router can read but not renew this account. */
   helper?: HelperConfig;
   renewBeforeSeconds?: number;

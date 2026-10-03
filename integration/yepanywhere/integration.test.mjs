@@ -19,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { ownerRequest } from "../../src/owner.ts";
 import { StateStore, writePrivateJson } from "../../src/state.ts";
 
 const checkout = resolve(import.meta.dirname, "../../artifacts/yepanywhere");
@@ -64,7 +65,7 @@ async function eventually(predicate, message, milliseconds = 20_000) {
   throw new Error(`Timed out: ${message}`);
 }
 
-async function fixture(t, provider) {
+async function fixture(t, provider, directGrants = true, enrollSecondLive = false) {
   const root = mkdtempSync("/tmp/aar-ya-");
   const home = join(root, "ya");
   const data = join(home, "data");
@@ -209,7 +210,7 @@ async function fixture(t, provider) {
     credentials.push({ path, content: readFileSync(path, "utf8"), secret });
     return { id, provider, home: accountHome };
   });
-  store.saveAccounts(accounts);
+  store.saveAccounts(enrollSecondLive ? accounts.slice(0, 1) : accounts);
   const config = {
     listen: { host: "127.0.0.1", port: 0 },
     upstreams: { claude: upstreamOrigin, codex: upstreamOrigin },
@@ -353,6 +354,16 @@ async function fixture(t, provider) {
     restartRouter,
     restartYA,
     api,
+    owner: (operation, body) => ownerRequest(store, operation, body),
+    connect: async (...args) => {
+      const response = await api("/agent-auth-router/connect", ...args);
+      if (response.status === 200 && directGrants) {
+        const overview = await ownerRequest(store, "overview");
+        const integration = overview.integrations.findLast(i => !i.revoked);
+        await ownerRequest(store, "grants/save", { id: integration.id, revision: integration.revision, poolIds: integration.poolIds, accountIds: accounts.map(a => a.id) });
+      }
+      return response;
+    },
     privateState,
     controlState,
     router: () => router,
@@ -378,7 +389,7 @@ for (const provider of ["codex", "claude"]) {
         sandboxLevel: "none",
         ...extra,
       });
-    await f.api("/agent-auth-router/connect", {
+    await f.connect({
       socketPath: f.router().socket,
     });
     const healthy = (await f.api("/agent-auth-router/recovery")).value;
@@ -651,7 +662,7 @@ for (const provider of ["codex", "claude"]) {
   }, async (t) => {
     const f = await fixture(t, provider);
     const projectId = Buffer.from(f.project).toString("base64url");
-    await f.api("/agent-auth-router/connect", {
+    await f.connect({
       socketPath: f.router().socket,
     });
     const created = (
@@ -695,9 +706,7 @@ for (const provider of ["codex", "claude"]) {
       requests = f.upstreamRequests.length;
     assert.equal(
       (
-        await f.api(
-          "/agent-auth-router/connect",
-          { socketPath: f.router().socket },
+        await f.connect({ socketPath: f.router().socket },
           null,
         )
       ).status,
@@ -728,7 +737,7 @@ for (const provider of ["codex", "claude"]) {
     assert.equal(response.status, 401);
     await response.body.cancel();
     assert.equal(f.upstreamRequests.length, requests);
-    await f.api("/agent-auth-router/connect", {
+    await f.connect({
       socketPath: f.router().socket,
     });
     assert.ok(
@@ -759,7 +768,7 @@ for (const provider of ["codex", "claude"]) {
       message: "fixture",
       sandboxLevel: "none",
     };
-    await f.api("/agent-auth-router/connect", {
+    await f.connect({
       socketPath: f.router().socket,
     });
     writeFileSync(join(f.home, "fail-next-launch"), "offline");
@@ -848,10 +857,18 @@ for (const provider of ["codex", "claude"]) {
 
 for (const provider of ["codex", "claude"]) {
   test(`${provider}: pools expose quotas, rotate fresh starts and preserve resumed pins`, { timeout: 180_000 }, async t => {
-    const f = await fixture(t, provider);
-    await f.api("/agent-auth-router/connect", { socketPath: f.router().socket });
+    const f = await fixture(t, provider, false, true);
+    await f.connect({ socketPath: f.router().socket });
+    assert.deepEqual((await f.api("/agent-auth-router/accounts")).value.accounts, []);
     const pool = { id: randomUUID(), name: "Personal", provider, policy: "round-robin", accountIds: ["selected", "other"], revision: 0 };
-    await f.api("/agent-auth-router/pools/save", pool);
+    await f.api("/agent-auth-router/pools/save", pool, 409); // YA normalizes router operation failures to 409.
+    await f.owner("pools/save", { ...pool, accountIds: ["selected"] });
+    const integration = (await f.owner("overview")).integrations.find(i => !i.revoked);
+    await f.owner("grants/save", { id: integration.id, revision: integration.revision, poolIds: [pool.id] });
+    await f.owner("accounts/add", { id: "other", provider, helper: "none" });
+    assert.deepEqual((await f.api("/agent-auth-router/accounts")).value.accounts.map(a => a.id), ["selected"], "live enrollment alone does not widen grants");
+    await f.owner("pools/save", { ...pool, revision: 1 });
+    assert.deepEqual((await f.api("/agent-auth-router/accounts")).value.accounts.map(a => a.id), ["selected", "other"], "existing pool grant follows membership without restart or re-pair");
     const overview = () => f.api("/agent-auth-router/overview", { poolId: pool.id, model: "synthetic-model" });
     const before = f.upstreamRequests.length;
     assert.equal((await overview()).value.selection.decisions[0].reason, "catalog-unknown");
@@ -873,7 +890,7 @@ for (const provider of ["codex", "claude"]) {
     const originalPins = pins.map(p => ({ id: p.id, accountId: p.accountId, token: p.token }));
     for (const start of starts) await f.api(`/processes/${start.value.processId}/abort`, {});
     await f.restartYA(); await f.restartRouter();
-    await f.api("/agent-auth-router/pools/save", { ...pool, revision: 1, policy: "manual" });
+    await f.owner("pools/save", { ...pool, revision: 2, policy: "manual" });
     await f.api(`/projects/${Buffer.from(f.project).toString("base64url")}/sessions/${sessions[0]}/resume`, { message: "pool-resume", provider, model: "synthetic-model" });
     await eventually(() => f.upstreamRequests.some(r => r.body.includes("pool-resume")), "resume preserves the original pool pin without fresh quota or re-selection");
     assert.deepEqual(Object.values(f.privateState().allocations).map(p => ({ id: p.id, accountId: p.accountId, token: p.token })), originalPins);
@@ -883,7 +900,7 @@ for (const provider of ["codex", "claude"]) {
     const launches = f.launches().length;
     assert.ok((await f.api(startPath, { message: "must-not-start", provider, model: "synthetic-model", routerPoolId: pool.id, routerPolicy: "round-robin" }, null)).status >= 400);
     assert.equal(f.launches().length, launches);
-    await f.api("/agent-auth-router/pools/remove", { id: pool.id, revision: 2 });
+    await f.owner("pools/remove", { id: pool.id, revision: 3 });
     const response = await fetch(`${f.router().origin}/${provider}${provider === "claude" ? "/v1/messages" : "/responses"}`, { method: "POST", headers: { authorization: `Bearer ${pins[0].token}` }, body: "{}" });
     assert.equal(response.status, 401, "Pool deletion revokes every derived pin");
   });

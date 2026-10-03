@@ -2,7 +2,8 @@
 // registry, stored as JSON in a private directory. Provider credentials are
 // never stored here; account entries only point at dedicated profile homes.
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { closeSync, fsyncSync, openSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseUpstreamOrigin } from "./providers.ts";
@@ -18,9 +19,11 @@ export function ensurePrivateDir(path: string): void {
 }
 
 export function writePrivateJson(path: string, value: unknown): void {
-  const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+  const temp = `${path}.${randomUUID()}.tmp`;
+  const fd = openSync(temp, "wx", 0o600);
+  try { writeFileSync(fd, JSON.stringify(value, null, 2) + "\n"); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temp, path);
+  if (process.platform !== "win32") { const parent = openSync(join(path, ".."), "r"); try { fsyncSync(parent); } finally { closeSync(parent); } }
 }
 
 function readJsonFile<T>(path: string, fallback: T): T {
@@ -56,25 +59,44 @@ export class StateStore {
     ensurePrivateDir(this.workDir);
   }
 
+  upgradeRegistries(): void {
+    for (const [path, read, save] of [
+      [this.accountsPath, () => this.loadAccounts(), (value: unknown) => this.saveAccounts(value as AccountConfig[])],
+      [this.clientsPath, () => this.loadClients(), (value: unknown) => this.saveClients(value as GatewayClientRecord[])],
+    ] as const) {
+      if (!existsSync(path) || Array.isArray(JSON.parse(readFileSync(path, "utf8")))) {
+        const value = read();
+        if (existsSync(path) && !existsSync(`${path}.pre-v3`)) writePrivateJson(`${path}.pre-v3`, JSON.parse(readFileSync(path, "utf8")));
+        save(value);
+      }
+    }
+  }
+
   loadConfig(): RouterConfig {
     const config = readJsonFile<RouterConfig>(this.configPath, { listen: { host: "127.0.0.1", port: 8417 } });
     return validateConfig(config);
   }
 
   loadAccounts(): AccountConfig[] {
-    return validateAccounts(readJsonFile<AccountConfig[]>(this.accountsPath, []));
+    const value = readJsonFile<AccountConfig[] | { version: number; accounts: AccountConfig[] }>(this.accountsPath, []);
+    if (Array.isArray(value)) return validateAccounts(value);
+    if (value.version !== 3) throw new Error("unsupported account registry version");
+    return validateAccounts(value.accounts);
   }
 
   saveAccounts(accounts: AccountConfig[]): void {
-    writePrivateJson(this.accountsPath, validateAccounts(accounts));
+    writePrivateJson(this.accountsPath, { version: 3, accounts: validateAccounts(accounts) });
   }
 
   loadClients(): GatewayClientRecord[] {
-    return readJsonFile<GatewayClientRecord[]>(this.clientsPath, []);
+    const value = readJsonFile<GatewayClientRecord[] | { version: number; clients: GatewayClientRecord[] }>(this.clientsPath, []);
+    if (Array.isArray(value)) return value;
+    if (value.version !== 3 || !Array.isArray(value.clients)) throw new Error("unsupported client registry version");
+    return value.clients;
   }
 
   saveClients(clients: GatewayClientRecord[]): void {
-    writePrivateJson(this.clientsPath, clients);
+    writePrivateJson(this.clientsPath, { version: 3, clients });
   }
 }
 

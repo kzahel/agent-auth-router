@@ -1,3 +1,4 @@
+import { providerExecutable } from "./platform.ts";
 // Renewal helpers. A helper asks the official CLI to renew and persist the
 // profile's credential; it never returns token material. The coordinator
 // rereads the store afterward to decide whether renewal happened.
@@ -113,7 +114,7 @@ async function runCodexAppServer(
   if (problem) return { outcome: "failed", detail: problem };
 
   const proc = startBounded({
-    command: config.command ?? "codex",
+    command: config.command ?? providerExecutable("codex"),
     args: config.args ?? ["app-server"],
     env: helperEnv("codex", context.account.home, context.env),
     cwd: context.workDir,

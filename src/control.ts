@@ -1,5 +1,6 @@
-// Local control protocol v1. The private socket bootstraps owner pairing;
-// integration credentials authorize all subsequent operations.
+// Private control protocol v1: integration use credentials and a separate
+// local-owner administration credential. The inference listener serves neither.
+import { OwnerService } from "./owner.ts";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -13,14 +14,14 @@ import type { CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
 import type { GatewayClientRecord, Provider } from "./types.ts";
 
-interface Integration { id: string; name: string; tokenHash: string; accountIds: string[]; revoked: boolean }
+interface Integration { id: string; name: string; tokenHash: string; accountIds: string[]; poolIds: string[]; revision: number; revoked: boolean }
 interface Binding {
   id: string; integrationId: string; accountId: string; provider: Provider;
   model: string; tokenHash: string; state: "prepared" | "committed" | "cancelled";
   createdAt: number;
   poolId?: string; policy?: PoolPolicy; request?: string; reason?: string; observedAt?: string | undefined;
 }
-interface ControlState { version: 2; routerId: string; integrations: Integration[]; bindings: Binding[]; pools?: Pool[]; cancellations?: { id: string; integrationId: string }[] }
+interface ControlState { version: 3; routerId: string; integrations: Integration[]; bindings: Binding[]; pools?: Pool[]; cancellations?: { id: string; integrationId: string }[] }
 export interface CatalogModel { id: string; name: string; contextWindow?: number }
 export class ControlError extends Error {
   status: number;
@@ -71,22 +72,53 @@ export class ControlRegistry {
       const st = lstatSync(this.path);
       if (!st.isFile() || st.uid !== process.getuid?.() || (st.mode & 0o077)) throw new Error("insecure control state");
       this.state = JSON.parse(readFileSync(this.path, "utf8")) as ControlState;
-      if (![1, 2].includes(this.state.version) || !UUID.test(this.state.routerId) || !Array.isArray(this.state.integrations) || !Array.isArray(this.state.bindings)) throw new Error("invalid control state");
-      if ((this.state.version as number) === 1) { this.state.version = 2; persist(this.path, this.state); }
+      if (![1, 2, 3].includes(this.state.version) || !UUID.test(this.state.routerId) || !Array.isArray(this.state.integrations) || !Array.isArray(this.state.bindings)) throw new Error("invalid control state");
+      if (this.state.version !== 3) {
+        // Keep the exact pre-upgrade bytes for recovery; old writers reject v3.
+        const backup = `${this.path}.pre-v3`;
+        if (!existsSync(backup)) writeFileSync(backup, readFileSync(this.path), { flag: "wx", mode: 0o600 });
+        for (const i of this.state.integrations) {
+          i.poolIds = (this.state.pools ?? []).filter(p => (p as Pool & { integrationId?: string }).integrationId === i.id && !p.deleted).map(p => p.id);
+          i.revision = 1;
+        }
+        for (const p of this.state.pools ?? []) delete (p as Pool & { integrationId?: string }).integrationId;
+        store.upgradeRegistries();
+        this.state.version = 3;
+        persist(this.path, this.state);
+      }
     } else {
-      this.state = { version: 2, routerId: randomUUID(), integrations: [], bindings: [] };
+      store.upgradeRegistries();
+      this.state = { version: 3, routerId: randomUUID(), integrations: [], bindings: [] };
       persist(this.path, this.state);
     }
   }
-  pools(integration: Integration): Pool[] { return (this.state.pools ?? []).filter(p => p.integrationId === integration.id && !p.deleted); }
+  private current(integration: Integration): Integration {
+    return this.state.integrations.find(i => i.id === integration.id && !i.revoked) ?? reject(401, "integration revoked");
+  }
+  private visibleIds(integration: Integration): Set<string> {
+    const i = this.current(integration);
+    return new Set([...i.accountIds, ...this.pools(i).flatMap(p => p.accountIds)]);
+  }
+  pools(integration?: Integration): Pool[] { return (this.state.pools ?? []).filter(p => !p.deleted && (!integration || this.current(integration).poolIds.includes(p.id))); }
+  ownerIntegrations() { return this.state.integrations.map(({ id, name, accountIds, poolIds, revision, revoked }) => ({ id, name, accountIds, poolIds, revision, revoked })); }
+  grant(body: Record<string, unknown>): object {
+    const id = field(body, "id", UUID), i = this.state.integrations.find(i => i.id === id) ?? reject(404, "integration not found");
+    if (i.revoked) reject(409, "integration revoked");
+    if (body.revision !== i.revision) reject(409, "grants changed; reload before editing");
+    const { poolIds, accountIds = i.accountIds } = body;
+    if (!Array.isArray(poolIds) || poolIds.length > 256 || new Set(poolIds).size !== poolIds.length || poolIds.some(id => !this.pools().some(p => p.id === id))) reject(400, "invalid pool grants");
+    if (!Array.isArray(accountIds) || accountIds.length > 256 || new Set(accountIds).size !== accountIds.length || accountIds.some(id => !this.store.loadAccounts().some(a => a.id === id))) reject(400, "invalid account grants");
+    this.change(state => { const next = state.integrations.find(i => i.id === id)!; next.poolIds = poolIds as string[]; next.accountIds = accountIds as string[]; next.revision++; });
+    return { updated: true };
+  }
   pool(integration: Integration, id: string): Pool {
     return this.pools(integration).find(p => p.id === id) ?? reject(404, "pool not found");
   }
-  savePool(integration: Integration, body: Record<string, unknown>): object {
+  savePool(body: Record<string, unknown>): object {
     const id = field(body, "id", UUID), name = field(body, "name");
     if (name.length > 80 || !name.trim()) reject(400, "invalid pool name");
     const existing = (this.state.pools ?? []).find(p => p.id === id);
-    if (existing && (existing.integrationId !== integration.id || existing.deleted)) reject(409, "pool identity unavailable");
+    if (existing?.deleted) reject(409, "pool identity unavailable");
     if (body.revision !== (existing?.revision ?? 0)) reject(409, "pool changed; reload before editing");
     if (body.provider !== "codex" && body.provider !== "claude") reject(400, "invalid pool provider");
     if (existing && body.provider !== existing.provider) reject(409, "pool provider cannot change");
@@ -94,44 +126,46 @@ export class ControlRegistry {
     const accountIds = body.accountIds;
     if (!Array.isArray(accountIds) || !accountIds.length || accountIds.length > 16 || new Set(accountIds).size !== accountIds.length) reject(400, "choose 1 to 16 distinct pool accounts");
     for (const id of accountIds as unknown[]) {
-      if (typeof id !== "string" || !integration.accountIds.includes(id)) reject(403, "account not granted");
+      if (typeof id !== "string") reject(400, "invalid account");
       const account = this.store.loadAccounts().find(a => a.id === id);
-      if (!account || account.provider !== body.provider) reject(400, "pool account provider mismatch");
+      if (!account || account.retired || account.provider !== body.provider) reject(400, "pool account provider mismatch");
     }
     if (!existing && (this.state.pools?.length ?? 0) >= 256) reject(409, "pool limit reached");
-    const pool: Pool = { id, integrationId: integration.id, name: name.trim(), provider: body.provider as Provider,
+    const pool: Pool = { id, name: name.trim(), provider: body.provider as Provider,
       accountIds: accountIds as string[], policy: body.policy as PoolPolicy, revision: (existing?.revision ?? 0) + 1,
       ...(existing?.cursor ? { cursor: existing.cursor } : {}) };
     this.change(state => { state.pools ??= []; const index = state.pools.findIndex(p => p.id === id); if (index < 0) state.pools.push(pool); else state.pools[index] = pool; });
     return this.poolMetadata(pool);
   }
-  removePool(integration: Integration, body: Record<string, unknown>): object {
-    const pool = this.pool(integration, field(body, "id", UUID));
+  removePool(body: Record<string, unknown>): object {
+    const pool = this.pools().find(p => p.id === field(body, "id", UUID)) ?? reject(404, "pool not found");
     if (body.revision !== pool.revision) reject(409, "pool changed; reload before deleting");
     this.change(state => { const p = state.pools!.find(p => p.id === pool.id)!; p.deleted = true; p.revision++; });
     return { deleted: true };
   }
   private poolAllows(b: Binding): boolean {
-    if (!b.poolId) return true;
-    const p = this.state.pools?.find(p => p.id === b.poolId && p.integrationId === b.integrationId && !p.deleted);
+    const i = this.state.integrations.find(i => i.id === b.integrationId && !i.revoked);
+    if (!i) return false;
+    if (!b.poolId) return i.accountIds.includes(b.accountId);
+    const p = this.state.pools?.find(p => p.id === b.poolId && i.poolIds.includes(p.id) && !p.deleted);
     return !!p?.accountIds.includes(b.accountId);
   }
-  poolMetadata(p: Pool): object {
+  poolMetadata(p: Pool, integration?: Integration): object {
     return { id: p.id, name: p.name, provider: p.provider, accountIds: p.accountIds, policy: p.policy, revision: p.revision,
-      bindings: p.accountIds.map(accountId => ({ accountId, count: this.state.bindings.filter(b => b.poolId === p.id && b.accountId === accountId && b.state === "committed").length })) };
+      bindings: p.accountIds.map(accountId => ({ accountId, count: this.state.bindings.filter(b => (!integration || b.integrationId === integration.id) && b.poolId === p.id && b.accountId === accountId && b.state === "committed").length })) };
   }
-  overview(integration: Integration, evidence: PoolEvidence, body: Record<string, unknown> = {}): object {
+  overview(integration: Integration | undefined, evidence: PoolEvidence, body: Record<string, unknown> = {}): object {
     const now = Date.now(), model = body.model === undefined ? undefined : field(body, "model");
     const accounts = this.accounts(integration).map(a => { const o = evidence.get(a.id); return { ...a, ...o,
       freshness: !o.quota ? "unknown" : o.error || now - Date.parse(o.quota.observedAt) >= QUOTA_FRESH_MS ? "stale" : "fresh",
       windows: o.quota?.windows.map(w => ({ ...w, scope: windowScope(a.provider, w.bucket) })) ?? [] }; });
-    const pool = body.poolId === undefined ? undefined : this.pool(integration, field(body, "poolId", UUID));
+    const pool = body.poolId === undefined ? undefined : (integration ? this.pool(integration, field(body, "poolId", UUID)) : this.pools().find(p => p.id === field(body, "poolId", UUID)) ?? reject(404, "pool not found"));
     const policy = body.policy ?? pool?.policy;
     if (policy !== undefined && policy !== "manual" && policy !== "round-robin") reject(400, "invalid pool policy");
     const decisions = pool?.accountIds.map(accountId => { const a = accounts.find(a => a.id === accountId); return { accountId,
-      reason: eligibility(pool.provider, !!a?.enabled && integration.accountIds.includes(accountId), model, evidence.get(accountId), policy !== "manual", now) }; });
-    return { observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
-      pools: this.pools(integration).map(p => this.poolMetadata(p)), accounts,
+      reason: eligibility(pool.provider, !!a?.enabled, model, evidence.get(accountId), policy !== "manual", now) }; });
+    return { canManagePools: !integration, observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
+      pools: this.pools(integration).map(p => this.poolMetadata(p, integration)), accounts,
       ...(pool ? { selection: { poolId: pool.id, policy, model: model ?? null, decisions } } : {}) };
   }
   preparePool(integration: Integration, body: Record<string, unknown>, evidence: PoolEvidence): object {
@@ -154,7 +188,7 @@ export class ControlRegistry {
     if (policy === "round-robin" && manual) reject(400, "round robin cannot specify an account");
     const now = Date.now();
     const eligible = pool.accountIds.filter(accountId => {
-      const a = this.store.loadAccounts().find(a => a.id === accountId && integration.accountIds.includes(accountId));
+      const a = this.store.loadAccounts().find(a => a.id === accountId);
       return eligibility(pool.provider, !!a && a.enabled !== false, model, evidence.get(accountId), policy === "round-robin", now) === "eligible";
     });
     let chosen = manual;
@@ -189,8 +223,8 @@ export class ControlRegistry {
       return { id, routerId: this.routerId };
     }
     if (this.state.integrations.length >= 256) reject(409, "integration limit reached");
-    const accountIds = this.store.loadAccounts().filter((a) => a.enabled !== false).map((a) => a.id);
-    this.change((state) => state.integrations.push({ id, name, tokenHash, accountIds, revoked: false }));
+    const accountIds: string[] = [];
+    this.change((state) => state.integrations.push({ id, name, tokenHash, accountIds, poolIds: [], revision: 1, revoked: false }));
     return { id, routerId: this.routerId };
   }
   authenticate(authorization: string | undefined): Integration {
@@ -200,11 +234,11 @@ export class ControlRegistry {
     return this.state.integrations.find((i) => !i.revoked && equalHash(i.tokenHash, hash)) ?? reject(401, "control credential revoked or unknown");
   }
   account(integration: Integration, id: string) {
-    if (!integration.accountIds.includes(id)) return reject(403, "account not granted");
+    if (!this.visibleIds(integration).has(id)) return reject(403, "account not granted");
     return this.store.loadAccounts().find((a) => a.id === id && a.enabled !== false) ?? reject(409, "account unavailable");
   }
-  accounts(integration: Integration) {
-    return this.store.loadAccounts().filter((a) => integration.accountIds.includes(a.id)).map((a) => ({ id: a.id, provider: a.provider, enabled: a.enabled !== false, renewal: a.helper ? "unverified" : "manual" }));
+  accounts(integration?: Integration) {
+    return this.store.loadAccounts().filter((a) => (!integration || this.visibleIds(integration).has(a.id))).map((a) => ({ id: a.id, provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: a.helper ? "unverified" : "manual" }));
   }
   prepare(integration: Integration, body: Record<string, unknown>): object {
     const id = field(body, "id", UUID), accountId = field(body, "accountId"), model = field(body, "model"), tokenHash = field(body, "tokenHash", HASH);
@@ -214,10 +248,12 @@ export class ControlRegistry {
     const existing = this.state.bindings.find((b) => b.id === id);
     if (existing) {
       if (existing.integrationId !== integration.id || existing.accountId !== accountId || existing.model !== model || !equalHash(existing.tokenHash, tokenHash)) reject(409, "allocation conflicts with existing pin");
+      if (!this.poolAllows(existing)) reject(409, "pinned account or pool grant removed");
       if (existing.state === "cancelled") reject(409, "allocation cancelled");
       if (existing.state === "prepared" && existing.createdAt + PREPARE_MS <= Date.now()) reject(409, "allocation expired");
       return this.metadata(existing);
     }
+    if (!this.current(integration).accountIds.includes(accountId)) reject(403, "direct account access not granted; allocate through a pool");
     if (this.state.bindings.length >= 100_000) reject(409, "binding limit reached");
     const binding: Binding = { id, integrationId: integration.id, accountId, provider: account.provider, model, tokenHash, state: "prepared", createdAt: Date.now() };
     this.change((state) => state.bindings.push(binding));
@@ -239,7 +275,7 @@ export class ControlRegistry {
       return { id, state: "cancelled" };
     }
     const b = this.binding(integration, id);
-    if (action !== "cancel") { this.account(integration, b.accountId); if (!this.poolAllows(b)) reject(409, "pinned account removed from pool"); }
+    if (action !== "cancel") { if (!this.poolAllows(b)) reject(409, "pinned account or pool grant removed"); this.account(integration, b.accountId); }
     if (action === "inspect") return this.metadata(b);
     if (action === "commit" && (b.state === "cancelled" || (b.state === "prepared" && b.createdAt + PREPARE_MS <= Date.now()))) reject(409, "allocation cancelled or expired");
     if (action === "commit" && b.state === "prepared" && b.poolId && (!evidence || eligibility(b.provider, true, b.model, evidence.get(b.accountId), b.policy === "round-robin") !== "eligible")) reject(409, "pool evidence changed; refresh and start a new session");
@@ -250,6 +286,7 @@ export class ControlRegistry {
     });
     return this.metadata({ ...b, state });
   }
+  revokeById(id: string): object { this.change(state => { const i = state.integrations.find(i => i.id === id) ?? reject(404, "integration not found"); i.revoked = true; }); return { revoked: true }; }
   revoke(integration: Integration): object {
     this.change((state) => { state.integrations.find((i) => i.id === integration.id)!.revoked = true; });
     return { revoked: true };
@@ -257,7 +294,7 @@ export class ControlRegistry {
   clients(): GatewayClientRecord[] {
     const integrations = new Map(this.state.integrations.filter((i) => !i.revoked).map((i) => [i.id, i]));
     const enabled = new Set(this.store.loadAccounts().filter((a) => a.enabled !== false).map((a) => a.id));
-    return this.state.bindings.filter((b) => b.state === "committed" && this.poolAllows(b) && integrations.get(b.integrationId)?.accountIds.includes(b.accountId) && enabled.has(b.accountId)).map((b) => ({ id: b.id, name: b.id, tokenSha256: b.tokenHash, accounts: { [b.provider]: b.accountId }, createdAt: new Date(b.createdAt).toISOString() }));
+    return this.state.bindings.filter((b) => b.state === "committed" && this.poolAllows(b) && integrations.has(b.integrationId) && enabled.has(b.accountId)).map((b) => ({ id: b.id, name: b.id, tokenSha256: b.tokenHash, accounts: { [b.provider]: b.accountId }, createdAt: new Date(b.createdAt).toISOString() }));
   }
 }
 
@@ -288,13 +325,15 @@ export async function readCatalog(coordinator: CredentialCoordinator, origin?: s
   });
 }
 
-export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}) {
+export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}, lifecycle: { active(): number; stop(): void } = { active: () => 0, stop: () => { throw new ControlError(409, "stop unavailable"); } }) {
   assertPrivatePath(store.dir);
   const socketPath = join(store.dir, "control.sock");
   if (Buffer.byteLength(socketPath) > 100) throw new Error("control socket path too long; choose a shorter state directory");
   // Refuse occupied/stale paths. Never unlink a path we did not create.
   if (existsSync(socketPath)) throw new Error("control socket exists; verify its owner before removing stale state");
   let registry: ControlRegistry;
+  let owner: OwnerService;
+  const generations = new Map<string, number>();
   const catalogJobs = new Map<string, Promise<CatalogModel[]>>();
   const quotaJobs = new Map<string, ReturnType<typeof fetchAccountQuotas>>();
   const catalogs = new Map<string, { models: CatalogModel[]; until: number }>();
@@ -303,33 +342,41 @@ export async function startControl(store: StateStore, origin: string, coordinato
     if (!fresh && cached && cached.until > Date.now()) return Promise.resolve(cached.models);
     let job = catalogJobs.get(id);
     if (!job) {
-      const coordinator = coordinators.get(id) ?? reject(409, "account unavailable; restart router after enrollment");
-      job = readCatalog(coordinator, store.loadConfig().upstreams?.[coordinator.account.provider]).then((models) => { catalogs.set(id, { models, until: Date.now() + 60_000 }); return models; }).finally(() => catalogJobs.delete(id));
+      const generation = generations.get(id);
+      const coordinator = coordinators.get(id) ?? reject(409, "account unavailable; enroll through owner administration");
+      job = readCatalog(coordinator, store.loadConfig().upstreams?.[coordinator.account.provider]).then((models) => { if (generation !== generations.get(id)) reject(409, "account changed during catalog read"); catalogs.set(id, { models, until: Date.now() + 60_000 }); return models; }).finally(() => catalogJobs.delete(id));
       catalogJobs.set(id, job);
     }
     return job;
   };
   const evidence = new PoolEvidence(id => catalog(id, true), id => fetchAccountQuotas(store.loadAccounts().find(a => a.id === id)!, store.workDir, quotaOptions));
   let active = 0;
+  let stopping = false;
+  let closing: Promise<void> | undefined;
   const server = http.createServer({ maxHeaderSize: 8192 }, (req, res) => {
     const reply = (status: number, body: object) => { res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }); res.end(JSON.stringify(body)); };
+    if (stopping) { reply(503, { error: "router stopping" }); req.resume(); return; }
     if (++active > 16) { active--; reply(503, { error: "control busy" }); req.resume(); return; }
     res.once("close", () => { active--; });
     void (async () => {
       if (req.headers.origin || req.headers.host !== "localhost") reject(403, "invalid control origin");
       const path = req.url;
-      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1"] });
-      let integration = path === "/v1/pair" ? undefined : registry.authenticate(req.headers.authorization);
+      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1"] });
+      const isOwner = path?.startsWith("/v1/owner/");
+      if (isOwner) owner.authenticate(req.headers.authorization);
+      let integration = path === "/v1/pair" || isOwner ? undefined : registry.authenticate(req.headers.authorization);
       if (req.method === "GET" && path === "/v1/accounts" && integration) return reply(200, { accounts: registry.accounts(integration) });
       if (req.method !== "POST") reject(404, "unknown control operation");
       let size = 0; const chunks: Buffer[] = [];
       for await (const chunk of req) { size += chunk.length; if (size > 16_384) reject(413, "request too large"); chunks.push(chunk); }
+      if (stopping) reject(503, "router stopping");
       let body: Record<string, unknown>;
       try { body = record(JSON.parse(Buffer.concat(chunks).toString())); } catch { return reject(400, "invalid JSON request"); }
+      if (isOwner) { owner.authenticate(req.headers.authorization); return reply(200, await owner.operation(path!.slice("/v1/owner/".length), body)); }
       if (path === "/v1/pair") return reply(200, registry.pair(body));
       integration = registry.authenticate(req.headers.authorization);
-      if (path === "/v1/pools/save") return reply(200, registry.savePool(integration, body));
-      if (path === "/v1/pools/remove") return reply(200, registry.removePool(integration, body));
+      if (path === "/v1/pools/save") return reject(403, "pools are managed by the local router owner");
+      if (path === "/v1/pools/remove") return reject(403, "pools are managed by the local router owner");
       if (path === "/v1/overview") return reply(200, registry.overview(integration, evidence, body));
       if (path === "/v1/overview/refresh") {
         const account = registry.account(integration, field(body, "accountId"));
@@ -346,10 +393,10 @@ export async function startControl(store: StateStore, origin: string, coordinato
       if (path === "/v1/disconnect") return reply(200, registry.revoke(integration));
       if (path === "/v1/catalog" || path === "/v1/quotas") {
         const account = registry.account(integration, field(body, "accountId"));
-        if (path === "/v1/catalog") return reply(200, { models: await catalog(account.id) });
+        if (path === "/v1/catalog") { const models = await catalog(account.id); registry.account(registry.authenticate(req.headers.authorization), account.id); return reply(200, { models }); }
         let job = quotaJobs.get(account.id);
         if (!job) { job = fetchAccountQuotas(account, store.workDir, quotaOptions).finally(() => quotaJobs.delete(account.id)); quotaJobs.set(account.id, job); }
-        return reply(200, await job);
+        const snapshot = await job; registry.account(registry.authenticate(req.headers.authorization), account.id); return reply(200, snapshot);
       }
       if (path === "/v1/bindings/prepare") {
         const account = registry.account(integration, field(body, "accountId"));
@@ -368,10 +415,16 @@ export async function startControl(store: StateStore, origin: string, coordinato
   await new Promise<void>((resolve, rejectPromise) => { server.once("error", rejectPromise); server.listen(socketPath, resolve); });
   chmodSync(socketPath, 0o600);
   const identity = lstatSync(socketPath);
-  try { registry = new ControlRegistry(store); } catch (error) { server.close(); throw error; }
-  return { registry, evidence, socketPath, close: async () => {
+  try { registry = new ControlRegistry(store); owner = new OwnerService(store, registry, coordinators, evidence, id => { generations.set(id, (generations.get(id) ?? 0) + 1); catalogs.delete(id); evidence.invalidate(id); }, origin, { active: lifecycle.active, busy: () => catalogJobs.size + quotaJobs.size + evidence.active() + Math.max(0, active - 1), stop: lifecycle.stop }); } catch (error) { server.close(); throw error; }
+  return { registry, evidence, socketPath, close: () => closing ??= (async () => {
+    stopping = true;
     server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // Retain socket ownership while children exit, so a replacement cannot
+    // start a second official login against the same profile during cleanup.
+    await owner.close();
+    const stopped = new Promise<void>((resolve) => server.close(() => resolve()));
+    server.closeAllConnections();
+    await stopped;
     if (existsSync(socketPath)) { const current = lstatSync(socketPath); if (current.ino === identity.ino && current.dev === identity.dev) unlinkSync(socketPath); }
-  } };
+  })() };
 }

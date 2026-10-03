@@ -42,6 +42,12 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   const origin = `http://${config.listen.host.includes(":") ? `[${config.listen.host}]` : config.listen.host}:${config.listen.port}`;
   const coordinators = buildCoordinators(store.loadAccounts(), store.workDir, origin);
   const clients = new LiveClients(store);
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => closing ??= (async () => {
+    // Stop admission synchronously before waiting for accepted streams.
+    const stopped = new Promise<void>(resolve => { router.server.close(() => resolve()); router.server.closeIdleConnections(); });
+    await control?.close(); await stopped;
+  })();
   let control: Awaited<ReturnType<typeof startControl>> | undefined;
   const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, onProviderResponse: (accountId, status, retryAfter) => control?.evidence.reject(accountId, status, retryAfter) });
 
@@ -52,7 +58,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   const address = router.server.address() as AddressInfo;
   const boundOrigin = `http://${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}`;
   if (process.platform !== "win32") {
-    try { control = await startControl(store, boundOrigin, coordinators, quotaOptions); }
+    try { control = await startControl(store, boundOrigin, coordinators, quotaOptions, { active: router.activeRequests, stop: () => { router.server.close(); setImmediate(() => { void close(); }); } }); }
     catch (error) { router.server.close(); throw error; }
   }
   log("router.listening", { origin: boundOrigin, accounts: coordinators.size });
@@ -62,12 +68,6 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
     origin: boundOrigin,
     coordinators,
     ...(control ? { controlSocket: control.socketPath } : {}),
-    close: async () => {
-      await control?.close();
-      return new Promise<void>((resolve) => {
-        router.server.close(() => resolve());
-        router.server.closeIdleConnections();
-      });
-    },
+    close,
   };
 }

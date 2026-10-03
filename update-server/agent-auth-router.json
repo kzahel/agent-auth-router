@@ -1,0 +1,9 @@
+{
+  "id": "agent-auth-router",
+  "displayName": "Agent Auth Router",
+  "hostnames": ["updates.graehlarts.com"],
+  "pathPrefix": "/agent-auth-router",
+  "githubRepo": "kzahel/agent-auth-router",
+  "tagPrefix": "desktop-v",
+  "tauriUpdates": true
+}

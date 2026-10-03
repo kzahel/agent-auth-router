@@ -1,5 +1,9 @@
 # Pools and quota overview
 
+Current ownership and schema-3 behavior: [owner management](owner-management.md).
+Router pools are now owner-managed; integration-scoped editing and pairing-time
+account snapshots below describe the legacy contract only.
+
 AAR engine and YA integration implemented 2026-10-03.
 
 The agreed [router ownership and desktop plan](router-owned-pools-and-desktop.md)

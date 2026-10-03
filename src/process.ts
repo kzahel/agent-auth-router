@@ -43,6 +43,7 @@ export function startBounded(options: StartOptions): BoundedProcess {
 
   let stderr = Buffer.alloc(0);
   child.stderr?.on("data", (chunk: Buffer) => {
+    if (maxStderr === 0) return;
     stderr = Buffer.concat([stderr, chunk]);
     if (stderr.length > maxStderr) stderr = stderr.subarray(stderr.length - maxStderr);
   });

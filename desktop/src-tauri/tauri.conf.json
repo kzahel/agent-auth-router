@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Agent Auth Router",
+  "version": "0.1.0",
+  "identifier": "com.graehlarts.agent-auth-router",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Agent Auth Router",
+        "width": 900,
+        "height": 760,
+        "minWidth": 520,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Manage local AI accounts and shared routing pools.",
+    "resources": {
+      "../resources/": "resources/"
+    },
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    },
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVCRkQ1RjY1QzlCQTYyNTYKUldSV1lyckpaVi85NjI5UnlHc2dzbVlnTmZRWmJIdWc0MzRES0lXQTMvaHE5YTFMSk1RNTdrQWsK",
+      "endpoints": [
+        "https://updates.graehlarts.com/agent-auth-router/tauri/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "requireSignedVersion": true
+    }
+  }
+}

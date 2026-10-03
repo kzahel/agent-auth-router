@@ -5,7 +5,7 @@ import type { Provider } from "./types.ts";
 
 export type PoolPolicy = "manual" | "round-robin";
 export interface Pool {
-  id: string; integrationId: string; name: string; provider: Provider;
+  id: string; name: string; provider: Provider;
   accountIds: string[]; policy: PoolPolicy; revision: number;
   deleted?: boolean; cursor?: string;
 }
@@ -56,8 +56,11 @@ export function eligibility(provider: Provider, enabled: boolean, model: string 
 
 /** Bounded, demand-owned observations; no timers, persistence or background work. */
 export class PoolEvidence {
+  private readonly generations = new Map<string, number>();
+  invalidate(id: string): void { this.generations.set(id, (this.generations.get(id) ?? 0) + 1); this.values.delete(id); this.retryAt.delete(id); }
   private readonly values = new Map<string, Observation>();
   private readonly jobs = new Map<string, Promise<Observation>>();
+  active(): number { return this.jobs.size; }
   private readonly retryAt = new Map<string, number>();
   private readonly catalog: (id: string) => Promise<CatalogModel[]>;
   private readonly quota: (id: string) => Promise<QuotaSnapshot>;
@@ -76,9 +79,10 @@ export class PoolEvidence {
     if (pending) return pending;
     if (this.jobs.size >= 4) return Promise.reject(new Error("quota refresh busy"));
     if ((this.retryAt.get(id) ?? 0) > Date.now()) return Promise.resolve(this.get(id));
-    const before = this.get(id);
+    const before = this.get(id), generation = this.generations.get(id);
     const job = (async () => {
       const [catalog, quota] = await Promise.allSettled([this.catalog(id), this.quota(id)]);
+      if (generation !== this.generations.get(id)) return this.get(id);
       const previous = this.get(id), attemptedAt = new Date(Date.now()).toISOString();
       const snapshot = quota.status === "fulfilled" && quota.value.status === "ok" ? quota.value : null;
       const error = catalog.status === "rejected" ? "Account catalog unavailable" : !snapshot ? "Quota refresh unavailable" : null;

@@ -16,7 +16,8 @@ function fixture() {
   registry.pair({ id: randomUUID(), name: "YA", tokenHash: hashGatewayToken(token) });
   const integration = registry.authenticate(`Bearer ${token}`), poolId = randomUUID();
   const pool = { id: poolId, name: "Personal", provider: "claude", accountIds: ["a", "b"], policy: "round-robin", revision: 0 };
-  registry.savePool(integration, pool);
+  registry.savePool(pool);
+  registry.grant({ id: integration.id, revision: 1, poolIds: [pool.id] });
   const evidence = new PoolEvidence(async () => [{ id: "claude-sonnet-fixture", name: "Fixture" }], async accountId => ({ accountId, provider: "claude", observedAt: new Date(Date.now()).toISOString(), status: "ok", windows: [{ bucket: "five_hour", windowMinutes: 300, usedPercent: 25, remainingPercent: 75, resetsAt: new Date(Date.now() + 60_000).toISOString() }] }));
   const allocation = () => ({ id: randomUUID(), poolId, provider: "claude", model: "claude-sonnet-fixture", tokenHash: hashGatewayToken(generateGatewayToken()) });
   return { store, registry, token, integration, pool, evidence, allocation };
@@ -45,19 +46,18 @@ test("pool edits are scoped, revision checked, and revoke removed pins without s
   const f = fixture(); await f.evidence.refresh("a");
   const body = { ...f.allocation(), policy: "manual", accountId: "a" };
   f.registry.preparePool(f.integration, body, f.evidence); f.registry.transition(f.integration, body.id, "commit", f.evidence);
-  assert.throws(() => f.registry.savePool(f.integration, f.pool), /changed/);
-  assert.throws(() => f.registry.savePool(f.integration, { ...f.pool, revision: 1, accountIds: ["not-granted"] }), /granted/);
+  assert.throws(() => f.registry.savePool(f.pool), /changed/);
+  assert.throws(() => f.registry.savePool({ ...f.pool, revision: 1, accountIds: ["not-granted"] }), /provider mismatch/);
   const otherToken = `aar_ctl_${Buffer.alloc(32, 6).toString("base64url")}`;
   f.registry.pair({ id: randomUUID(), name: "Other", tokenHash: hashGatewayToken(otherToken) });
   const other = f.registry.authenticate(`Bearer ${otherToken}`);
   assert.throws(() => f.registry.pool(other, f.pool.id), /not found/);
-  assert.throws(() => f.registry.savePool(other, { ...f.pool, revision: 1 }), /identity/);
-  f.registry.savePool(f.integration, { ...f.pool, revision: 1, accountIds: ["b"] });
+  f.registry.savePool({ ...f.pool, revision: 1, accountIds: ["b"] });
   assert.equal(f.registry.clients().length, 0);
   assert.throws(() => f.registry.transition(f.integration, body.id, "inspect"), /removed/);
   f.registry.transition(f.integration, body.id, "cancel");
-  f.registry.removePool(f.integration, { id: f.pool.id, revision: 2 });
-  assert.throws(() => f.registry.savePool(f.integration, { ...f.pool, revision: 3 }), /identity/);
+  f.registry.removePool({ id: f.pool.id, revision: 2 });
+  assert.throws(() => f.registry.savePool({ ...f.pool, revision: 3 }), /identity/);
 });
 
 test("eligibility handles stale, unknown, model-scoped exhaustion and elapsed resets conservatively", () => {
@@ -120,7 +120,7 @@ test("default-policy changes do not rerun an existing selection", async () => {
   const f = fixture(); await f.evidence.refresh("a");
   const body = f.allocation(), first = f.registry.preparePool(f.integration, body, f.evidence);
   f.registry.transition(f.integration, body.id, "commit", f.evidence);
-  f.registry.savePool(f.integration, { ...f.pool, revision: 1, policy: "manual" });
+  f.registry.savePool({ ...f.pool, revision: 1, policy: "manual" });
   assert.deepEqual({ ...(first as object), state: "committed" }, f.registry.preparePool(f.integration, body, f.evidence));
 });
 
@@ -145,7 +145,7 @@ test("manual version-one state upgrades without losing identity or grants", () =
   const registry = new ControlRegistry(f.store);
   assert.equal(registry.routerId, old.routerId);
   assert.equal(registry.authenticate(`Bearer ${f.token}`).id, f.integration.id);
-  assert.equal(JSON.parse(readFileSync(path, "utf8")).version, 2);
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).version, 3);
 });
 
 

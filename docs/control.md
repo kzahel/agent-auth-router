@@ -1,5 +1,9 @@
 # Local integration protocol v1
 
+Current ownership and schema-3 behavior: [owner management](owner-management.md).
+Router pools are now owner-managed; integration-scoped editing and pairing-time
+account snapshots below describe the legacy contract only.
+
 Implemented first slice: Manual account bindings over owner-only macOS/Linux
 Unix HTTP at `<state>/control.sock`. Windows control is unavailable. Inference
 remains on its separate authenticated loopback listener. Integration-scoped

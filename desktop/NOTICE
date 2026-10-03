@@ -1,0 +1,4 @@
+The macOS signing workflow and script adapt the operational sequence from
+Machine Control (https://github.com/kzahel/machine-control), copyright 2026
+Kyle Graehl, under the MIT license reproduced in MACHINE-CONTROL-LICENSE.
+The bundled Node runtime carries its own NODE-LICENSE in application resources.

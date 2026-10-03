@@ -1,9 +1,10 @@
 # Router-owned pools, live accounts and desktop app
 
-Status: direction agreed with the maintainer on 2026-10-03; implementation
-pending. This document records the next architectural slice, not shipped
-behavior or authorization to publish a release. Existing behavior is described
-in [control](control.md) and [pools](pools.md).
+Status: implementation in progress on 2026-10-03. Router ownership, live
+management, YA authority gates and the first Tauri app are implemented.
+See [owner management](owner-management.md) and [desktop setup and acceptance](../desktop/README.md).
+Signed GitHub candidate and installed upgrade acceptance remain separate gates;
+this document does not authorize public release publication.
 
 ## Goal and correction
 
@@ -179,3 +180,27 @@ YA's [router topic](https://github.com/kzahel/yepanywhere/blob/main/topics/agent
 remains its owning product contract; its
 [deferred follow-ups](https://github.com/kzahel/yepanywhere/blob/main/topics/agent-auth-router.md#deferred-follow-ups)
 retain the later candidates. This plan does not reprioritize unrelated YA work.
+
+## Implementation evidence (2026-10-03)
+
+- Schema-3 migration, distinct owner/use authority, shared pools and dynamic
+  grants/accounts are covered by the core synthetic suite. It includes retained
+  pins, no initial access for new pairings, revocation across two clients,
+  stale-read invalidation, retirement and isolated/cancellable official login.
+- The SHA-pinned YA suite passes all 10 cases for Claude and Codex, including
+  account enrollment into an existing grant without restart or re-pairing,
+  rotation, continuation, revocation and preserved pins after both servers restart.
+- YA capability 116 exposes management and direct-account authority, preserves
+  legacy-router editing, and hides pool-only accounts from standalone manual
+  choices. Full YA checks and three focused desktop/phone browser cases pass.
+- The first macOS bundle includes pinned Node 24.19.0 and compiled core code.
+  Installed smoke with system Node removed from PATH proves startup, enrollment,
+  retained core after shell exit, attachment and explicit idle stop.
+- Local ARM64 app and DMG signing/notarization/stapling and Gatekeeper checks
+  passed. This is a dirty-development-tree rehearsal, not a published release.
+  The signed app also runs the isolated installed smoke successfully.
+- GitHub candidate workflow, per-product updater key and product routing config
+  are implemented. Candidate CI still needs the private certificate password.
+  Production route registration, exact signed older-to-newer installed upgrade,
+  Intel execution, human browser consent and Windows acceptance are not yet
+  established by these tests. No public release is published by this workflow.
