@@ -80,6 +80,20 @@ Configure these repository secrets through private publisher infrastructure:
 `MACOS_SIGNING_IDENTITY`, `APPLE_TEAM_ID`. The updater key is unique to AAR.
 No private material, machine inventory or signing handoff belongs in this repo.
 
+To validate and upload an existing Developer ID certificate/password pair on
+macOS, after configuring `APPLE_TEAM_ID` and authenticating `gh`:
+
+```sh
+node desktop/scripts/upload-macos-certificate.mjs --p12 /path/to/publisher.p12 --set
+```
+
+The helper takes the export password through a hidden local dialog, verifies
+the container password, publisher identity and certificate validity, then sends
+both secrets to GitHub through stdin. Omit `--set` for validation only. It
+preserves the app's updater key and the other signing credentials. This follows
+the validate-before-upload procedure referenced by Desktop Release Kit; CI
+still establishes certificate import, signing and notarization acceptance.
+
 Product identity is `com.graehlarts.agent-auth-router`; the product-owned update
 configuration is [agent-auth-router.json](../update-server/agent-auth-router.json).
 Register that configuration with the shared update service before publishing.
