@@ -49,3 +49,20 @@ not isolate mutually malicious processes running as that account.
 The YA integration uses an immutable allocation ID independent of provider/YA
 session-ID remapping. Downgrading YA with routed app data is unsupported. Native
 compatibility and real renewal evidence remain separately recorded observations.
+
+## Yep Anywhere manual integration
+
+With AAR running, connect from YA's **Settings → Providers → Agent Auth Router**.
+Choose an enrolled account and its model in **New Session → advanced options**.
+YA keeps an independent client home and sends only derived inference credentials
+to native Claude/Codex processes. Pairing snapshots enabled account grants.
+Changing accounts requires a new session; a disconnected integration's sessions
+cannot silently adopt a new pairing. Failed native startup in YA requests
+binding cancellation, with durable retry if control is unavailable. Cancellation
+remains possible when an account has since been disabled.
+
+Verified on 2026-10-03 with isolated temporary YA/client homes: Claude Agent SDK
+0.3.283 and Codex CLI 0.159.0 completed native adapter turns, continuation and
+same-pin resume. The complete YA HTTP Codex path also passed restart/resume and
+tool approval. These are live integration observations, not renewal or
+cross-account continuation proofs. The synthetic AAR suite has 70 passing tests.

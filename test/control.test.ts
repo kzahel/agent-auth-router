@@ -103,3 +103,15 @@ test("control credentials cannot become inference credentials even if their hash
   const token = ctlToken();
   assert.equal(authorize([{id: "test", name: "test", tokenSha256: hashGatewayToken(token), accounts: {claude: "fixture"}, createdAt: new Date().toISOString()}], {authorization: `Bearer ${token}`}, "claude").ok, false);
 });
+
+test("failed launches can be cancelled after their account is disabled", {skip: process.platform === "win32"}, () => {
+  const store = storeFixture(), registry = new ControlRegistry(store), token = ctlToken();
+  registry.pair({id: randomUUID(), name:"YA", tokenHash:hashGatewayToken(token)});
+  const integration = registry.authenticate(`Bearer ${token}`), id = randomUUID();
+  registry.prepare(integration, {id, accountId:"fixture", provider:"claude", model:"synthetic", tokenHash:hashGatewayToken(generateGatewayToken())});
+  registry.transition(integration, id, "commit");
+  store.saveAccounts(store.loadAccounts().map(account => ({...account, enabled:false})));
+  registry.transition(integration, id, "cancel");
+  assert.equal(registry.binding(integration,id).state, "cancelled");
+  assert.equal(registry.clients().length,0);
+});

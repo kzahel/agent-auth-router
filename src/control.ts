@@ -131,7 +131,7 @@ export class ControlRegistry {
   }
   transition(integration: Integration, id: string, action: "commit" | "cancel" | "inspect"): object {
     const b = this.binding(integration, id);
-    this.account(integration, b.accountId);
+    if (action !== "cancel") this.account(integration, b.accountId);
     if (action === "inspect") return this.metadata(b);
     if (action === "commit" && (b.state === "cancelled" || (b.state === "prepared" && b.createdAt + PREPARE_MS <= Date.now()))) reject(409, "allocation cancelled or expired");
     const state = action === "commit" ? "committed" : "cancelled";
