@@ -1,3 +1,4 @@
+import type { QuotaReadOptions } from "./quotas.ts";
 import { startControl } from "./control.ts";
 import type { AddressInfo } from "node:net";
 import { CredentialCoordinator } from "./coordinator.ts";
@@ -35,14 +36,14 @@ export interface RunningRouter extends RouterServer {
   close(): Promise<void>;
 }
 
-export async function startRouter(store: StateStore): Promise<RunningRouter> {
+export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}): Promise<RunningRouter> {
   store.init();
   const config = store.loadConfig();
   const origin = `http://${config.listen.host.includes(":") ? `[${config.listen.host}]` : config.listen.host}:${config.listen.port}`;
   const coordinators = buildCoordinators(store.loadAccounts(), store.workDir, origin);
   const clients = new LiveClients(store);
   let control: Awaited<ReturnType<typeof startControl>> | undefined;
-  const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators });
+  const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, onProviderResponse: (accountId, status, retryAfter) => control?.evidence.reject(accountId, status, retryAfter) });
 
   await new Promise<void>((resolve, reject) => {
     router.server.once("error", reject);
@@ -51,7 +52,7 @@ export async function startRouter(store: StateStore): Promise<RunningRouter> {
   const address = router.server.address() as AddressInfo;
   const boundOrigin = `http://${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}`;
   if (process.platform !== "win32") {
-    try { control = await startControl(store, boundOrigin, coordinators); }
+    try { control = await startControl(store, boundOrigin, coordinators, quotaOptions); }
     catch (error) { router.server.close(); throw error; }
   }
   log("router.listening", { origin: boundOrigin, accounts: coordinators.size });

@@ -115,3 +115,31 @@ test("failed launches can be cancelled after their account is disabled", {skip: 
   assert.equal(registry.binding(integration,id).state, "cancelled");
   assert.equal(registry.clients().length,0);
 });
+
+test("pool HTTP overview is cached metadata and shares eligibility with native allocation", { skip: process.platform === "win32" }, async t => {
+  const store = storeFixture();
+  const upstream = await mockUpstream((_req, res, recorded) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(recorded.url === "/v1/models" ? { data: [{ id: "claude-sonnet-fixture" }] } : recorded.url === "/api/oauth/usage" ? { five_hour: { utilization: 20, resets_at: new Date(Date.now() + 3600000).toISOString() } } : { ok: true }));
+  });
+  writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
+  const router = await startRouter(store, { claudeOrigin: upstream.origin }); t.after(() => router.close());
+  const token = ctlToken(), socket = router.controlSocket!;
+  await request(socket, "/v1/pair", undefined, { id: randomUUID(), name: "YA", tokenHash: hashGatewayToken(token) });
+  const pool = { id: randomUUID(), name: "Personal", provider: "claude", policy: "round-robin", accountIds: ["fixture"], revision: 0 };
+  for (const path of ["/v1/overview", "/v1/overview/refresh", "/v1/pools/save", "/v1/pools/remove", "/v1/pools/prepare"]) assert.equal((await request(socket, path, undefined, {})).status, 401);
+  assert.equal((await request(socket, "/v1/pools/save", token, pool)).status, 200);
+  const read = () => request(socket, "/v1/overview", token, { poolId: pool.id, model: "claude-sonnet-fixture" });
+  assert.equal((await read()).value.selection.decisions[0].reason, "catalog-unknown"); assert.equal(upstream.requests.length, 0);
+  await request(socket, "/v1/overview/refresh", token, { accountId: "fixture" });
+  const overview = await read(); assert.equal(overview.value.selection.decisions[0].reason, "eligible");
+  assert.equal(overview.value.accounts[0].windows[0].remainingPercent, 80);
+  assert.doesNotMatch(JSON.stringify(overview.value), /synthetic-provider-secret|tokenHash|home|socketPath/);
+  const reads = upstream.requests.length; await read(); assert.equal(upstream.requests.length, reads);
+  const allocation = { id: randomUUID(), poolId: pool.id, provider: "claude", model: "claude-sonnet-fixture", tokenHash: hashGatewayToken(generateGatewayToken()) };
+  assert.equal((await request(socket, "/v1/pools/prepare", token, allocation)).value.accountId, "fixture");
+  assert.equal((await request(socket, "/v1/bindings/commit", token, { id: allocation.id })).status, 200);
+  await request(socket, "/v1/pools/remove", token, { id: pool.id, revision: 1 });
+  assert.equal((await request(socket, "/v1/bindings/inspect", token, { id: allocation.id })).status, 409);
+  assert.equal((await request(socket, "/v1/bindings/cancel", token, { id: allocation.id })).status, 200);
+});

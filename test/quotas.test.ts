@@ -138,3 +138,10 @@ test("Disabled and unsigned-in profiles make no quota requests", async () => {
   assert.equal((await fetchAccountQuotas({ ...account, enabled: false }, tempDir(), { claudeOrigin: upstream.origin })).error, "account disabled");
   assert.equal(upstream.requests.length, 0);
 });
+
+
+test("unknown Claude quota windows retain evidence instead of disappearing", () => {
+  assert.deepEqual(normalizeClaudeQuotas({ new_model_window: { utilization: 100, resets_at: "2026-10-10T00:00:00Z" } }), [
+    { bucket: "new_model_window", windowMinutes: null, usedPercent: 100, remainingPercent: 0, resetsAt: "2026-10-10T00:00:00.000Z" },
+  ]);
+});

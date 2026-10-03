@@ -80,6 +80,11 @@ export function normalizeClaudeQuotas(value: unknown): QuotaWindow[] {
     const data = object(result[bucket]);
     if (data) windows.push(window(bucket, bucket === "five_hour" ? 300 : 10080, data.utilization, iso(data.resets_at)));
   }
+  for (const [bucket, value] of Object.entries(result).slice(0, 64)) {
+    if (windows.some(w => w.bucket === bucket) || !/^[a-zA-Z0-9_.:-]{1,80}$/.test(bucket)) continue;
+    const data = object(value);
+    if (data && "utilization" in data) windows.push(window(bucket, null, data.utilization, iso(data.resets_at)));
+  }
   return windows;
 }
 

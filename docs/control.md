@@ -2,8 +2,10 @@
 
 Implemented first slice: Manual account bindings over owner-only macOS/Linux
 Unix HTTP at `<state>/control.sock`. Windows control is unavailable. Inference
-remains on its separate authenticated loopback listener. Automatic balancing,
-pools and remote control are not implemented.
+remains on its separate authenticated loopback listener. Integration-scoped
+Manual/Round robin pools and a cached quota overview are
+implemented; see [pool contracts](pools.md). Other policies and remote control
+remain deferred.
 
 All operations use bounded JSON, `Host: localhost`, no Origin header and a
 15-second request deadline. Responses contain metadata only; errors never include
