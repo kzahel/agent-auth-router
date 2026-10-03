@@ -39,7 +39,7 @@ export function authorize(
   provider: Provider,
 ): AuthDecision {
   const token = presentedToken(headers);
-  if (!token || !token.startsWith(TOKEN_PREFIX)) {
+  if (!token || !/^aar_[A-Za-z0-9_-]{43}$/.test(token)) {
     return { ok: false, status: 401, message: "missing or malformed gateway token" };
   }
   const presented = Buffer.from(hashGatewayToken(token), "hex");

@@ -5,7 +5,7 @@ import http from "node:http";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { ControlRegistry, startControl } from "../src/control.ts";
-import { generateGatewayToken, hashGatewayToken } from "../src/gateway-auth.ts";
+import { authorize, generateGatewayToken, hashGatewayToken } from "../src/gateway-auth.ts";
 import { startRouter } from "../src/runtime.ts";
 import { StateStore, writePrivateJson } from "../src/state.ts";
 import { mockUpstream, tempDir, writeClaudeCredentials } from "./support.ts";
@@ -97,4 +97,9 @@ test("control refuses insecure directories and occupied endpoints", { skip: proc
   chmodSync(store.dir, 0o700);
   const first = await startControl(store, "http://127.0.0.1:1", new Map()); after(() => first.close());
   await assert.rejects(startControl(store, "http://127.0.0.1:1", new Map()), /exists/);
+});
+
+test("control credentials cannot become inference credentials even if their hash is registered", () => {
+  const token = ctlToken();
+  assert.equal(authorize([{id: "test", name: "test", tokenSha256: hashGatewayToken(token), accounts: {claude: "fixture"}, createdAt: new Date().toISOString()}], {authorization: `Bearer ${token}`}, "claude").ok, false);
 });
