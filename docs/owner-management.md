@@ -18,10 +18,24 @@ explicit API authority boundary, not a sandbox against the same OS user.
 
 The desktop's native bridge and CLI read the owner key; the web view receives
 metadata only. Owner POST operations include `overview`, `providers`,
-`accounts/add`, `accounts/set-enabled`, `accounts/retire`, `accounts/login`,
+`accounts/add`, `accounts/set-nickname`, `accounts/set-enabled`, `accounts/retire`, `accounts/login`,
 `accounts/login-status`, `accounts/open-login`, `accounts/cancel-login`,
 `accounts/refresh`, `accounts/renew`, `pools/save`, `pools/remove`,
 `grants/save`, `integrations/revoke`, `clients/add`, `clients/revoke`, and `stop`.
+Owner account metadata includes the absolute profile folder, optional nickname and
+credential storage kind. Integration metadata does not expose these local details.
+Account IDs are stable and generated when omitted; nickname edits use the account
+revision and never change profile identity. Empty nicknames remove the label.
+
+The desktop opens the bundled `terminal-login <id>` CLI in macOS Terminal.
+Internal owner-only `accounts/terminal-begin`, `accounts/terminal-attach`,
+`accounts/terminal-status` and `accounts/terminal-end` operations track the runner
+and its official CLI process under a per-login nonce. These endpoints, process
+IDs and nonce are never exposed to the web view or integrators. The core holds
+the renewal/lifecycle exclusion until the child has exited, cancels on runner
+loss or a ten-minute deadline, and escalates termination after three seconds.
+The earlier headless `accounts/login` API remains available to CLI callers.
+
 All use bounded JSON bodies and the same running mutation authority.
 
 `aar owner <operation>` reads JSON from stdin. It contacts the running router,

@@ -148,6 +148,7 @@ export function validateAccounts(accounts: AccountConfig[]): AccountConfig[] {
   const homes = new Set<string>();
   for (const account of accounts) {
     if (!ACCOUNT_ID.test(account.id)) throw new Error(`invalid account id ${JSON.stringify(account.id)}`);
+    if (account.nickname !== undefined && (typeof account.nickname !== "string" || account.nickname.length > 80 || /[\x00-\x1f\x7f]/.test(account.nickname))) throw new Error("invalid account nickname");
     if (seen.has(account.id)) throw new Error(`duplicate account id ${account.id}`);
     if (!isProvider(account.provider)) throw new Error(`account ${account.id} has unknown provider`);
     if (typeof account.home !== "string" || !account.home.startsWith("/")) {

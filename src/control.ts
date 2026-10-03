@@ -238,7 +238,7 @@ export class ControlRegistry {
     return this.store.loadAccounts().find((a) => a.id === id && a.enabled !== false) ?? reject(409, "account unavailable");
   }
   accounts(integration?: Integration) {
-    return this.store.loadAccounts().filter((a) => (!integration || this.visibleIds(integration).has(a.id))).map((a) => ({ id: a.id, provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: a.helper ? "unverified" : "manual" }));
+    return this.store.loadAccounts().filter((a) => (!integration || this.visibleIds(integration).has(a.id))).map((a) => ({ id: a.id, ...(!integration ? { home: a.home, nickname: a.nickname ?? null, credentialStore: a.credentialStore ?? "file" } : {}), provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: a.helper ? "unverified" : "manual" }));
   }
   prepare(integration: Integration, body: Record<string, unknown>): object {
     const id = field(body, "id", UUID), accountId = field(body, "accountId"), model = field(body, "model"), tokenHash = field(body, "tokenHash", HASH);

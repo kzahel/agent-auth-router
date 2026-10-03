@@ -34,6 +34,8 @@ test("management UI preserves typing while observations update, and offers owner
       logins: [],
       accounts: Array.from({ length: 48 }, (_, i) => ({
         id: `work-${i + 1}`,
+        home: `/Users/example/.agent-auth-router/profiles/work-${i + 1}`,
+        nickname: null,
         provider: i < 24 ? "codex" : "claude",
         enabled: true,
         revision: 1,
@@ -42,7 +44,7 @@ test("management UI preserves typing while observations update, and offers owner
           {
             bucket: "primary",
             usedPercent: 32,
-            remainingPercent: 68,
+            remainingPercent: i === 1 ? 0 : i === 2 ? 100 : i === 3 ? null : 68,
             resetsAt: "2026-10-04T12:00:00Z",
             scope: "all",
           },
@@ -80,6 +82,9 @@ test("management UI preserves typing while observations update, and offers owner
           if (args.operation === "overview") {
             await new Promise((r) => setTimeout(r, 150));
             return structuredClone(state);
+          }
+          if (args.operation === "accounts/set-nickname") {
+            Object.assign(state.accounts.find(a => a.id === args.body.id), { nickname: args.body.nickname, revision: args.body.revision + 1 });
           }
           if (args.operation === "pools/save") {
             state.pools = [{ ...args.body, revision: args.body.revision + 1, bindings: [] }];
@@ -129,6 +134,32 @@ test("management UI preserves typing while observations update, and offers owner
     ),
   );
   await page.getByText("1 pool grants · 0 direct account grants", { exact: true }).waitFor();
+  const account = page.locator("#accounts article").first();
+  assert.equal(await account.getByRole("heading").textContent(), "/Users/example/.agent-auth-router/profiles/work-1");
+  assert.equal(await account.getByRole("progressbar").getAttribute("value"), "68");
+  await account.getByText("primary · 68% left", { exact: true }).waitFor();
+  assert.equal(await page.locator("#accounts article").nth(1).getByRole("progressbar").getAttribute("value"), "0");
+  assert.equal(await page.locator("#accounts article").nth(2).getByRole("progressbar").getAttribute("value"), "100");
+  assert.equal(await page.locator("#accounts article").nth(3).getByRole("progressbar").getAttribute("value"), null);
+  await account.getByRole("button", { name: "Edit nickname" }).click();
+  const nickname = page.locator("#nickname-form input[name=nickname]");
+  await nickname.fill("Work account");
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  assert.equal(await nickname.inputValue(), "Work account");
+  await page.getByRole("button", { name: "Save nickname" }).click();
+  await account.getByText("Work account", { exact: true }).waitFor();
+  await account.getByRole("button", { name: "Sign in", exact: true }).click();
+  assert.ok((await page.evaluate(() => window.operations)).some(o => o.operation === "accounts/terminal-login" && o.body.id === "work-1"));
+  assert.ok(!(await page.evaluate(() => window.operations)).some(o => o.operation === "accounts/login"));
+  await account.getByRole("button", { name: "Edit nickname" }).click();
+  await nickname.fill("");
+  await page.getByRole("button", { name: "Save nickname" }).click();
+  await page.waitForFunction(() => !document.querySelector("#accounts .nickname"));
+  await page.getByText("Add account", { exact: true }).first().click();
+  await page.locator("#account-form button").click();
+  const enrollment = (await page.evaluate(() => window.operations)).find(o => o.operation === "accounts/add");
+  assert.deepEqual(enrollment.body, { nickname: "", provider: "codex" });
+  await page.locator("details summary").click();
   // Present a compact account slice for visual inspection while preserving the volume test above.
   await page.evaluate(() =>
     [...document.querySelectorAll("#accounts article")].slice(4).forEach((el) => el.remove()),

@@ -1,10 +1,12 @@
 // Local owner authority. Never expose this credential or raw CLI output to a web view.
+import { TerminalLogin } from "./terminal-login.ts";
 import { BUILD_INFO } from "./build-info.ts";
 import { providerExecutable } from "./platform.ts";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { ControlError, type ControlRegistry } from "./control.ts";
 import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
@@ -95,6 +97,7 @@ export class OwnerService {
   private readonly invalidate: (id: string) => void;
   private readonly origin: string;
   private readonly lifecycle: { active(): number; busy?(): number; stop(): void };
+  private readonly terminals = new Map<string, TerminalLogin>();
   private readonly logins = new Map<
     string,
     {
@@ -134,6 +137,10 @@ export class OwnerService {
         throw new ControlError(404, "account not found");
       })()
     );
+  }
+  private nickname(value: unknown): string {
+    if (typeof value !== "string" || value.length > 80 || /[\x00-\x1f\x7f]/.test(value)) throw new ControlError(400, "nickname must be at most 80 characters without control characters");
+    return value.trim();
   }
   private coordinator(account: AccountConfig): CredentialCoordinator {
     return new CredentialCoordinator({
@@ -210,7 +217,7 @@ export class OwnerService {
         origin: this.origin,
         activeRequests: this.lifecycle.active(),
         integrations: this.registry.ownerIntegrations(),
-        logins: [...this.logins].map(([id, login]) => ({ id, status: login.status })),
+        logins: [...this.logins, ...this.terminals].map(([id, login]) => ({ id, status: login.status })),
       };
     if (operation === "pools/save") return this.registry.savePool(body);
     if (operation === "pools/remove") return this.registry.removePool(body);
@@ -220,7 +227,17 @@ export class OwnerService {
       if (!integration) throw new ControlError(404, "integration not found");
       return this.registry.revokeById(integration.id);
     }
+    if (operation === "accounts/set-nickname") {
+      const account = this.account(body);
+      if (body.revision !== (account.revision ?? 0)) throw new ControlError(409, "account changed; reload before editing");
+      const nickname = this.nickname(body.nickname);
+      const next = { ...account, revision: (account.revision ?? 0) + 1 };
+      if (nickname) next.nickname = nickname; else delete next.nickname;
+      this.store.saveAccounts(this.store.loadAccounts().map(a => a.id === next.id ? next : a));
+      return { updated: true };
+    }
     if (operation === "accounts/add") {
+      if (body.id === undefined) body.id = randomUUID();
       if (
         typeof body.id !== "string" ||
         !/^[a-z0-9][a-z0-9-]{0,62}$/.test(body.id) ||
@@ -229,6 +246,8 @@ export class OwnerService {
         throw new ControlError(400, "invalid account id or provider");
       const accounts = this.store.loadAccounts();
       if (accounts.length >= 256) throw new ControlError(409, "account limit reached");
+      if (typeof body.home === "string" && body.home.startsWith("~/")) body.home = join(homedir(), body.home.slice(2));
+      if (body.home !== undefined && (typeof body.home !== "string" || !isAbsolute(body.home))) throw new ControlError(400, "profile folder must be an absolute path");
       const home =
         body.home === undefined
           ? join(this.store.profilesDir, body.id)
@@ -236,6 +255,8 @@ export class OwnerService {
             ? resolve(body.home)
             : "";
       const account: AccountConfig = { id: body.id, provider: body.provider, home, revision: 1 };
+      const nickname = this.nickname(body.nickname ?? "");
+      if (nickname) account.nickname = nickname;
       if (body.credentialStore !== undefined) {
         if (
           body.credentialStore !== "file" &&
@@ -290,7 +311,7 @@ export class OwnerService {
       const coordinator = this.coordinators.get(next.id);
       if (coordinator) coordinator.account.enabled = next.enabled;
       // Preserve the existing coordinator and accepted streams; admission reads enabled state.
-      if (!next.enabled) this.logins.get(next.id)?.process.terminate();
+      if (!next.enabled) { this.logins.get(next.id)?.process.terminate(); this.terminals.get(next.id)?.cancel(); }
       this.invalidate(next.id);
       return { updated: true };
     }
@@ -329,22 +350,47 @@ export class OwnerService {
         )();
       return {
         id: account.id,
-        credentialStatus: result.status,
-        loginStatus: this.logins.get(account.id)?.status ?? "idle",
+        credentialStatus: result.status === "ok" && result.credential.expiresAt !== undefined && result.credential.expiresAt <= Date.now() ? "expired" : result.status,
+        expiresAt: result.status === "ok" && result.credential.expiresAt !== undefined ? new Date(result.credential.expiresAt).toISOString() : null,
+        loginStatus: this.terminals.get(account.id)?.status ?? this.logins.get(account.id)?.status ?? "idle",
         canOpenLogin: this.logins.get(account.id)?.status === "running" && !!this.logins.get(account.id)?.url,
       };
+    }
+    if (operation.startsWith("accounts/terminal-")) {
+      const account = this.account(body);
+      if (operation === "accounts/terminal-begin") {
+        if (account.enabled === false || this.terminals.get(account.id)?.busy() || this.logins.get(account.id)?.status === "running") throw new ControlError(409, "account unavailable or sign-in already running");
+        if (!Number.isSafeInteger(body.pid) || (body.pid as number) <= 1 || body.pid === process.pid) throw new ControlError(400, "invalid terminal process");
+        const coordinator = this.coordinators.get(account.id);
+        if (!coordinator?.beginLogin()) throw new ControlError(409, "account authentication already running");
+        this.logins.delete(account.id);
+        const terminal = new TerminalLogin(body.pid as number, () => { coordinator.endLogin(); this.invalidate(account.id); });
+        this.terminals.set(account.id, terminal);
+        this.invalidate(account.id);
+        return { token: terminal.token };
+      }
+      const terminal = this.terminals.get(account.id);
+      if (!terminal || body.token !== terminal.token) throw new ControlError(409, "terminal sign-in changed");
+      if (operation === "accounts/terminal-attach") {
+        if (!Number.isSafeInteger(body.pid) || (body.pid as number) <= 1 || body.pid === process.pid) throw new ControlError(400, "invalid CLI process");
+        terminal.attach(body.pid as number);
+      } else if (operation === "accounts/terminal-end") terminal.end(body.success === true);
+      else if (operation !== "accounts/terminal-status") throw new ControlError(404, "unknown terminal operation");
+      return { status: terminal.status };
     }
     if (operation === "accounts/login") {
       const account = this.account(body);
       if (account.enabled === false) throw new ControlError(409, "account disabled");
       if (
         this.logins.get(account.id)?.status === "running" ||
+        this.terminals.get(account.id)?.busy() ||
         this.coordinators.get(account.id)?.status().state === "renewing"
       )
         throw new ControlError(409, "account authentication already running");
       const coordinator = this.coordinators.get(account.id);
       if (!coordinator?.beginLogin())
         throw new ControlError(409, "account authentication already running");
+      this.terminals.delete(account.id);
       this.invalidate(account.id);
       const child = startBounded({
         command: providerExecutable(account.provider),
@@ -419,6 +465,7 @@ export class OwnerService {
       return { opened: true };
     }
     if (operation === "accounts/cancel-login") {
+      this.terminals.get(this.account(body).id)?.cancel();
       const account = this.account(body),
         login = this.logins.get(account.id);
       if (login) {
@@ -434,7 +481,8 @@ export class OwnerService {
         this.lifecycle.active() ||
         this.lifecycle.busy?.() ||
         [...this.coordinators.values()].some((c) => c.status().state === "renewing") ||
-        [...this.logins.values()].some((l) => l.status === "running")
+        [...this.logins.values()].some((l) => l.status === "running") ||
+        [...this.terminals.values()].some(t => t.busy())
       )
         throw new ControlError(409, "router busy; finish requests and logins before stopping");
       this.lifecycle.stop();
@@ -445,5 +493,6 @@ export class OwnerService {
   async close(): Promise<void> {
     for (const login of this.logins.values()) login.process.terminate();
     await Promise.all([...this.logins.values()].map((l) => l.process.done));
+    await Promise.all([...this.terminals.values()].map(t => t.close()));
   }
 }

@@ -37,6 +37,8 @@ export type HelperConfig =
 
 export interface AccountConfig {
   id: string;
+  /** Optional owner-editable label; never an identity or profile path. */
+  nickname?: string;
   provider: Provider;
   /** Dedicated CODEX_HOME or CLAUDE_CONFIG_DIR. */
   home: string;

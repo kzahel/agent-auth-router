@@ -9,17 +9,21 @@ pools, grants and sessions live in the same default state directory as `aar`.
 ## Use
 
 1. Open the app. It attaches to an available local router or starts its core.
-2. Choose **Check installed CLIs**, install the official Claude Code/Codex CLI
-   if needed, then **Add account**. IDs are stable; profiles are dedicated.
-   The Mac adapter selects Claude's profile-scoped Keychain storage; Codex uses
-   its dedicated file store. The core's explicit storage choices remain available.
-3. Choose **Sign in** and complete the official browser consent. **Check
-   sign-in** reports completion and can offer **Open sign-in page** if automatic
-   browser opening failed. Raw auth output and credentials never reach the UI. The command shapes were
-   checked against Claude Code 2.1.280 and Codex CLI 0.159.0; actual browser
-   consent remains a human verification step.
+2. Choose **Check installed CLIs**, then **Add account**. Select a profile folder
+   (or let AAR create a dedicated one) and an optional nickname. The folder is
+   the primary label. **Edit nickname** changes or clears the label without
+   moving the folder or changing routing identity. Mac Claude profiles use
+   their profile-scoped Keychain entry; Codex uses its dedicated file store.
+3. **Sign in** opens Terminal with that profile and a clean provider environment.
+   Choose browser or device-code login for Codex, subscription or SSO login for
+   Claude, then follow the official CLI prompts. The CLI has interactive input
+   and output; AAR does not capture that output in the app. **Check sign-in**
+   distinguishes readable stored credentials from expired ones. **Cancel sign-in**
+   stops the terminal login; closing the terminal also cleans up the official
+   login process. Login has a ten-minute deadline and excludes renewal and core
+   stop/update until it finishes. No inference is needed to sign in.
 4. Create a single-provider Work pool. Manual chooses an account explicitly;
-   Round robin requires fresh model and quota evidence. Use **Refresh usage**.
+   Round robin requires fresh model and quota evidence. Use **Refresh usage**. Bars show quota remaining: 100% is full, 0% is empty.
 5. Connect YA, then use **Manage access** here to grant YA the Work pool. Reload
    YA's overview. Account and membership changes need no restart or re-pairing.
 

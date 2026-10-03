@@ -263,7 +263,7 @@ test("private owner enrollment and grants take effect without restart or re-pair
   );
   assert.doesNotMatch(
     JSON.stringify(await ownerRequest(store, "overview")),
-    /synthetic|tokenHash|owner_|profiles/,
+    /synthetic|tokenHash|owner_/,
   );
 });
 
@@ -380,4 +380,30 @@ test("official login is isolated, bounded, cancellable and never projects raw ou
   await stopped;
   assert.throws(() => process.kill(closingPid!, 0), { code: "ESRCH" }, "shutdown reaps the official login");
   await router.close();
+});
+
+test("owner profile metadata, optional nicknames and expiry preserve identity and integration privacy", async t => {
+  const store = new StateStore(tempDir("owner-profile-"));
+  store.init(); writeFileSync(join(store.dir, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }), { mode: 0o600 });
+  const router = await startRouter(store); t.after(() => router.close());
+  const added = await ownerRequest(store, "accounts/add", { provider: "claude", nickname: "  Work  " });
+  assert.match(added.id, /^[a-z0-9-]+$/);
+  const original = store.loadAccounts()[0]!;
+  writeClaudeCredentials(original.home, "expired-fixture", Date.now() - 1000);
+  assert.equal((await ownerRequest(store, "accounts/login-status", { id: added.id })).credentialStatus, "expired");
+  const overview = await ownerRequest(store, "overview");
+  assert.equal(overview.accounts[0].home, original.home);
+  assert.equal(overview.accounts[0].nickname, "Work");
+  await ownerRequest(store, "accounts/set-nickname", { id: added.id, revision: 1, nickname: "Personal" });
+  await assert.rejects(ownerRequest(store, "accounts/set-nickname", { id: added.id, revision: 1, nickname: "stale" }), /changed/);
+  await assert.rejects(ownerRequest(store, "accounts/set-nickname", { id: added.id, revision: 2, nickname: "bad\nname" }), /nickname/);
+  await ownerRequest(store, "accounts/set-nickname", { id: added.id, revision: 2, nickname: "" });
+  const current = store.loadAccounts()[0]!;
+  assert.equal(current.id, original.id); assert.equal(current.home, original.home);
+  assert.equal(current.nickname, undefined);
+  await assert.rejects(ownerRequest(store, "accounts/add", { provider: "claude", home: "relative" }), /absolute/);
+  const f = fixture();
+  f.registry.grant({ id: f.first.id, revision: 1, poolIds: [f.pool.id] });
+  const client = f.registry.accounts(f.first)[0]!;
+  assert.equal("home" in client, false); assert.equal("nickname" in client, false);
 });

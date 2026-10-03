@@ -234,3 +234,6 @@ footer {
     font-size: 26px;
   }
 }
+
+.profile-path { overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 13px; }
+.nickname { margin: 0 0 10px; font-weight: 600; }

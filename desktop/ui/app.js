@@ -42,12 +42,13 @@ function check(container, value, label, selected) {
   container.append(row);
 }
 const checked = (id) => [...$(id).querySelectorAll("input:checked")].map((el) => el.value);
+const accountLabel = a => `${a.home ?? a.id}${a.nickname ? ` · ${a.nickname}` : ""}`;
 function members(selected = []) {
   $("members").replaceChildren();
   for (const a of snapshot.accounts.filter(
     (a) => a.provider === $("pool-form").elements.provider.value,
   ))
-    check($("members"), a.id, `${a.id}${a.enabled ? "" : " · disabled"}`, selected.includes(a.id));
+    check($("members"), a.id, `${accountLabel(a)}${a.enabled ? "" : " · disabled"}`, selected.includes(a.id));
 }
 function editPool(pool) {
   const form = $("pool-form");
@@ -87,7 +88,7 @@ function editGrants(integration) {
       integration.poolIds.includes(pool.id),
     );
   for (const a of snapshot.accounts)
-    check($("grant-accounts"), a.id, a.id, integration.accountIds.includes(a.id));
+    check($("grant-accounts"), a.id, accountLabel(a), integration.accountIds.includes(a.id));
 }
 async function reload() {
   const generation = ++observationGeneration;
@@ -104,7 +105,8 @@ async function reload() {
   for (const a of next.accounts) {
     const card = element("article", undefined, "card");
     card.append(
-      element("h3", a.id),
+      element("h3", a.home ?? a.id, "profile-path"),
+      ...(a.nickname ? [element("p", a.nickname, "nickname")] : []),
       element(
         "span",
         `${a.provider} · ${a.retired ? "retired" : a.enabled ? "enabled" : "disabled"} · usage ${a.freshness}`,
@@ -116,12 +118,13 @@ async function reload() {
       row.append(
         element(
           "span",
-          `${w.bucket} · ${w.usedPercent === null ? "unknown" : `${w.usedPercent}% used`}`,
+          `${w.bucket} · ${w.remainingPercent == null ? "Remaining unknown" : `${w.remainingPercent}% left`}`,
         ),
       );
       const bar = element("progress");
       bar.max = 100;
-      if (w.usedPercent !== null) bar.value = w.usedPercent;
+      if (w.remainingPercent != null) bar.value = w.remainingPercent;
+      bar.setAttribute("aria-label", `${w.bucket} remaining`);
       row.append(bar);
       row.append(
         element(
@@ -141,17 +144,18 @@ async function reload() {
     const actions = element("div", undefined, "actions");
     actions.append(
       button("Sign in", async () => {
-        await api("accounts/login", { id: a.id });
+        await api("accounts/terminal-login", { id: a.id });
         await reload();
       }),
       button("Check sign-in", async () => {
         const s = await api("accounts/login-status", { id: a.id });
         card.append(
-          element("p", `Credentials: ${s.credentialStatus} · sign-in ${s.loginStatus}`, "hint"),
+          element("p", `${s.credentialStatus === "expired" ? "Session expired — sign in again" : s.credentialStatus === "ok" ? "Stored credentials readable" : `Credentials: ${s.credentialStatus}`} · sign-in ${s.loginStatus}`, "hint"),
         );
         if (s.canOpenLogin)
           card.append(button("Open sign-in page", () => api("accounts/open-login", { id: a.id })));
       }),
+      button("Edit nickname", () => editNickname(a)),
       button("Refresh usage", async () => {
         await api("accounts/refresh", { id: a.id });
         await reload();
@@ -215,7 +219,7 @@ async function reload() {
         `${p.provider} · ${p.policy === "manual" ? "Manual" : "Round robin"} · ${p.accountIds.length} accounts`,
         "badge",
       ),
-      element("p", p.accountIds.join(", "), "hint"),
+      element("p", p.accountIds.map(id => accountLabel(next.accounts.find(a => a.id === id) ?? { id })).join(", "), "hint profile-path"),
       button("Edit pool", () => editPool(p)),
     );
     $("pools").append(card);
@@ -262,6 +266,25 @@ async function reload() {
   if (!next.integrations.length)
     $("integrations").append(element("p", "No integrations connected yet.", "hint"));
 }
+function editNickname(a) {
+  const form = $("nickname-form");
+  form.hidden = false;
+  form.elements.id.value = a.id;
+  form.elements.revision.value = a.revision;
+  form.elements.nickname.value = a.nickname ?? "";
+  $("nickname-profile").textContent = a.home ?? a.id;
+  form.elements.nickname.focus();
+}
+$("nickname-form").onsubmit = e => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  void run(async () => {
+    await api("accounts/set-nickname", { id: form.elements.id.value, revision: Number(form.elements.revision.value), nickname: form.elements.nickname.value });
+    form.hidden = true;
+    await reload();
+  }, form.querySelector("button"));
+};
+$("cancel-nickname").onclick = () => { $("nickname-form").hidden = true; };
 $("providers").onclick = () =>
   run(async () => {
     const result = await api("providers");
@@ -288,6 +311,7 @@ $("account-form").onsubmit = (e) => {
   const form = e.currentTarget,
     body = Object.fromEntries(new FormData(form));
   void run(async () => {
+    if (!body.home) delete body.home;
     await api("accounts/add", body);
     form.reset();
     await reload();

@@ -6,6 +6,15 @@ See [owner management](owner-management.md) and [desktop setup and acceptance](.
 Installed upgrade acceptance remains a separate gate;
 this document does not authorize public release publication.
 
+## First-use UI correction
+
+The maintainer's first desktop walkthrough requested profile folders as the main
+account label, optional editable nicknames, quota bars showing remaining capacity,
+and interactive terminal sign-in. These replace the first candidate's ID-first
+cards, used-quota bars and piped browser-only login action. Terminal sign-in uses
+normal official CLI authentication with the selected profile; it does not import
+the user's default login or implement OAuth exchange/refresh itself.
+
 ## Goal and correction
 
 Install AAR, add and sign in to work accounts, create a Work pool, grant YA

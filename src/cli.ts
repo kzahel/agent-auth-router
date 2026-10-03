@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Local administration shares the running owner service over private IPC.
 
+import { terminalLogin } from "./terminal-login.ts";
 import { ownerRequest } from "./owner.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -150,6 +151,10 @@ async function main(argv: string[]): Promise<void> {
       }
       fail("account requires add, list, quotas or login-command");
     }
+    case "terminal-login":
+      if (!sub) fail("terminal-login requires an account id");
+      await terminalLogin(store, sub);
+      return;
     case "owner-request":
     case "owner": {
       if (!sub) fail("owner requires an operation (for example overview or pools/save); JSON body on stdin");

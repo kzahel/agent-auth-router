@@ -7,6 +7,7 @@ import { tempDir } from "./support.ts";
 
 test("printed login commands preserve literal profile paths and Claude clears auth/storage overrides", { skip: process.platform === "win32" }, () => {
   const state = tempDir();
+  writeFileSync(join(state, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }), { mode: 0o600 });
   const bin = join(state, "bin"); mkdirSync(bin);
   const script = '#!/usr/bin/env node\nconsole.log(JSON.stringify({argv:process.argv.slice(2),home:process.argv[1].endsWith("/claude")?process.env.CLAUDE_CONFIG_DIR:process.env.CODEX_HOME,base:process.env.ANTHROPIC_BASE_URL,token:process.env.CLAUDE_CODE_OAUTH_TOKEN,storage:process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR,cloud:process.env.CLAUDE_CODE_USE_BEDROCK}));\n';
   for (const provider of ["claude", "codex"] as const) {
@@ -30,6 +31,7 @@ test("printed login commands preserve literal profile paths and Claude clears au
 
 test("quota CLI selects an enrolled account, reports unavailable metadata and exits nonzero", () => {
   const state = tempDir();
+  writeFileSync(join(state, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }), { mode: 0o600 });
   for (const id of ["one", "two"]) {
     execFileSync(process.execPath, ["src/cli.ts", "--state", state, "account", "add", id, "--provider", "claude", "--helper", "none"], { stdio: "pipe" });
   }
