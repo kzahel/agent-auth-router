@@ -5,9 +5,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
 import { credentialReaderFor } from "./credentials.ts";
 import { generateGatewayToken, hashGatewayToken } from "./gateway-auth.ts";
+import { fetchAccountQuotas } from "./quotas.ts";
 import { buildCoordinators, startRouter } from "./runtime.ts";
 import { defaultStateDir, ensurePrivateDir, StateStore } from "./state.ts";
 import { isProvider, PROVIDERS, type AccountConfig, type GatewayClientRecord, type Provider } from "./types.ts";
@@ -16,7 +18,9 @@ const USAGE = `usage: aar [--state DIR] <command>
 
   init                                   create the private state directory
   account add <id> --provider P [--home DIR] [--helper codex-app-server|none]
+                  [--credential-store file|claude-keychain]
   account list                           show enrollment and expiry metadata
+  account quotas [id]                    fetch quota percentages and reset times (JSON)
   account login-command <id>             print the official CLI login command
   renew <id>                             run the renewal helper once and verify
   client add <name> [--claude ACCT] [--codex ACCT]
@@ -32,11 +36,12 @@ function fail(message: string): never {
 }
 
 function loginCommand(account: AccountConfig): string {
-  const home = JSON.stringify(account.home);
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const home = quote(account.home);
   if (account.provider === "codex") {
     return `env -u OPENAI_BASE_URL -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME=${home} codex login`;
   }
-  return `env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=${home} claude auth login`;
+  return `env -i PATH="$PATH" HOME="$HOME" USER=${quote(userInfo().username)} CLAUDE_CONFIG_DIR=${home} claude auth login --claudeai`;
 }
 
 function clientSnippets(origin: string, token: string, accounts: Partial<Record<Provider, string>>): string {
@@ -71,6 +76,7 @@ async function main(argv: string[]): Promise<void> {
       provider: { type: "string" },
       home: { type: "string" },
       helper: { type: "string" },
+      "credential-store": { type: "string" },
       claude: { type: "string" },
       codex: { type: "string" },
       help: { type: "boolean", short: "h" },
@@ -94,11 +100,19 @@ async function main(argv: string[]): Promise<void> {
       if (sub === "add") {
         if (!arg) fail("account add requires an id");
         if (!isProvider(values.provider)) fail(`--provider must be one of ${PROVIDERS.join(", ")}`);
+        const credentialStore = values["credential-store"];
+        if (credentialStore !== undefined && credentialStore !== "file" && credentialStore !== "claude-keychain") {
+          fail("--credential-store must be file or claude-keychain");
+        }
+        if (credentialStore === "claude-keychain" && (values.provider !== "claude" || process.platform !== "darwin")) {
+          fail("claude-keychain requires a Claude account on macOS");
+        }
         store.init();
         const home = resolve(values.home ?? join(store.profilesDir, arg));
         ensurePrivateDir(home);
         const helperKind = values.helper ?? (values.provider === "codex" ? "codex-app-server" : "none");
         const account: AccountConfig = { id: arg, provider: values.provider, home };
+        if (credentialStore) account.credentialStore = credentialStore;
         if (helperKind === "codex-app-server") account.helper = { kind: "codex-app-server" };
         else if (helperKind !== "none") fail("--helper must be codex-app-server or none");
         if (values.provider === "codex" && !existsSync(join(home, "config.toml"))) {
@@ -111,7 +125,7 @@ async function main(argv: string[]): Promise<void> {
       }
       if (sub === "list") {
         for (const account of accounts) {
-          const result = await credentialReaderFor(account.provider, account.home)();
+          const result = await credentialReaderFor(account.provider, account.home, account.credentialStore)();
           const detail =
             result.status === "ok"
               ? `expires ${result.credential.expiresAt ? new Date(result.credential.expiresAt).toISOString() : "unknown"}`
@@ -125,7 +139,16 @@ async function main(argv: string[]): Promise<void> {
         process.stdout.write(loginCommand(account) + "\n");
         return;
       }
-      fail("account requires add, list or login-command");
+      if (sub === "quotas") {
+        const selected = arg ? [accounts.find((account) => account.id === arg) ?? fail(`unknown account ${arg}`)] : accounts;
+        store.init();
+        const snapshots = [];
+        for (const account of selected) snapshots.push(await fetchAccountQuotas(account, store.workDir));
+        process.stdout.write(JSON.stringify(snapshots, null, 2) + "\n");
+        if (snapshots.some((snapshot) => snapshot.status !== "ok")) process.exitCode = 2;
+        return;
+      }
+      fail("account requires add, list, quotas or login-command");
     }
     case "renew": {
       // Phase-1 experiment: force one helper run and report what changed,
@@ -134,7 +157,7 @@ async function main(argv: string[]): Promise<void> {
       store.init();
       const coordinators = buildCoordinators(store.loadAccounts(), store.workDir, undefined);
       const coordinator = coordinators.get(id) ?? fail(`unknown account ${id}`);
-      const before = await credentialReaderFor(coordinator.account.provider, coordinator.account.home)();
+      const before = await credentialReaderFor(coordinator.account.provider, coordinator.account.home, coordinator.account.credentialStore)();
       if (before.status !== "ok") fail(`credential not readable before renewal: ${before.reason}`);
       const renewed = await coordinator.recoverFromUnauthorized(before.credential);
       const status = coordinator.status();

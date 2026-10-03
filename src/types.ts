@@ -40,6 +40,8 @@ export interface AccountConfig {
   provider: Provider;
   /** Dedicated CODEX_HOME or CLAUDE_CONFIG_DIR. */
   home: string;
+  /** Explicit, version-specific Keychain opt-in; absent selects file storage. */
+  credentialStore?: "file" | "claude-keychain";
   enabled?: boolean;
   /** Absent means the router can read but not renew this account. */
   helper?: HelperConfig;

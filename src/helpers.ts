@@ -102,6 +102,8 @@ const EXIT_GRACE_MS = 5_000;
  * `refreshToken: true`, which the 0.155 schema documents as triggering the
  * normal refresh-token flow in managed auth mode. Whether the refreshed
  * credential is durably persisted is verified by the coordinator, not here.
+ * Read cached account state first: a null account after a failed forced
+ * refresh does not establish that an enrolled profile needs a new login.
  */
 async function runCodexAppServer(
   config: Extract<HelperConfig, { kind: "codex-app-server" }>,
@@ -182,7 +184,21 @@ async function runCodexAppServer(
   }
   send({ method: "initialized" });
 
-  const read = await request(2, "account/read", { refreshToken: true });
+  const initial = await request(2, "account/read", { refreshToken: false });
+  if (!initial) {
+    const detail = `${describeExit(await proc.done)} before initial account/read completed`;
+    return finish({ outcome: "failed", detail: protocolError ?? detail });
+  }
+  if ("error" in initial) return finish({ outcome: "failed", detail: rpcError(initial) });
+  const initialResult = initial.result as { account?: { type?: unknown } | null } | undefined;
+  if (!initialResult?.account) {
+    return finish({ outcome: "login_required", detail: "app-server reports no signed-in account before refresh" });
+  }
+  if (initialResult.account.type !== "chatgpt") {
+    return finish({ outcome: "failed", detail: `profile account type is ${String(initialResult.account.type)}, not chatgpt` });
+  }
+
+  const read = await request(3, "account/read", { refreshToken: true });
   if (!read) {
     const detail = `${describeExit(await proc.done)} before account/read completed`;
     return finish({ outcome: "failed", detail: protocolError ?? detail });
@@ -190,7 +206,7 @@ async function runCodexAppServer(
   if ("error" in read) return finish({ outcome: "failed", detail: rpcError(read) });
   const result = read.result as { account?: { type?: unknown } | null; requiresOpenaiAuth?: unknown } | undefined;
   if (!result?.account) {
-    return finish({ outcome: "login_required", detail: "app-server reports no signed-in account" });
+    return finish({ outcome: "failed", detail: "app-server returned no account after refresh; renewal was not verified" });
   }
   if (result.account.type !== "chatgpt") {
     return finish({ outcome: "failed", detail: `profile account type is ${String(result.account.type)}, not chatgpt` });

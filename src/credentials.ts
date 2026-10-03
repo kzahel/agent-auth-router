@@ -5,16 +5,18 @@
 //   and `tokens.account_id` (openai/codex codex-rs/login, see docs/sources.md).
 // - Claude Code file storage: `$CLAUDE_CONFIG_DIR/.credentials.json` with
 //   `claudeAiOauth.accessToken` and `claudeAiOauth.expiresAt` (epoch ms).
-//   On macOS Claude Code normally uses the Keychain instead; no Keychain
-//   reader exists yet.
+//   On macOS an explicit claude-keychain enrollment reads only the derived
+//   profile-specific entry (Claude Code 2.1.280 observation).
 //
 // Readers never write, repair or truncate the store, and never return
 // refresh tokens.
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { Provider, UpstreamCredential } from "./types.ts";
+import { isAbsolute, join } from "node:path";
+import { userInfo } from "node:os";
+import { helperEnv, startBounded } from "./process.ts";
+import type { AccountConfig, Provider, UpstreamCredential } from "./types.ts";
 
 export type ReadResult =
   | { status: "ok"; credential: UpstreamCredential }
@@ -24,7 +26,11 @@ export type ReadResult =
 
 export type CredentialReader = () => Promise<ReadResult>;
 
-export function credentialReaderFor(provider: Provider, home: string): CredentialReader {
+export function credentialReaderFor(provider: Provider, home: string, store?: AccountConfig["credentialStore"]): CredentialReader {
+  if (store === "claude-keychain") {
+    if (provider !== "claude") return async () => ({ status: "unsupported", reason: "Keychain store requires Claude" });
+    return () => readClaudeKeychain(home);
+  }
   return provider === "codex" ? () => readCodexFile(home) : () => readClaudeFile(home);
 }
 
@@ -111,19 +117,80 @@ export async function readClaudeFile(home: string): Promise<ReadResult> {
   const parsed = await readJson(join(home, ".credentials.json"));
   if (parsed.status !== "json") {
     if (parsed.status === "missing" && process.platform === "darwin") {
-      return { status: "unsupported", reason: "no credential file; macOS Keychain storage is not readable yet" };
+      return { status: "unsupported", reason: "no credential file; enroll the profile with claude-keychain storage if needed" };
     }
     return parsed;
   }
-  const oauth = record(record(parsed.value)?.claudeAiOauth);
+  return claudeCredential(parsed.value);
+}
+
+function claudeCredential(value: unknown): ReadResult {
+  const oauth = record(record(value)?.claudeAiOauth);
   if (!oauth) return { status: "unsupported", reason: "profile has no Claude subscription OAuth credential" };
   const accessToken = oauth.accessToken;
   if (typeof accessToken !== "string" || !accessToken) {
     return { status: "malformed", reason: "Claude access token absent" };
   }
-  const expiresAt = typeof oauth.expiresAt === "number" && Number.isFinite(oauth.expiresAt) ? oauth.expiresAt : undefined;
+  const expiresAt = typeof oauth.expiresAt === "number" && Number.isFinite(oauth.expiresAt) && oauth.expiresAt > 0 ? oauth.expiresAt : undefined;
   return {
     status: "ok",
     credential: { accessToken, expiresAt, accountId: undefined, revision: revisionOf(accessToken) },
   };
+}
+
+/** No unsuffixed/default-service fallback and no Keychain enumeration. */
+export function claudeKeychainService(home: string): string {
+  if (!isAbsolute(home)) throw new Error("Keychain profile home must be absolute");
+  const suffix = createHash("sha256").update(home.normalize("NFC")).digest("hex").slice(0, 8);
+  return `Claude Code-credentials-${suffix}`;
+}
+
+/** Overrides exist for synthetic process fixtures, never account configuration. */
+export interface KeychainReadOptions {
+  platform?: NodeJS.Platform;
+  username?: string;
+  command?: string;
+  args?: string[];
+  timeoutMs?: number;
+}
+
+export async function readClaudeKeychain(home: string, options: KeychainReadOptions = {}): Promise<ReadResult> {
+  if ((options.platform ?? process.platform) !== "darwin") {
+    return { status: "unsupported", reason: "Claude Keychain storage requires macOS" };
+  }
+  let service: string;
+  try { service = claudeKeychainService(home); }
+  catch { return { status: "malformed", reason: "Keychain profile home must be absolute" }; }
+  const username = options.username ?? userInfo().username;
+  if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
+    return { status: "unsupported", reason: "OS username is unsupported by this Keychain reader" };
+  }
+  const proc = startBounded({
+    command: options.command ?? "/usr/bin/security",
+    args: [...(options.args ?? []), "find-generic-password", "-a", username, "-w", "-s", service],
+    env: helperEnv("claude", home),
+    cwd: home,
+    timeoutMs: options.timeoutMs ?? 5_000,
+    killGraceMs: 100,
+    maxStderrBytes: 0,
+  });
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let oversized = false;
+  proc.child.stdout?.on("data", (chunk: Buffer) => {
+    size += chunk.length;
+    if (size > 64 * 1024) { oversized = true; proc.terminate(); return; }
+    chunks.push(chunk);
+  });
+  proc.child.stdin?.on("error", () => {});
+  proc.child.stdin?.end();
+  const result = await proc.done;
+  if (oversized) return { status: "malformed", reason: "Keychain credential exceeds size bound" };
+  if (result.timedOut) return { status: "malformed", reason: "Keychain read timed out" };
+  if (result.code === 44) return { status: "missing", reason: "profile-specific Keychain credential not found" };
+  if (result.code !== 0 || result.signal) return { status: "malformed", reason: "profile-specific Keychain credential unreadable" };
+  let value: unknown;
+  try { value = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { return { status: "malformed", reason: "Keychain credential is not valid JSON" }; }
+  return claudeCredential(value);
 }

@@ -5,9 +5,12 @@ accounts. Clients authenticate to the router with revocable gateway tokens;
 the router selects an account and authenticates upstream with that account's
 current provider credential.
 
-**Status: early prototype.** A headless Node/TypeScript slice exists and is
-tested only against synthetic credentials, fake helpers and mock upstreams.
-It has not been used with real accounts or real clients. See
+**Status: early prototype.** A headless Node/TypeScript slice is tested against
+synthetic credentials, fake helpers and mock upstreams. An authorized real
+Codex client and a real Claude Code client each completed one streamed
+interaction through the router using gateway tokens. Claude's dedicated
+macOS Keychain entry is read through an explicit enrollment mode. Durable
+renewal remains unverified for both providers. See
 [prototype status](docs/prototype.md).
 
 ```sh
@@ -15,6 +18,19 @@ npm install
 npm run check          # typecheck + tests
 npm run aar -- --help
 ```
+
+Fetch current quota percentages and reset times for enrolled accounts:
+
+```sh
+npm run aar -- account quotas          # all enrolled accounts
+npm run aar -- account quotas <id>     # one enrolled account
+```
+
+This on-demand command returns metadata-only JSON and exits with status 2 if
+any selected account is unavailable. It requests usage metadata without
+inference. Codex uses the official app-server quota RPC; Claude uses the
+internal OAuth usage endpoint observed in Claude Code 2.1.280. There is no
+background polling or automatic account switching.
 
 The implementation direction is Node.js with TypeScript, headless first, with
 a small embedded HTML/CSS/JavaScript dashboard. A desktop tray application can

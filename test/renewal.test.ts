@@ -139,7 +139,7 @@ describe("credential coordinator", () => {
 });
 
 describe("codex app-server helper", () => {
-  test("initialize, initialized, account/read{refreshToken} renews and the reread credential is accepted", async () => {
+  test("cached account read then forced refresh renews and the reread credential is accepted", async () => {
     captureLogs();
     const account = codexAccount("codex-renew", "renew");
     writeCodexAuth(account.home, fakeJwt(nowSeconds() + 30, "old"));
@@ -153,9 +153,9 @@ describe("codex app-server helper", () => {
     assert.ok(coordinator.status().lastRenewedAt);
 
     const methods = rpcLog(account.home).filter((entry) => "method" in entry || "id" in entry).map((entry) => entry.method);
-    assert.deepEqual(methods, ["initialize", "initialized", "account/read"]);
-    const read = rpcLog(account.home).find((entry) => entry.method === "account/read");
-    assert.deepEqual(read?.params, { refreshToken: true });
+    assert.deepEqual(methods, ["initialize", "initialized", "account/read", "account/read"]);
+    const reads = rpcLog(account.home).filter((entry) => entry.method === "account/read");
+    assert.deepEqual(reads.map((entry) => entry.params), [{ refreshToken: false }, { refreshToken: true }]);
 
     // Restart: a new coordinator reads the persisted credential without renewing.
     const restarted = coordinatorFor(account);
@@ -198,6 +198,36 @@ describe("codex app-server helper", () => {
     writeCodexAuth(account.home, fakeJwt(nowSeconds() - 10, "old"));
     const coordinator = coordinatorFor(account);
     await assert.rejects(coordinator.credential(), (error: unknown) => error instanceof CredentialUnavailable && error.state === "login_required");
+    const reads = rpcLog(account.home).filter((entry) => entry.method === "account/read");
+    assert.deepEqual(reads.map((entry) => entry.params), [{ refreshToken: false }]);
+  });
+
+  test("null account after refresh is unavailable with backoff, not evidence of a missing login", async () => {
+    captureLogs();
+    const account = codexAccount("codex-refresh-failed", "refresh-failed");
+    writeCodexAuth(account.home, fakeJwt(nowSeconds() - 10, "old"));
+    const coordinator = coordinatorFor(account);
+    await assert.rejects(coordinator.credential(), (error: unknown) => error instanceof CredentialUnavailable && error.state === "unavailable");
+    assert.equal(coordinator.status().state, "unavailable");
+    assert.match(coordinator.status().lastError ?? "", /no account after refresh/);
+    assert.ok(coordinator.status().retryAfter);
+    await assert.rejects(coordinator.credential());
+    assert.equal(coordinator.status().helperRuns, 1);
+  });
+
+  test("failed refresh leaves a due but unexpired credential usable", async () => {
+    captureLogs();
+    const account = codexAccount("codex-refresh-fallback", "refresh-failed");
+    writeCodexAuth(account.home, fakeJwt(nowSeconds() + 30, "old"));
+    const before = await credentialReaderFor("codex", account.home)();
+    const coordinator = coordinatorFor(account);
+    const credential = await coordinator.credential();
+    assert.ok(before.status === "ok");
+    assert.equal(credential.revision, before.credential.revision);
+    assert.equal(coordinator.status().state, "ready");
+    assert.ok(coordinator.status().retryAfter);
+    assert.equal((await coordinator.credential()).revision, credential.revision);
+    assert.equal(coordinator.status().helperRuns, 1);
   });
 
   test("server-initiated requests are declined instead of hanging", async () => {

@@ -18,7 +18,7 @@ export function buildCoordinators(
       account.id,
       new CredentialCoordinator({
         account,
-        read: credentialReaderFor(account.provider, account.home),
+        read: credentialReaderFor(account.provider, account.home, account.credentialStore),
         helper: account.helper ? helperFor(account.helper) : undefined,
         helperContext: routerOrigin ? { workDir, routerOrigin } : { workDir },
       }),

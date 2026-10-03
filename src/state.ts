@@ -131,6 +131,12 @@ export function validateAccounts(accounts: AccountConfig[]): AccountConfig[] {
     if (typeof account.home !== "string" || !account.home.startsWith("/")) {
       throw new Error(`account ${account.id} home must be an absolute path`);
     }
+    if (account.credentialStore !== undefined && account.credentialStore !== "file" && account.credentialStore !== "claude-keychain") {
+      throw new Error(`account ${account.id} has unknown credential store`);
+    }
+    if (account.credentialStore === "claude-keychain" && account.provider !== "claude") {
+      throw new Error(`account ${account.id}: claude-keychain requires a Claude account`);
+    }
     // Two accounts sharing a home would share one refresh credential.
     const home = resolve(account.home);
     if (homes.has(home)) throw new Error(`account ${account.id} shares a profile home with another account`);

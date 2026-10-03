@@ -1,5 +1,5 @@
 // Stand-in for `codex app-server` over stdio. Usage: node fake-codex-app-server.ts <mode>
-// Modes: renew | unchanged | logged-out | hang | server-request
+// Modes: renew | unchanged | logged-out | refresh-failed | hang | server-request
 import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -34,7 +34,7 @@ function handle(message: { id?: number; method?: string; params?: { refreshToken
   }
   if (message.method !== "account/read") return;
   if (mode === "hang") return;
-  if (mode === "logged-out") {
+  if (mode === "logged-out" || (mode === "refresh-failed" && message.params?.refreshToken)) {
     send({ id: message.id, result: { account: null, requiresOpenaiAuth: true } });
     return;
   }
