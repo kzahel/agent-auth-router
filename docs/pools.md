@@ -1,24 +1,50 @@
 # Pools and quota overview
 
 Current ownership and schema-3 behavior: [owner management](owner-management.md).
-Router pools are now owner-managed; integration-scoped editing and pairing-time
-account snapshots below describe the legacy contract only.
+AAR owns single-provider pools; integrations receive use grants. Owner pool edits
+and live enrollment require no restart or re-pairing. YA renders scoped metadata
+and requests allocation; it cannot administer router-owned pools.
 
-AAR engine and YA integration implemented 2026-10-03.
+## Most remaining and admission refresh (2026-10-04)
 
-The agreed [router ownership and desktop plan](router-owned-pools-and-desktop.md)
-replaces integration-owned pools and restart/re-pair enrollment as the target
-architecture. That correction is not implemented yet; this document describes
-the current behavior.
+Policies are Manual, Round robin and **Most remaining**. The latter compares each
+eligible account's minimum remaining percentage across applicable reported
+windows, highest first. Automatic policies first prefer the fewest unexpired
+startup reservations within the pool; ties follow membership order after its
+durable cursor. Commit advances the cursor once. These are relative percentages,
+not estimates of remaining tokens or promises a session will fit.
 
-AAR owns integration-scoped, single-provider pools and the same eligibility
-projection used by its metadata overview and allocator. YA renders that overview
-and exposes explicit pool edits and refresh. No independent HTTP dashboard,
-background polling, OAuth change, load-aware Auto, or cross-account replay is
-part of this slice.
+New automatic admission refreshes missing/stale/failed evidence and windows whose
+reset has passed. Fresh evidence is reused. Up to four account metadata reads run
+at once across admission/overview refresh callers, coalesced per account. A pool
+has at most 16 members, and admission has a 12-second deadline. Failed account
+reads exclude that account while successful candidates remain usable. Existing
+Retry-After backoff and auth/rate-limit blocks apply; no idle polling is added.
+An elapsed reset is never a fabricated refill. Cancellation stops queued work and
+prevents a late pin; shared in-flight reads finish within their provider deadlines.
+Grants, pool revision, enabled state and eligibility are rechecked before admission.
+Existing committed pins bypass selection and quota refresh on resume/restart.
 
-Pools have a name, ordered unique account subset (at most 16), Manual or Round
-robin default, and an optimistic revision. Pool edits cannot widen pairing
+`/v1/info` advertises `most-remaining-v1`, `admission-refresh-v1` and
+`supportedPolicies`. Overview adds `supportedPolicies`, `admissionRefresh` and
+per-candidate `evidence` (headroom, limiting bucket IDs, reservation count, catalog
+and quota timestamps). Reads stay passive. Bindings persist `policyVersion`,
+`selectionEvidence` and a human-readable reason before reply. Most remaining
+prepare requires a `supportedPolicies` array containing `most-remaining`, even
+when it is the pool default. An old client receives upgrade guidance before
+provider I/O rather than silently running a policy it does not understand.
+YA gates the policy with optional capability 117 and connected-router support.
+
+Desktop pool editing exposes Most remaining; YA exposes its session selection and
+cached headroom preview. Unknown/missing observations remain explicit. Model
+catalog discovery can still require an initial explicit refresh. Whole-pool
+refresh controls, weekly reset and task-aware Auto remain follow-ups in
+[routing policies](routing-policies.md).
+
+## Shared allocation behavior
+
+Pools have a name, ordered unique account subset (at most 16), Manual, Round
+robin or Most remaining default, and an optimistic revision. Owner pool membership edits change the accounts available through its use
 grants. Removing members or deleting a pool blocks affected retained bindings;
 policy/name changes affect future selection only. The overview reports affected
 binding counts. Deleted pool IDs cannot be reused.
@@ -32,7 +58,7 @@ Unknown model scope blocks automatic admission; it is never inferred from a
 quota percentage. Claude's explicit Opus/Sonnet windows apply to their model
 families; unknown Codex limit IDs remain unknown rather than model entitlements.
 
-Round robin requires an enabled, granted account, fresh catalog membership and
+Round robin and Most remaining require an enabled, granted account, fresh catalog membership and
 fresh applicable quota evidence with headroom and future resets. Manual can
 proceed without quota evidence, but cannot ignore a known applicable exhausted
 window or failed model validation. Fresh metadata is evidence, not a guarantee
@@ -54,23 +80,27 @@ Synthetic engine tests cover quota scopes/freshness, concurrent allocation,
 retry/cancellation boundaries, pool ownership/edits and the authenticated HTTP
 overview. YA browser coverage checks desktop/phone rendering and sequential
 typing under concurrent updates. The SHA-pinned integration suite exercises
-parallel pool launches, same-pin restart/resume, exhaustion and pool deletion
-through both native provider adapters.
+parallel pool launches, cold Most remaining admission, same-pin restart/resume,
+exhaustion and pool deletion through both native provider adapters. Verification
+on 2026-10-04 passed 99 core tests, 3 desktop tests and all 12 SHA-pinned
+integration/tripwire tests. These use synthetic credentials and upstreams.
 
 ## Control API
 
 `pools-v1` is an additive `/v1/info` capability. Authenticated owner-socket
-operations are POST `/v1/pools/save` (id/name/provider/accountIds/policy/revision),
-`/v1/pools/remove` (id/revision), `/v1/overview` (optional poolId/model/policy),
+owner mutations are POST `/v1/owner/pools/save` (id/name/provider/accountIds/policy/revision)
+and `/v1/owner/pools/remove` (id/revision). Integration use operations include
+`/v1/overview` (optional poolId/model/policy),
 `/v1/overview/refresh` (accountId), and `/v1/pools/prepare` (allocation UUID,
-poolId/provider/model/tokenHash, optional policy and manual accountId).
+poolId/provider/model/tokenHash, optional policy and manual accountId, and
+`supportedPolicies` for Most remaining).
 Save uses revision 0 for creation and the current revision for updates/deletion.
 Existing binding commit/cancel/inspect operations also handle pool allocations.
 
 Cancelling an allocation whose prepare was rejected or whose response was lost
 records a scoped terminal cancellation. A later prepare cannot revive it.
 Upstream 401/403/429 observations block new pool admission until a successful
-explicit refresh after the bounded retry period. In-flight observations cannot
+explicit or admission refresh after the bounded retry period. In-flight observations cannot
 erase a newer rejection. These observations are memory-only; restart discards
 them and automatic admission requires new evidence. Manual is an explicit
 unknown-quota override, not an authentication bypass.
@@ -84,8 +114,8 @@ authorization. Downgrading routed state is unsupported.
 Research resumed on 2026-10-04 in [routing policies](routing-policies.md): pinned
 CLIProxyAPI/VibeProxy observations, Most remaining and Soonest weekly reset
 proposals, explicit window/tie/reservation semantics and a verification plan.
-Only Manual and Round robin are implemented; the new document records discussion,
-not shipped policy support.
+Most remaining and admission refresh are now implemented as described above;
+the remaining candidates are discussion, not shipped policy support.
 
 The maintainer deferred further extensions on 2026-10-03. The YA owning topic
 records [pool refresh/admission, Most remaining, and clone/helper inheritance](https://github.com/kzahel/yepanywhere/blob/main/topics/agent-auth-router.md#deferred-follow-ups)

@@ -86,6 +86,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
   const credentials = [];
   let abandoned = 0;
   let quotaUsed = 25;
+  const accountQuota = new Map();
   const upstream = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -98,7 +99,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
     });
     if (request.url === "/api/oauth/usage") {
       response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ five_hour: { utilization: quotaUsed, resets_at: new Date(Date.now() + 3600000).toISOString() }, seven_day: { utilization: 40, resets_at: new Date(Date.now() + 86400000).toISOString() } }));
+      response.end(JSON.stringify({ five_hour: { utilization: accountQuota.get(request.headers.authorization) ?? quotaUsed, resets_at: new Date(Date.now() + 3600000).toISOString() }, seven_day: { utilization: 40, resets_at: new Date(Date.now() + 86400000).toISOString() } }));
       return;
     }
     if (request.url.includes("models")) {
@@ -342,7 +343,13 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
     store,
     accounts,
     credentials,
+    setAccountQuota: (id, used) => {
+      const account = accounts.find(a => a.id === id);
+      writeFileSync(join(account.home, "quota-used.json"), JSON.stringify(used));
+      accountQuota.set(`Bearer synthetic-${provider}-${id}-access`, used);
+    },
     setQuota: (used) => {
+      accountQuota.clear();
       for (const account of accounts) { writeFileSync(join(account.home, "quota-used.json"), JSON.stringify(used)); }
       // Claude responses use the fixture's shared value; both accounts are changed.
       quotaUsed = used;
@@ -903,5 +910,40 @@ for (const provider of ["codex", "claude"]) {
     await f.owner("pools/remove", { id: pool.id, revision: 3 });
     const response = await fetch(`${f.router().origin}/${provider}${provider === "claude" ? "/v1/messages" : "/responses"}`, { method: "POST", headers: { authorization: `Bearer ${pins[0].token}` }, body: "{}" });
     assert.equal(response.status, 401, "Pool deletion revokes every derived pin");
+  });
+}
+
+
+for (const provider of ["claude", "codex"]) {
+  test(`${provider}: Most remaining refreshes cold admission and retains its pin after restart`, { timeout: 180_000 }, async t => {
+    const f = await fixture(t, provider);
+    await f.connect({ socketPath: f.router().socket });
+    f.setAccountQuota("selected", 90);
+    f.setAccountQuota("other", 30);
+    const pool = { id: randomUUID(), name: "Headroom", provider, policy: "most-remaining", accountIds: ["selected", "other"], revision: 0 };
+    await f.owner("pools/save", pool);
+    const integration = (await f.owner("overview")).integrations.find(i => !i.revoked);
+    await f.owner("grants/save", { id: integration.id, revision: integration.revision, poolIds: [pool.id] });
+    const overview = await f.api("/agent-auth-router/overview", { poolId: pool.id, model: "synthetic-model" });
+    assert.ok(overview.value.supportedPolicies.includes("most-remaining"));
+    assert.equal(overview.value.selection.decisions[0].reason, "catalog-unknown");
+    const startPath = `/projects/${Buffer.from(f.project).toString("base64url")}/sessions`;
+    const start = await f.api(startPath, { message: "most-remaining", provider, model: "synthetic-model", routerPoolId: pool.id, routerPolicy: "most-remaining", mode: "bypassPermissions" });
+    const idle = await eventually(async () => (await f.api("/processes")).value.processes.find(p => p.id === start.value.processId && p.state === "idle"), "Most remaining native turn finishes");
+    const allocation = Object.values(f.privateState().allocations)[0];
+    assert.equal(allocation.accountId, "other");
+    const registry = JSON.parse(readFileSync(join(f.store.dir, "control.json"), "utf8"));
+    const binding = registry.bindings.find(b => b.id === allocation.id);
+    assert.equal(binding.policy, "most-remaining");
+    assert.equal(binding.selectionEvidence.headroomPercent, 60);
+    assert.match(binding.reason, /60%/);
+    await f.api(`/processes/${start.value.processId}/abort`, {});
+    await f.restartYA(); await f.restartRouter();
+    f.setAccountQuota("other", 99);
+    f.setAccountQuota("selected", 0);
+    await f.api(`/projects/${Buffer.from(f.project).toString("base64url")}/sessions/${idle.sessionId}/resume`, { message: "headroom-resume", provider, model: "synthetic-model" });
+    await eventually(() => f.upstreamRequests.some(r => r.body.includes("headroom-resume")), "resume keeps its original account");
+    assert.equal(Object.values(f.privateState().allocations)[0].accountId, "other");
+    assert.equal(Object.values(f.privateState().allocations)[0].token, allocation.token);
   });
 }

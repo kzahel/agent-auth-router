@@ -125,8 +125,11 @@ test("management UI preserves typing while observations update, and offers owner
     samples.every((s) => s.retained && s.elapsed < 100),
     JSON.stringify(samples),
   );
+  await page.locator("#pool-form select[name=policy]").selectOption("most-remaining");
   await page.getByRole("button", { name: "Save pool", exact: true }).click();
   await page.getByRole("heading", { name, exact: true }).waitFor();
+  await page.getByText("codex · Most remaining · 2 accounts", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.fixtureState.pools[0].policy), "most-remaining");
   await page.getByRole("tab", { name: "Connections", exact: true }).click();
   await page.getByRole("button", { name: "Manage access", exact: true }).click();
   await page.locator("#grant-pools input").check();

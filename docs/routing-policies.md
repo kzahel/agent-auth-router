@@ -1,7 +1,9 @@
 # Pool routing policies: research and proposed behavior
 
-Research date: 2026-10-04. Status: discussion and implementation proposal, not
-new runtime behavior. AAR currently implements **Manual** and **Round robin**.
+Research date: 2026-10-04. The original proposals below remain dated research.
+**Implemented follow-up:** Most remaining and bounded admission refresh now join
+Manual and Round robin; [pools](pools.md) records the shipped-source contract.
+Soonest weekly reset, Auto and task-size hints remain proposals.
 This document records the maintainer's request to explore quota-aware policies,
 especially using allowance before its weekly window resets.
 

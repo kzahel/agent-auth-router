@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { hashGatewayToken } from "./gateway-auth.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
 import { fetchAccountQuotas, type QuotaReadOptions } from "./quotas.ts";
-import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, type Pool, type PoolPolicy } from "./pools.ts";
+import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, isPoolPolicy, rankCandidates, selectionEvidence, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
 import type { CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
 import type { GatewayClientRecord, Provider } from "./types.ts";
@@ -19,6 +19,7 @@ interface Binding {
   id: string; integrationId: string; accountId: string; provider: Provider;
   model: string; tokenHash: string; state: "prepared" | "committed" | "cancelled";
   createdAt: number;
+  policyVersion?: number; selectionEvidence?: SelectionEvidence;
   poolId?: string; policy?: PoolPolicy; request?: string; reason?: string; observedAt?: string | undefined;
 }
 interface ControlState { version: 3; routerId: string; integrations: Integration[]; bindings: Binding[]; pools?: Pool[]; cancellations?: { id: string; integrationId: string }[] }
@@ -122,7 +123,7 @@ export class ControlRegistry {
     if (body.revision !== (existing?.revision ?? 0)) reject(409, "pool changed; reload before editing");
     if (body.provider !== "codex" && body.provider !== "claude") reject(400, "invalid pool provider");
     if (existing && body.provider !== existing.provider) reject(409, "pool provider cannot change");
-    if (body.policy !== "manual" && body.policy !== "round-robin") reject(400, "invalid pool policy");
+    if (!isPoolPolicy(body.policy)) reject(400, "invalid pool policy");
     const accountIds = body.accountIds;
     if (!Array.isArray(accountIds) || !accountIds.length || accountIds.length > 16 || new Set(accountIds).size !== accountIds.length) reject(400, "choose 1 to 16 distinct pool accounts");
     for (const id of accountIds as unknown[]) {
@@ -161,49 +162,84 @@ export class ControlRegistry {
       windows: o.quota?.windows.map(w => ({ ...w, scope: windowScope(a.provider, w.bucket) })) ?? [] }; });
     const pool = body.poolId === undefined ? undefined : (integration ? this.pool(integration, field(body, "poolId", UUID)) : this.pools().find(p => p.id === field(body, "poolId", UUID)) ?? reject(404, "pool not found"));
     const policy = body.policy ?? pool?.policy;
-    if (policy !== undefined && policy !== "manual" && policy !== "round-robin") reject(400, "invalid pool policy");
+    if (policy !== undefined && !isPoolPolicy(policy)) reject(400, "invalid pool policy");
     const decisions = pool?.accountIds.map(accountId => { const a = accounts.find(a => a.id === accountId); return { accountId,
-      reason: eligibility(pool.provider, !!a?.enabled, model, evidence.get(accountId), policy !== "manual", now) }; });
-    return { canManagePools: !integration, observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
+      reason: eligibility(pool.provider, !!a?.enabled, model, evidence.get(accountId), policy !== "manual", now),
+      ...(model ? { evidence: selectionEvidence(pool.provider, evidence.get(accountId), model, this.reservations(pool.id, accountId, now)) } : {}) }; });
+    return { supportedPolicies: POOL_POLICIES, admissionRefresh: true, canManagePools: !integration, observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
       pools: this.pools(integration).map(p => this.poolMetadata(p, integration)), accounts,
       ...(pool ? { selection: { poolId: pool.id, policy, model: model ?? null, decisions } } : {}) };
   }
-  preparePool(integration: Integration, body: Record<string, unknown>, evidence: PoolEvidence): object {
+  private reservations(poolId: string, accountId: string, now: number): number {
+    return this.state.bindings.filter(b => b.poolId === poolId && b.accountId === accountId && b.state === "prepared" && b.createdAt + PREPARE_MS > now).length;
+  }
+  private poolRequest(integration: Integration, body: Record<string, unknown>) {
     const id = field(body, "id", UUID), poolId = field(body, "poolId", UUID), model = field(body, "model"), tokenHash = field(body, "tokenHash", HASH);
     const pool = this.pool(integration, poolId);
     if (body.provider !== pool.provider) reject(400, "provider mismatch");
     const requestedPolicy = body.policy;
-    if (requestedPolicy !== undefined && requestedPolicy !== "manual" && requestedPolicy !== "round-robin") reject(400, "invalid pool policy");
+    if (requestedPolicy !== undefined && !isPoolPolicy(requestedPolicy)) reject(400, "invalid pool policy");
     const manual = body.accountId === undefined ? undefined : field(body, "accountId");
     const request = JSON.stringify([poolId, model, body.provider, requestedPolicy ?? null, manual ?? null, tokenHash]);
     if (this.state.cancellations?.some(c => c.id === id && c.integrationId === integration.id)) reject(409, "allocation cancelled");
     const existing = this.state.bindings.find(b => b.id === id);
-    if (existing) {
-      if (existing.integrationId !== integration.id || existing.request !== request) reject(409, "allocation conflicts with existing pin");
-      if (!this.poolAllows(existing)) reject(409, "pinned account removed from pool");
-      return this.prepare(integration, { id, accountId: existing.accountId, provider: existing.provider, model, tokenHash });
-    }
-    const policy = (requestedPolicy ?? pool.policy) as PoolPolicy;
+    if (existing && (existing.integrationId !== integration.id || existing.request !== request)) reject(409, "allocation conflicts with existing pin");
+    if (existing && !this.poolAllows(existing)) reject(409, "pinned account removed from pool");
+    const policy = existing?.policy ?? (requestedPolicy ?? pool.policy) as PoolPolicy;
+    if (!isPoolPolicy(policy)) reject(409, "unsupported pool policy; update router");
+    if (policy === "most-remaining" && (!Array.isArray(body.supportedPolicies) || !body.supportedPolicies.includes(policy))) reject(409, "update client to use Most remaining");
     if (policy === "manual" && !manual) reject(400, "manual pool selection requires an account");
-    if (policy === "round-robin" && manual) reject(400, "round robin cannot specify an account");
+    if (policy !== "manual" && manual) reject(400, "automatic selection cannot specify an account");
+    if (manual && !pool.accountIds.includes(manual)) reject(403, "account not in pool");
+    return { id, poolId, model, tokenHash, pool, request, existing, policy, manual };
+  }
+  async preparePoolWithRefresh(integration: Integration, body: Record<string, unknown>, evidence: PoolEvidence, signal: AbortSignal, timeoutMs = 12_000): Promise<object> {
+    const initial = this.poolRequest(integration, body);
+    if (initial.existing) return this.preparePool(integration, body, evidence);
+    const controller = new AbortController();
+    const abort = () => controller.abort(new ControlError(409, "pool admission cancelled"));
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    const timer = setTimeout(() => controller.abort(new ControlError(409, "pool refresh deadline; retry admission")), timeoutMs);
+    const check = () => {
+      controller.signal.throwIfAborted();
+      const current = this.poolRequest(this.current(integration), body);
+      if (current.pool.revision !== initial.pool.revision) reject(409, "pool changed during admission; retry");
+      return current;
+    };
+    try {
+      if (initial.policy !== "manual") {
+        await evidence.refreshAdmission(initial.pool.accountIds, initial.pool.provider, initial.model, controller.signal, id => {
+          const current = check();
+          return current.pool.accountIds.includes(id) && this.store.loadAccounts().some(a => a.id === id && a.enabled !== false && !a.retired);
+        });
+      }
+      check();
+      return this.preparePool(this.current(integration), body, evidence);
+    } finally { controller.abort(new ControlError(409, "pool admission ended")); clearTimeout(timer); signal.removeEventListener("abort", abort); }
+  }
+  preparePool(integration: Integration, body: Record<string, unknown>, evidence: PoolEvidence): object {
+    const { id, poolId, model, tokenHash, pool, request, existing, policy, manual } = this.poolRequest(integration, body);
+    if (existing) return this.prepare(integration, { id, accountId: existing.accountId, provider: pool.provider, model, tokenHash });
     const now = Date.now();
     const eligible = pool.accountIds.filter(accountId => {
       const a = this.store.loadAccounts().find(a => a.id === accountId);
-      return eligibility(pool.provider, !!a && a.enabled !== false, model, evidence.get(accountId), policy === "round-robin", now) === "eligible";
+      return eligibility(pool.provider, !!a && a.enabled !== false, model, evidence.get(accountId), policy !== "manual", now) === "eligible";
     });
     let chosen = manual;
     if (chosen && !eligible.includes(chosen)) reject(409, "manual account is not eligible; refresh pool overview");
     if (!chosen) {
       const cursor = pool.cursor ? pool.accountIds.indexOf(pool.cursor) : -1;
       const ordered = [...pool.accountIds.slice(cursor + 1), ...pool.accountIds.slice(0, cursor + 1)].filter(id => eligible.includes(id));
-      const reserved = (accountId: string) => this.state.bindings.filter(b => b.poolId === pool.id && b.accountId === accountId && b.state === "prepared" && b.createdAt + PREPARE_MS > now).length;
-      chosen = ordered.sort((a, b) => reserved(a) - reserved(b))[0];
+      chosen = rankCandidates(policy, ordered.map(accountId => ({ accountId, evidence: selectionEvidence(pool.provider, evidence.get(accountId), model, this.reservations(pool.id, accountId, now)) })))[0]?.accountId;
     }
     if (!chosen) reject(409, "no eligible pool account; refresh usage or choose Manual");
     if (this.state.bindings.length >= 100_000) reject(409, "binding limit reached");
+    const selectedEvidence = selectionEvidence(pool.provider, evidence.get(chosen!), model, this.reservations(pool.id, chosen!, now));
     const binding: Binding = { id, integrationId: integration.id, accountId: chosen!, provider: pool.provider, model, tokenHash,
       state: "prepared", createdAt: now, poolId, policy, request,
-      reason: policy === "round-robin" ? "Round robin among eligible accounts" : "Explicit manual account",
+      policyVersion: 1, selectionEvidence: selectedEvidence,
+      reason: policy === "most-remaining" ? `Most remaining: tightest window has ${selectedEvidence.headroomPercent}% remaining; among accounts with fewest startup reservations` : policy === "round-robin" ? "Round robin among eligible accounts" : "Explicit manual account",
       observedAt: evidence.get(chosen!).quota?.observedAt };
     this.change(state => state.bindings.push(binding));
     return this.metadata(binding);
@@ -264,7 +300,7 @@ export class ControlRegistry {
     return this.state.bindings.find((b) => b.id === id && b.integrationId === integration.id) ?? reject(404, "binding not found");
   }
   metadata(b: Binding): object {
-    return { id: b.id, accountId: b.accountId, provider: b.provider, model: b.model, state: b.state, policy: b.policy ?? "manual", ...(b.poolId ? { poolId: b.poolId, policyVersion: 1, reason: b.reason, observedAt: b.observedAt } : {}), routerId: this.routerId };
+    return { id: b.id, accountId: b.accountId, provider: b.provider, model: b.model, state: b.state, policy: b.policy ?? "manual", ...(b.poolId ? { poolId: b.poolId, policyVersion: b.policyVersion ?? 1, ...(b.selectionEvidence ? { selectionEvidence: b.selectionEvidence } : {}), reason: b.reason, observedAt: b.observedAt } : {}), routerId: this.routerId };
   }
   transition(integration: Integration, id: string, action: "commit" | "cancel" | "inspect", evidence?: PoolEvidence): object {
     if (action === "cancel" && !this.state.bindings.some(b => b.id === id && b.integrationId === integration.id)) {
@@ -278,11 +314,11 @@ export class ControlRegistry {
     if (action !== "cancel") { if (!this.poolAllows(b)) reject(409, "pinned account or pool grant removed"); this.account(integration, b.accountId); }
     if (action === "inspect") return this.metadata(b);
     if (action === "commit" && (b.state === "cancelled" || (b.state === "prepared" && b.createdAt + PREPARE_MS <= Date.now()))) reject(409, "allocation cancelled or expired");
-    if (action === "commit" && b.state === "prepared" && b.poolId && (!evidence || eligibility(b.provider, true, b.model, evidence.get(b.accountId), b.policy === "round-robin") !== "eligible")) reject(409, "pool evidence changed; refresh and start a new session");
+    if (action === "commit" && b.state === "prepared" && b.poolId && (!evidence || eligibility(b.provider, true, b.model, evidence.get(b.accountId), b.policy !== "manual") !== "eligible")) reject(409, "pool evidence changed; refresh and start a new session");
     const state = action === "commit" ? "committed" : "cancelled";
     this.change((next) => {
       next.bindings.find((v) => v.id === id)!.state = state;
-      if (action === "commit" && b.state === "prepared" && b.poolId && b.policy === "round-robin") next.pools!.find(p => p.id === b.poolId)!.cursor = b.accountId;
+      if (action === "commit" && b.state === "prepared" && b.poolId && b.policy !== "manual") next.pools!.find(p => p.id === b.poolId)!.cursor = b.accountId;
     });
     return this.metadata({ ...b, state });
   }
@@ -361,7 +397,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     void (async () => {
       if (req.headers.origin || req.headers.host !== "localhost") reject(403, "invalid control origin");
       const path = req.url;
-      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1"] });
+      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "admission-refresh-v1"], supportedPolicies: POOL_POLICIES });
       const isOwner = path?.startsWith("/v1/owner/");
       if (isOwner) owner.authenticate(req.headers.authorization);
       let integration = path === "/v1/pair" || isOwner ? undefined : registry.authenticate(req.headers.authorization);
@@ -385,10 +421,16 @@ export async function startControl(store: StateStore, origin: string, coordinato
       }
       if (path === "/v1/pools/prepare") {
         if (!registry.hasBinding(integration, field(body, "id", UUID)) && (body.policy === "manual" || (body.policy === undefined && registry.pool(integration, field(body, "poolId", UUID)).policy === "manual"))) {
+          const pool = registry.pool(integration, field(body, "poolId", UUID));
+          if (!pool.accountIds.includes(field(body, "accountId"))) reject(403, "account not in pool");
           const account = registry.account(integration, field(body, "accountId"));
           evidence.setCatalog(account.id, await catalog(account.id, true));
         }
-        return reply(200, registry.preparePool(registry.authenticate(req.headers.authorization), body, evidence));
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        res.once("close", cancel);
+        try { return reply(200, await registry.preparePoolWithRefresh(registry.authenticate(req.headers.authorization), body, evidence, controller.signal)); }
+        finally { res.removeListener("close", cancel); }
       }
       if (path === "/v1/disconnect") return reply(200, registry.revoke(integration));
       if (path === "/v1/catalog" || path === "/v1/quotas") {

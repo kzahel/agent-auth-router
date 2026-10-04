@@ -158,3 +158,143 @@ test("a failed refresh retains successful windows with stale evidence and clears
   fail = false; now += 6000; const recovered = await evidence.refresh("a");
   assert.equal(recovered.error, null); assert.equal(eligibility("codex", true, "fixture", recovered, true, now), "eligible");
 });
+
+function rankedEvidence(values: Record<string, [number, number]>, read = (_id: string) => {}) {
+  return new PoolEvidence(async () => [{ id: "claude-sonnet-fixture", name: "Fixture" }], async accountId => {
+    read(accountId);
+    const [short, weekly] = values[accountId]!;
+    return { accountId, provider: "claude", status: "ok", observedAt: new Date().toISOString(), windows: [
+      { bucket: "five_hour", windowMinutes: 300, usedPercent: 100 - short, remainingPercent: short, resetsAt: new Date(Date.now() + 3600_000).toISOString() },
+      { bucket: "seven_day", windowMinutes: 10080, usedPercent: 100 - weekly, remainingPercent: weekly, resetsAt: new Date(Date.now() + 86400_000).toISOString() },
+      { bucket: "seven_day_opus", windowMinutes: 10080, usedPercent: 100, remainingPercent: 0, resetsAt: new Date(Date.now() + 86400_000).toISOString() },
+    ] };
+  });
+}
+const supportedPolicies = ["manual", "round-robin", "most-remaining"];
+
+test("Most remaining ranks the tightest applicable window, spreads reservations and persists explanations", async () => {
+  const f = fixture(), values: Record<string, [number, number]> = { a: [80, 15], b: [35, 60] };
+  const evidence = rankedEvidence(values);
+  f.registry.savePool({ ...f.pool, revision: 1, policy: "most-remaining" });
+  const request = { ...f.allocation(), supportedPolicies };
+  assert.throws(() => f.registry.preparePool(f.integration, f.allocation(), evidence), /update client/);
+  const selected = await f.registry.preparePoolWithRefresh(f.integration, request, evidence, new AbortController().signal) as any;
+  assert.equal(selected.accountId, "b");
+  assert.equal(selected.selectionEvidence.headroomPercent, 35);
+  assert.deepEqual(selected.selectionEvidence.limitingBuckets, ["five_hour"]);
+  assert.match(selected.reason, /35%/);
+  const parallel = f.registry.preparePool(f.integration, { ...f.allocation(), supportedPolicies }, evidence) as any;
+  assert.equal(parallel.accountId, "a", "startup reservations precede headroom ranking");
+  f.registry.transition(f.integration, parallel.id, "cancel");
+  f.registry.transition(f.integration, selected.id, "commit", evidence);
+  const restarted = new ControlRegistry(f.store);
+  const noReads = new PoolEvidence(async () => { throw new Error("must not read"); }, async () => { throw new Error("must not read"); });
+  assert.deepEqual(await restarted.preparePoolWithRefresh(f.integration, request, noReads, new AbortController().signal), { ...selected, state: "committed" });
+  const overview = f.registry.overview(f.integration, evidence, { poolId: f.pool.id, model: "claude-sonnet-fixture" }) as any;
+  assert.equal(overview.selection.decisions[1].evidence.headroomPercent, 35);
+  assert.doesNotMatch(JSON.stringify(overview), /tokenHash|home/);
+});
+
+test("Most remaining ties advance only on commit and still reject exhausted or changed evidence", async () => {
+  const f = fixture(), evidence = rankedEvidence({ a: [40, 70], b: [70, 40] });
+  await Promise.all([evidence.refresh("a"), evidence.refresh("b")]);
+  const body = { ...f.allocation(), policy: "most-remaining", supportedPolicies };
+  const a = f.registry.preparePool(f.integration, body, evidence) as any;
+  assert.equal(a.accountId, "a");
+  f.registry.transition(f.integration, a.id, "commit", evidence);
+  f.registry.transition(f.integration, a.id, "commit", evidence);
+  const b = f.registry.preparePool(f.integration, { ...f.allocation(), policy: "most-remaining", supportedPolicies }, evidence) as any;
+  assert.equal(b.accountId, "b");
+  evidence.reject("b", 429);
+  assert.throws(() => f.registry.transition(f.integration, b.id, "commit", evidence), /evidence changed/);
+});
+
+test("admission refresh is coalesced and globally bounded across more than four members", async () => {
+  let reads = 0, peak = 0, active = 0;
+  const ids = Array.from({ length: 12 }, (_, i) => `a${i}`);
+  const evidence = new PoolEvidence(async () => [{ id: "model", name: "Model" }], async accountId => {
+    reads++; peak = Math.max(peak, ++active);
+    await new Promise(r => setTimeout(r, 5)); active--;
+    return { accountId, provider: "codex", status: "ok", observedAt: new Date().toISOString(), windows: [{ bucket: "codex:primary", remainingPercent: 70, usedPercent: 30, windowMinutes: 10080, resetsAt: new Date(Date.now() + 3600_000).toISOString() }] };
+  });
+  const signal = new AbortController().signal;
+  await Promise.all([evidence.refreshAdmission(ids, "codex", "model", signal, () => true), evidence.refreshAdmission(ids, "codex", "model", signal, () => true)]);
+  assert.equal(reads, ids.length); assert.equal(peak, 4); assert.equal(evidence.active(), 0);
+  await evidence.refreshAdmission(ids, "codex", "model", signal, () => true);
+  assert.equal(reads, ids.length, "fresh evidence is reused");
+});
+
+test("admission cancellation, deadline, revocation and edits cannot publish a late pin", async () => {
+  for (const action of ["abort", "deadline", "revoke", "edit", "cancel"] as const) {
+    const f = fixture(); let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const evidence = new PoolEvidence(async () => { await gate; return [{ id: "claude-sonnet-fixture", name: "Fixture" }]; }, async accountId => {
+      await gate;
+      return { accountId, provider: "claude", status: "ok", observedAt: new Date().toISOString(), windows: [{ bucket: "five_hour", windowMinutes: 300, usedPercent: 20, remainingPercent: 80, resetsAt: new Date(Date.now() + 3600_000).toISOString() }] };
+    });
+    const controller = new AbortController(), body = f.allocation();
+    const pending = f.registry.preparePoolWithRefresh(f.integration, body, evidence, controller.signal, action === "deadline" ? 5 : 1000);
+    const rejected = assert.rejects(pending, /cancelled|deadline|revoked|changed/);
+    if (action === "abort") controller.abort();
+    if (action === "revoke") f.registry.revoke(f.integration);
+    if (action === "edit") f.registry.savePool({ ...f.pool, revision: 1, accountIds: ["a"] });
+    if (action === "cancel") f.registry.transition(f.integration, body.id, "cancel");
+    if (action !== "deadline") release();
+    await rejected; release();
+    await new Promise(r => setImmediate(r));
+    assert.equal(f.registry.hasBinding(f.integration, body.id), false);
+    assert.equal(evidence.active(), 0);
+  }
+});
+
+test("partial refresh failures exclude that account and preserve Retry-After backoff", async () => {
+  const f = fixture(); let failures = 0;
+  const good = rankedEvidence({ a: [70, 60] }); await good.refresh("a");
+  const evidence = new PoolEvidence(async () => [{ id: "claude-sonnet-fixture", name: "Fixture" }], async id => {
+    if (id === "a") return good.get(id).quota!;
+    failures++; return { accountId: id, provider: "claude", observedAt: new Date().toISOString(), status: "unavailable", windows: [], retryAfterSeconds: 60 };
+  });
+  const request = () => ({ ...f.allocation(), policy: "most-remaining", supportedPolicies });
+  const first = await f.registry.preparePoolWithRefresh(f.integration, request(), evidence, new AbortController().signal) as any;
+  assert.equal(first.accountId, "a");
+  await f.registry.preparePoolWithRefresh(f.integration, request(), evidence, new AbortController().signal);
+  assert.equal(failures, 1);
+});
+
+test("elapsed reset triggers evidence refresh while a future cooldown and Retry-After do not", async t => {
+  let now = Date.now(), calls = 0;
+  t.mock.method(Date, "now", () => now);
+  const evidence = new PoolEvidence(async () => [{ id: "model", name: "Model" }], async accountId => {
+    calls++;
+    return { accountId, provider: "codex", status: "ok", observedAt: new Date(now).toISOString(), windows: [{ bucket: "codex:primary", windowMinutes: 10080, usedPercent: calls === 1 ? 100 : 0, remainingPercent: calls === 1 ? 0 : 100, resetsAt: new Date(now + 2000).toISOString() }] };
+  });
+  await evidence.refresh("a");
+  assert.equal(evidence.needsRefresh("codex", "model", "a"), false);
+  now += 2000;
+  assert.equal(evidence.needsRefresh("codex", "model", "a"), true);
+  assert.equal(eligibility("codex", true, "model", evidence.get("a"), true, now), "exhausted");
+  await evidence.refreshAdmission(["a"], "codex", "model", new AbortController().signal, () => true);
+  assert.equal(calls, 2);
+  evidence.reject("a", 429, "60");
+  now += 3000;
+  await evidence.refreshAdmission(["a"], "codex", "model", new AbortController().signal, () => true);
+  assert.equal(calls, 2);
+  assert.equal(eligibility("codex", true, "model", evidence.get("a"), true, now), "cooldown");
+});
+
+test("cancelling admission stops queued refreshes without cancelling a shared reader", async () => {
+  let release!: () => void, calls = 0;
+  const gate = new Promise<void>(r => { release = r; });
+  const evidence = new PoolEvidence(async () => [], async accountId => {
+    calls++; await gate;
+    return { accountId, provider: "codex", status: "unavailable", observedAt: new Date().toISOString(), windows: [] };
+  });
+  const controller = new AbortController();
+  const admission = evidence.refreshAdmission(Array.from({ length: 16 }, (_, i) => `a${i}`), "codex", "model", controller.signal, () => true);
+  assert.equal(calls, 4);
+  const shared = evidence.refresh("a0");
+  controller.abort(new Error("cancelled"));
+  await assert.rejects(admission, /cancelled/);
+  release(); await shared; await new Promise(r => setImmediate(r));
+  assert.equal(calls, 4); assert.equal(evidence.active(), 0);
+});

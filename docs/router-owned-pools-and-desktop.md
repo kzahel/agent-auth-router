@@ -210,15 +210,15 @@ Deferred by the maintainer on 2026-10-03; current signing remains in use.
 The 2026-10-04 [routing-policy research and proposal](routing-policies.md)
 records upstream algorithms and detailed candidate behavior, including the
 difference between the soonest weekly reset and the limiting-window reset.
-It recommends Most remaining followed by Soonest weekly reset before combined
-Auto scoring. This is researched follow-up work, not implemented behavior.
+Most remaining and bounded admission refresh were implemented on 2026-10-04;
+see [the current contract](pools.md). Soonest weekly reset and task-aware Auto
+remain researched follow-ups.
 
-Most remaining, Earliest reset, combined Auto scoring, clone/helper inheritance,
-cross-account continuation, durable renewal research and a separate browser-served
-HTML dashboard remain outside this slice. Pool-wide refresh and refresh during
-session admission remain recorded follow-ups; live enrollment is distinct from
-background quota polling. Existing explicit usage refresh is enough for the
-first desktop flow.
+Earliest reset, combined Auto scoring, clone/helper inheritance, cross-account
+continuation, durable renewal research and a separate browser-served HTML
+dashboard remain follow-ups. Automatic refresh happens during new session
+admission; opening the overview remains passive and background polling is not
+implemented.
 
 YA's [router topic](https://github.com/kzahel/yepanywhere/blob/main/topics/agent-auth-router.md)
 remains its owning product contract; its

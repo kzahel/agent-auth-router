@@ -150,3 +150,34 @@ test("pool HTTP overview is cached metadata and shares eligibility with native a
   assert.equal((await request(socket, "/v1/bindings/inspect", token, { id: allocation.id })).status, 409);
   assert.equal((await request(socket, "/v1/bindings/cancel", token, { id: allocation.id })).status, 200);
 });
+
+test("HTTP automatic admission refreshes cold evidence and refuses unsupported clients without provider reads", { skip: process.platform === "win32" }, async t => {
+  const store = storeFixture();
+  const upstream = await mockUpstream((_req, res, recorded) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(recorded.url === "/v1/models" ? { data: [{ id: "synthetic-model" }] } : {
+      five_hour: { utilization: 25, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+      seven_day: { utilization: 60, resets_at: new Date(Date.now() + 86400_000).toISOString() },
+    }));
+  });
+  writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
+  const router = await startRouter(store, { claudeOrigin: upstream.origin }); t.after(() => router.close());
+  const socket = router.controlSocket!, token = ctlToken(), id = randomUUID(), poolId = randomUUID();
+  await request(socket, "/v1/pair", undefined, { id, name: "Fixture", tokenHash: hashGatewayToken(token) });
+  await ownerRequest(store, "pools/save", { id: poolId, name: "Work", revision: 0, provider: "claude", policy: "most-remaining", accountIds: ["fixture"] });
+  await ownerRequest(store, "grants/save", { id, revision: 1, poolIds: [poolId] });
+  const body = { id: randomUUID(), poolId, model: "synthetic-model", provider: "claude", tokenHash: hashGatewayToken(generateGatewayToken()) };
+  assert.equal((await request(socket, "/v1/pools/prepare", token, body)).status, 409);
+  assert.equal(upstream.requests.length, 0);
+  const overview = await request(socket, "/v1/overview", token, {});
+  assert.ok(overview.value.supportedPolicies.includes("most-remaining"));
+  assert.equal(upstream.requests.length, 0);
+  const admitted = await request(socket, "/v1/pools/prepare", token, { ...body, supportedPolicies: ["most-remaining"] });
+  assert.equal(admitted.status, 200);
+  assert.equal(admitted.value.selectionEvidence.headroomPercent, 40);
+  assert.equal(upstream.requests.length, 2);
+  assert.equal((await request(socket, "/v1/bindings/commit", token, { id: body.id })).status, 200);
+  const repeat = await request(socket, "/v1/pools/prepare", token, { ...body, supportedPolicies: ["most-remaining"] });
+  assert.equal(repeat.value.accountId, admitted.value.accountId);
+  assert.equal(upstream.requests.length, 2);
+});

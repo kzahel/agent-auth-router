@@ -68,7 +68,7 @@ function editPool(pool) {
   members(value.accountIds);
   $("pool-impact").textContent = value.revision
     ? `${pool.bindings.reduce((n, b) => n + b.count, 0)} session pins reference this pool. Removing a member or deleting the pool blocks subsequent requests for affected pins.`
-    : "Manual selects an account explicitly. Round robin requires fresh quota and model observations; refresh members before automatic allocation.";
+    : "Automatic policies refresh stale quota and model observations when a session starts. Most remaining prefers the greatest headroom in the tightest applicable window.";
   $("delete-pool").hidden = !value.revision;
   form.elements.name.focus();
 }
@@ -226,7 +226,7 @@ async function reload() {
       element("h3", p.name),
       element(
         "p",
-        `${p.provider} · ${p.policy === "manual" ? "Manual" : "Round robin"} · ${p.accountIds.length} accounts`,
+        `${p.provider} · ${p.policy === "manual" ? "Manual" : p.policy === "most-remaining" ? "Most remaining" : p.policy === "round-robin" ? "Round robin" : "Unsupported policy"} · ${p.accountIds.length} accounts`,
         "badge",
       ),
       element("p", p.accountIds.map(id => accountLabel(next.accounts.find(a => a.id === id) ?? { id })).join(", "), "hint profile-path"),
