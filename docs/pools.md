@@ -81,6 +81,12 @@ authorization. Downgrading routed state is unsupported.
 
 ## Deferred follow-ups
 
+Research resumed on 2026-10-04 in [routing policies](routing-policies.md): pinned
+CLIProxyAPI/VibeProxy observations, Most remaining and Soonest weekly reset
+proposals, explicit window/tie/reservation semantics and a verification plan.
+Only Manual and Round robin are implemented; the new document records discussion,
+not shipped policy support.
+
 The maintainer deferred further extensions on 2026-10-03. The YA owning topic
 records [pool refresh/admission, Most remaining, and clone/helper inheritance](https://github.com/kzahel/yepanywhere/blob/main/topics/agent-auth-router.md#deferred-follow-ups)
 as candidates for this workstream, with motivation, boundaries and a suggested

@@ -207,6 +207,12 @@ Deferred by the maintainer on 2026-10-03; current signing remains in use.
 
 ### Product and policy follow-ups
 
+The 2026-10-04 [routing-policy research and proposal](routing-policies.md)
+records upstream algorithms and detailed candidate behavior, including the
+difference between the soonest weekly reset and the limiting-window reset.
+It recommends Most remaining followed by Soonest weekly reset before combined
+Auto scoring. This is researched follow-up work, not implemented behavior.
+
 Most remaining, Earliest reset, combined Auto scoring, clone/helper inheritance,
 cross-account continuation, durable renewal research and a separate browser-served
 HTML dashboard remain outside this slice. Pool-wide refresh and refresh during

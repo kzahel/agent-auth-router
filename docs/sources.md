@@ -1,6 +1,6 @@
 # Source repositories and evidence
 
-Initial research: 2026-10-02; follow-up inspections recorded through 2026-10-03.
+Initial research: 2026-10-02; follow-up inspections recorded through 2026-10-04.
 Repository revisions below identify the local source
 snapshots inspected during the discussion. They are research references, not
 runtime dependencies. Recheck the deployed CLI versions before implementation.
@@ -38,6 +38,19 @@ A later route inspection also used CLIProxyAPI revision
 Claude's `/api/hello` warmup path; see the
 [versioned probe observations](prototype.md#the-claude-hello-probe). This is
 source evidence, not a live compatibility test of CLIProxyAPI.
+
+### Routing-policy follow-up (2026-10-04)
+
+The [routing-policy research](routing-policies.md#reference-implementations)
+records a fresh, separate inspection of CLIProxyAPI
+`8ef43e4df3b216a42493105d31c2873b69191473` and VibeProxy
+`f2aa365523dd739a114fb7bc73a58353c3737c49`, with pinned source links.
+CLIProxyAPI exposes round robin, smooth weighted round robin and fill first,
+plus optional session affinity; no built-in weekly-reset ranking was found in
+the inspected selector/configuration paths. VibeProxy delegates backend routing.
+These are source observations, not executed upstream tests or live behavior
+verification. The document also specifies proposed AAR Most remaining and
+Soonest weekly reset behavior; neither is implemented yet.
 
 ## Official CLI authentication
 
