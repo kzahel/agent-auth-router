@@ -25,10 +25,13 @@ setup**, and launch/update/stop controls are on **App**.
    the primary label. **Edit nickname** changes or clears the label without
    moving the folder or changing routing identity. Mac Claude profiles use
    their profile-scoped Keychain entry; Codex uses its dedicated file store.
-3. **Sign in** opens Terminal with that profile and a clean provider environment.
+3. **Sign in** opens your chosen terminal with that profile and a clean provider
+   environment. **App → Sign-in terminal** offers Terminal.app (the default) or
+   **Built-in terminal**; both are included in the same Mac build.
    Choose browser or device-code login for Codex, subscription or SSO login for
    Claude, then follow the official CLI prompts. The CLI has interactive input
-   and output; AAR does not capture that output in the app. **Check sign-in**
+   and output. The built-in window displays it locally without saving a transcript.
+   **Check sign-in**
    distinguishes readable stored credentials from expired ones. **Cancel sign-in**
    stops the terminal login; closing the terminal also cleans up the official
    login process. Login has a ten-minute deadline and excludes renewal and core
@@ -44,7 +47,9 @@ grant blocks subsequent requests on affected pins; accepted streams may finish.
 profile. Re-enable a disabled account when appropriate; retired IDs cannot be
 reused. No operation implicitly deletes provider credentials.
 
-Closing the window hides it to the tray. **Quit App (Keep Router Running)**
+Closing the management window hides it to the tray. Closing an embedded sign-in
+window cancels that login; quitting the app cancels its embedded logins.
+**Quit App (Keep Router Running)**
 leaves routing available. **Stop router** is explicit and refuses active
 requests, metadata reads, renewal or sign-in work. Reload starts it again.
 Updates download signed bytes and require an idle core before installation and
@@ -81,12 +86,23 @@ credentials, process control and packaging are OS adapter boundaries. Windows
 runtime/ACL/process-tree/startup/update acceptance is still future work.
 
 The [embedded sign-in terminal plan](../docs/router-owned-pools-and-desktop.md#embedded-sign-in-terminal-direction-2026-10-04)
-records xterm.js as the intended Windows/Linux and eventual shared sign-in UI.
-The plan includes supported terminal presentations in the same build, selectable
-at runtime, while retaining the current macOS Terminal.app path. Separately,
-Windows enrollment is planned to select native Windows or a WSL distribution/user
-and an existing or dedicated profile. Embedded rendering, runtime selection and
-Windows/WSL account support are not implemented yet; no build flag is planned.
+records the shared terminal direction. Version 0.1.3 implements xterm.js 6.0.0
+and portable-pty 0.9.0 on macOS, alongside Terminal.app, with a runtime preference.
+Windows/WSL account environments and Linux packaging remain future work.
+
+Native PTY tests exercise both provider fixtures through the real bundled helper
+and router lease, plus resize, bounded output, disconnect and process-group
+cleanup. The browser test checks keyboard input, theme, rendering and cancellation.
+For an isolated native WebView/CSP/IPC smoke, prepare the bundle, then run:
+
+```sh
+TAURI_CONFIG='{"identifier":"com.graehlarts.agent-auth-router.smoke"}' cargo build --manifest-path desktop/src-tauri/Cargo.toml
+node desktop/scripts/smoke-embedded.mjs
+```
+
+This uses a distinct app identity, temporary state and a synthetic CLI. Its
+automation hook exists only in debug builds and requires the runner's explicit
+synthetic-state marker. It does not authenticate with a live provider.
 
 ## Candidate signing and updates
 

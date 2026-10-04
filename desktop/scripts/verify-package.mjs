@@ -49,7 +49,7 @@ if ((process.arch === "x64" ? "x86_64" : process.arch) === arch) {
     env: { PATH: "/usr/bin:/bin" },
   });
 }
-for (const name of ["NODE-LICENSE", "LICENSE"])
+for (const name of ["NODE-LICENSE", "LICENSE", "PORTABLE-PTY-LICENSE"])
   assert.ok(readFileSync(join(resource, name)).length);
 if (process.argv.includes("--signed")) {
   const team = process.env.APPLE_TEAM_ID;

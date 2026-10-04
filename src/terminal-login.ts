@@ -132,6 +132,7 @@ export async function terminalLogin(store: StateStore, id: string): Promise<void
     input.close(); clearInterval(heartbeat); clearTimeout(deadline);
     for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.off(sig, cancel);
     await ownerRequest(store, "accounts/terminal-end", { ...body, success }).catch(() => {});
+    process.exitCode = success ? 0 : 1;
     process.stdout.write(success ? "\nSign-in command finished. Check sign-in in Agent Auth Router.\n" : "\nSign-in stopped or failed.\n");
   }
 }

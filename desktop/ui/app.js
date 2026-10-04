@@ -144,7 +144,7 @@ async function reload() {
     const actions = element("div", undefined, "actions");
     actions.append(
       button("Sign in", async () => {
-        await api("accounts/terminal-login", { id: a.id });
+        await api("accounts/terminal-login", { id: a.id, presentation: $("terminal-presentation").value });
         await reload();
       }),
       button("Check sign-in", async () => {
@@ -507,3 +507,6 @@ for (const tab of tabs) {
     }
   };
 }
+
+$("terminal-presentation").value = localStorage.getItem("terminal-presentation") === "embedded" ? "embedded" : "external";
+$("terminal-presentation").onchange = () => localStorage.setItem("terminal-presentation", $("terminal-presentation").value);

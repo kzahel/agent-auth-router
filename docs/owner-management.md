@@ -17,7 +17,9 @@ credentials cannot administer. Neither token type can infer. This is an
 explicit API authority boundary, not a sandbox against the same OS user.
 
 The desktop's native bridge and CLI read the owner key; the web view receives
-metadata only. Owner POST operations include `overview`, `providers`,
+metadata only in the management window. A separate embedded sign-in window can
+receive ephemeral CLI output through its own native PTY bridge. Owner POST
+operations include `overview`, `providers`,
 `profiles/discover`, `profiles/inspect`, `accounts/add`, `accounts/set-nickname`, `accounts/set-enabled`, `accounts/retire`, `accounts/login`,
 `accounts/login-status`, `accounts/open-login`, `accounts/cancel-login`,
 `accounts/refresh`, `accounts/renew`, `pools/save`, `pools/remove`,
@@ -27,7 +29,13 @@ credential storage kind. Integration metadata does not expose these local detail
 Account IDs are stable and generated when omitted; nickname edits use the account
 revision and never change profile identity. Empty nicknames remove the label.
 
-The desktop opens the bundled `terminal-login <id>` CLI in macOS Terminal.
+The desktop opens the bundled `terminal-login <id>` CLI in macOS Terminal or
+a separate embedded xterm.js window, chosen at runtime in App settings. Both
+use the same core login lease. The native PTY bridge binds input, output and resize
+to the calling sign-in window, which cannot invoke management commands. It has
+a 256 KiB unread-output ceiling, 4 KiB input-message bound and a disconnect
+watchdog; output is never persisted. Closing the window cancels the process
+group, with bounded escalation and draining to avoid stalled terminal writers.
 Internal owner-only `accounts/terminal-begin`, `accounts/terminal-attach`,
 `accounts/terminal-status` and `accounts/terminal-end` operations track the runner
 and its official CLI process under a per-login nonce. These endpoints, process

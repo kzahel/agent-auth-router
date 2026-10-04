@@ -138,10 +138,10 @@ Mac-first release scope does not constitute Windows runtime support.
 
 ### Embedded sign-in terminal direction (2026-10-04)
 
-Maintainer-approved direction, not implemented: use an app-owned sign-in window
+Implemented on macOS in source version 0.1.3: an app-owned sign-in window
 with [xterm.js](https://xtermjs.org/) as the intended shared terminal UI for
-Windows and Linux, and eventually macOS. Keep the existing macOS Terminal.app
-launcher available while validating the embedded path. Current desktop sign-in
+Windows and Linux; macOS provides the first acceptance path. Keep the existing
+macOS Terminal.app launcher available while validating the embedded path. Current desktop sign-in
 is macOS-only; there is no Windows PowerShell or Linux external-terminal
 launcher today. Existing synthetic PTY tests do not establish completed human
 provider consent in either presentation.
@@ -153,10 +153,10 @@ and the official CLI's credential storage. Browser consent still uses the normal
 system browser. An embedded terminal does not require launching a general shell
 such as PowerShell; prefer launching the approved login helper directly.
 
-Use a terminal display plus a native pseudo-terminal (PTY) adapter. Evaluate
-[portable-pty](https://docs.rs/portable-pty/latest/portable_pty/) in the Tauri Rust
-layer as a candidate backend; the dependency choice and platform acceptance are
-still pending. Keep desktop terminal dependencies outside the headless router.
+The terminal display uses xterm.js 6.0.0 with
+[portable-pty](https://docs.rs/portable-pty/latest/portable_pty/) 0.9.0 in the Tauri
+Rust layer. Both have pinned dependencies and packaged license notices. Desktop
+terminal dependencies stay outside the headless router.
 The router remains the authority for login exclusion, cancellation and status;
 both presentations use the same lifecycle contract rather than separate
 authentication implementations. Preserve the ten-minute deadline, renewal/stop
@@ -208,13 +208,14 @@ a candidate, not an implemented or selected architecture. Define its private
 transport, lifecycle and credential-access boundaries before implementation.
 Keep this environment support independent of external/embedded presentation;
 switching the presentation must preserve the selected environment and profile.
-Execution environments, runtime terminal choice and embedded rendering are all
-future work, not claims of current Windows/WSL support.
+Runtime terminal choice and embedded rendering are implemented on macOS. The
+Windows/WSL execution-environment adapter remains future work. Native existing
+Mac profiles can now be inspected and enrolled in place through the owner UI.
 
 ### Terminal and environment acceptance
 
-Keep the sign-in window compact and system-themed, showing provider, profile
-folder, terminal, status and Cancel. Scope its native bridge to the owned login
+The implemented macOS sign-in window is compact and system-themed, showing
+provider, profile folder, terminal, status and Cancel. Scope its native bridge to the owned login
 session, with bounded output buffering and no persisted terminal transcript or
 raw output in logs, telemetry, overview responses or integration APIs. Terminal
 output may contain login URLs/codes and belongs only in this local owner window.

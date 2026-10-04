@@ -158,8 +158,11 @@ test("management UI preserves typing while observations update, and offers owner
   assert.equal(await nickname.inputValue(), "Work account");
   await page.getByRole("button", { name: "Save nickname" }).click();
   await account.getByText("Work account", { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "App", exact: true }).click();
+  await page.locator("#terminal-presentation").selectOption("embedded");
+  await page.getByRole("tab", { name: "Accounts", exact: true }).click();
   await account.getByRole("button", { name: "Sign in", exact: true }).click();
-  assert.ok((await page.evaluate(() => window.operations)).some(o => o.operation === "accounts/terminal-login" && o.body.id === "work-1"));
+  assert.ok((await page.evaluate(() => window.operations)).some(o => o.operation === "accounts/terminal-login" && o.body.id === "work-1" && o.body.presentation === "embedded"));
   assert.ok(!(await page.evaluate(() => window.operations)).some(o => o.operation === "accounts/login"));
   await account.getByText("More", { exact: true }).click();
   await account.getByRole("button", { name: "Edit nickname" }).click();

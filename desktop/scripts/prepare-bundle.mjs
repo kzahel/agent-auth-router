@@ -43,6 +43,7 @@ try {
   await cp(join(root, "dist"), join(resources, "core"), { recursive: true });
   await writeFile(join(resources, "core/package.json"), '{"type":"module"}\n');
   await cp(join(root, "LICENSE"), join(resources, "LICENSE"));
+  await cp(join(root, "desktop/PORTABLE-PTY-LICENSE"), join(resources, "PORTABLE-PTY-LICENSE"));
   const config = JSON.parse(
     await readFile(join(root, "desktop/src-tauri/tauri.conf.json"), "utf8"),
   );

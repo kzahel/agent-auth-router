@@ -3,3 +3,7 @@ and the operational sequence from
 Machine Control (https://github.com/kzahel/machine-control), copyright 2026
 Kyle Graehl, under the MIT license reproduced in MACHINE-CONTROL-LICENSE.
 The bundled Node runtime carries its own NODE-LICENSE in application resources.
+
+The embedded terminal bundles xterm.js and its fit addon under the MIT license.
+Their license texts are packaged with the terminal assets. The native PTY adapter
+uses portable-pty (MIT), from the WezTerm project.

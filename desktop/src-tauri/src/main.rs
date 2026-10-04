@@ -1,4 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#[cfg(debug_assertions)]
+mod smoke;
+mod terminal;
 use serde_json::{json, Value};
 use std::{
     io::Write,
@@ -77,6 +80,20 @@ fn command(app: &tauri::AppHandle) -> Result<Command, String> {
             inherited
         ),
     );
+    #[cfg(debug_assertions)]
+    if std::env::var("AAR_SIGNIN_SMOKE").as_deref() == Ok("1") {
+        if !smoke::enabled() {
+            return Err("Synthetic smoke profile required".into());
+        }
+        command.env(
+            "PATH",
+            format!(
+                "{}:{}",
+                state_dir(app)?.join("bin").display(),
+                resource.display()
+            ),
+        );
+    }
     command.env_remove("NODE_OPTIONS").env_remove("NODE_PATH");
     Ok(command)
 }
@@ -276,7 +293,15 @@ fn open_terminal(_app: &tauri::AppHandle, _id: &str) -> Result<Value, String> {
     Err("Terminal sign-in is currently supported on macOS".into())
 }
 #[tauri::command]
-async fn router(app: tauri::AppHandle, operation: String, body: Value) -> Result<Value, String> {
+async fn router(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    operation: String,
+    body: Value,
+) -> Result<Value, String> {
+    if window.label() != "main" {
+        return Err("Owner window required".into());
+    }
     const OPERATIONS: &[&str] = &[
         "overview",
         "providers",
@@ -314,7 +339,12 @@ async fn router(app: tauri::AppHandle, operation: String, body: Value) -> Result
             return ensure_core(&app, &mut core);
         }
         if operation == "accounts/terminal-login" {
-            return open_terminal(&app, body["id"].as_str().ok_or("Missing account")?);
+            let id = body["id"].as_str().ok_or("Missing account")?;
+            return match body["presentation"].as_str().unwrap_or("external") {
+                "external" => open_terminal(&app, id),
+                "embedded" => terminal::open(&app, id),
+                _ => Err("Unsupported terminal presentation".into()),
+            };
         }
         request(&app, &operation, enrollment_body(&operation, body))
     })
@@ -322,7 +352,14 @@ async fn router(app: tauri::AppHandle, operation: String, body: Value) -> Result
     .map_err(|_| "Router task failed")?
 }
 #[tauri::command]
-fn startup(app: tauri::AppHandle, enabled: Option<bool>) -> Result<bool, String> {
+fn startup(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    enabled: Option<bool>,
+) -> Result<bool, String> {
+    if window.label() != "main" {
+        return Err("Owner window required".into());
+    }
     let manager = app.autolaunch();
     if let Some(enabled) = enabled {
         if enabled {
@@ -337,7 +374,13 @@ fn startup(app: tauri::AppHandle, enabled: Option<bool>) -> Result<bool, String>
         .map_err(|_| "Could not read launch at login".into())
 }
 #[tauri::command]
-async fn check_update(app: tauri::AppHandle) -> Result<Value, String> {
+async fn check_update(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Value, String> {
+    if window.label() != "main" {
+        return Err("Owner window required".into());
+    }
     let update = app
         .updater_builder()
         .timeout(Duration::from_secs(20))
@@ -352,7 +395,14 @@ async fn check_update(app: tauri::AppHandle) -> Result<Value, String> {
     })
 }
 #[tauri::command]
-async fn install_update(app: tauri::AppHandle, version: String) -> Result<(), String> {
+async fn install_update(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    version: String,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Owner window required".into());
+    }
     let update = app
         .updater_builder()
         .timeout(Duration::from_secs(20))
@@ -381,6 +431,9 @@ async fn install_update(app: tauri::AppHandle, version: String) -> Result<(), St
             .0
             .lock()
             .map_err(|_| "Router lifecycle unavailable")?;
+        if handle.state::<terminal::Terminals>().busy() {
+            return Err("Close sign-in windows before updating".into());
+        }
         let status = request(&handle, "overview", json!({}))?;
         request(&handle, "stop", json!({ "routerId": status["routerId"] }))?;
         // Wait for private IPC release before replacing the runtime.
@@ -406,7 +459,7 @@ fn show(app: &tauri::AppHandle) {
     }
 }
 fn main() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
         .plugin(
             tauri_plugin_autostart::Builder::new()
@@ -418,12 +471,27 @@ fn main() {
             Mutex::new(Core { child: None }),
             AtomicBool::new(false),
         ))
+        .manage(terminal::Terminals::default());
+    #[cfg(debug_assertions)]
+    let builder = builder
         .invoke_handler(tauri::generate_handler![
             router,
             startup,
             check_update,
-            install_update
+            install_update,
+            terminal::terminal,
+            smoke::smoke_result
         ])
+        .on_page_load(smoke::loaded);
+    #[cfg(not(debug_assertions))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        router,
+        startup,
+        check_update,
+        install_update,
+        terminal::terminal
+    ]);
+    builder
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Accounts & Pools", true, None::<&str>)?;
             let quit = MenuItem::with_id(
@@ -464,10 +532,19 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else {
+                    window.state::<terminal::Terminals>().close(window.label());
+                }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("Could not run Agent Auth Router");
+        .build(tauri::generate_context!())
+        .expect("Could not run Agent Auth Router")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                app.state::<terminal::Terminals>().close_all();
+            }
+        });
 }

@@ -1,0 +1,10 @@
+{
+  "identifier": "signin",
+  "windows": [
+    "signin-*"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close"
+  ]
+}
