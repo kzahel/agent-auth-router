@@ -1,6 +1,7 @@
 # Source repositories and evidence
 
-Research date: 2026-10-02. Repository revisions below identify the local source
+Initial research: 2026-10-02; follow-up inspections recorded through 2026-10-03.
+Repository revisions below identify the local source
 snapshots inspected during the discussion. They are research references, not
 runtime dependencies. Recheck the deployed CLI versions before implementation.
 
@@ -12,7 +13,7 @@ runtime dependencies. Recheck the deployed CLI versions before implementation.
 | [automazeio/vibeproxy](https://github.com/automazeio/vibeproxy) | `1405d044ba9476083885c98e477ad6c3f40e203d` | macOS wrapper, bundled backend, request-rewriting listener, signing and Sparkle updates |
 
 CLIProxyAPI implements its own OAuth browser flows, credential storage and
-refresh. This project's proposed distinction is delegated official-CLI refresh
+refresh. This project's intended distinction is delegated official-CLI refresh
 and a much smaller provider/control surface. Useful pinned reference paths:
 
 - [Claude browser login](https://github.com/router-for-me/CLIProxyAPI/blob/6fecc6e5567912661654a4eaf9b8f5436facd1c2/sdk/auth/claude.go)
@@ -32,6 +33,12 @@ CLIProxyAPI is MIT-licensed. If code is adapted, preserve the required notices
 and document what was reused. Disabling its features through configuration
 does not remove the implementation or dependency surface from a bundled build.
 
+A later route inspection also used CLIProxyAPI revision
+`2044a01f422998de79a5da8015141b878886534d`. Neither inspected revision registered
+Claude's `/api/hello` warmup path; see the
+[versioned probe observations](prototype.md#the-claude-hello-probe). This is
+source evidence, not a live compatibility test of CLIProxyAPI.
+
 ## Official CLI authentication
 
 - [Codex authentication and credential storage](https://developers.openai.com/codex/auth)
@@ -47,7 +54,7 @@ does not remove the implementation or dependency surface from a bundled build.
 - [Reported Claude short-lived-command persistence issue](https://github.com/anthropics/claude-code/issues/95822)
   motivates verifying completed persistence. The report was read, not reproduced.
 
-The inspected [openai/codex](https://github.com/openai/codex) revision is
+The initial inspected [openai/codex](https://github.com/openai/codex) revision is
 `ee6814bfa4889fe9b2b3dcc9cc8bdd91effa8ab8`. Relevant paths:
 
 - [Auth manager: proactive refresh, guarded reload and persistence](https://github.com/openai/codex/blob/ee6814bfa4889fe9b2b3dcc9cc8bdd91effa8ab8/codex-rs/login/src/auth/manager.rs)
@@ -59,6 +66,26 @@ last-refresh-age fallback. Do not hardcode that policy into this project based
 on one snapshot, and do not assume every source method is a supported public
 CLI command.
 
+The later refresh trace used revision
+`44dd77b71e88c78295736bffd3dc3b684c13be6d`, with the scheduling, locking,
+persistence and account-reporting paths linked in
+[prototype source observations](prototype.md#source-trace-after-the-experiment).
+These source snapshots are not proof that the installed CLI matches either
+revision. The installed Codex 0.159.0 schema and live observations are recorded
+separately in that document.
+
+Quota interfaces used by the prototype:
+
+- [Official Codex app-server documentation](https://learn.chatgpt.com/docs/app-server)
+  describes `account/rateLimits/read`; the installed CLI's schema and real
+  metadata response were inspected. Multi-bucket/legacy responses, durations
+  and epoch-second reset values are normalized in `src/quotas.ts`.
+- Claude Code 2.1.280's installed executable contains an internal
+  `/api/oauth/usage` GET path and renders its JSON utilization as percentages.
+  The authorized metadata read succeeded; this is not a documented public
+  endpoint contract. Inference-header utilization is a fraction instead.
+  See [quota observations and limits](prototype.md#authorized-quota-reads).
+
 ## Existing desktop and agent projects
 
 | Repository | Inspected revision | Relevance |
@@ -66,8 +93,8 @@ CLI command.
 | [kzahel/desktop-release-kit](https://github.com/kzahel/desktop-release-kit) | `c8d96dd87cb244f96b0123c113b4da17bd698c37` | Tauri sidecar canary, signed packaging, update contracts and installed validation |
 | [kzahel/machine-control](https://github.com/kzahel/machine-control) | `2b0d8856091e5b610acea0e19ada182acc3568e1` | Optional desktop operator shell with independent headless runtime |
 | [kzahel/lid-awake](https://github.com/kzahel/lid-awake) | `b90bd6a63b3c716c3f24a81c33365ff704bbb6e2` | Small macOS tray application and signed/notarized Sparkle releases |
-| [kzahel/yepanywhere](https://github.com/kzahel/yepanywhere) | `4af8b18a194188dda7aa75f02f7cda8d5ac03035` | Existing TypeScript provider experience and separate profile-directory proposal |
-| [pingdotgg/t3code](https://github.com/pingdotgg/t3code) | Not pinned in this document | Client-side provider configuration reference; no claim it bundles CLIProxyAPI |
+| [kzahel/yepanywhere](https://github.com/kzahel/yepanywhere) | Initial `4af8b18a194188dda7aa75f02f7cda8d5ac03035`; follow-up `e0105dde50067c2905b4566a339c9c00ee0af08c` | Native launch adapters, gateway services, subscription usage and direct profile-directory proposal |
+| [pingdotgg/t3code](https://github.com/pingdotgg/t3code) | `99e08526e5ec84f294940cba5929841518c52fec` | Provider instances, router configuration and built-in CLIProxyAPI usage-source connection; no claim it bundles or owns the hub |
 
 Specific related documents:
 
@@ -76,11 +103,21 @@ Specific related documents:
 - [Machine Control desktop ownership](https://github.com/kzahel/machine-control/blob/2b0d8856091e5b610acea0e19ada182acc3568e1/desktop/README.md)
 - [Yep Anywhere profile directories](https://github.com/kzahel/yepanywhere/blob/4af8b18a194188dda7aa75f02f7cda8d5ac03035/docs/tactical/133-provider-profile-directories.md)
 - [Yep Anywhere gateway services](https://github.com/kzahel/yepanywhere/blob/4af8b18a194188dda7aa75f02f7cda8d5ac03035/topics/gateway-services.md)
+- [YA subscription-usage contract at the follow-up revision](https://github.com/kzahel/yepanywhere/blob/e0105dde50067c2905b4566a339c9c00ee0af08c/topics/provider-subscription-usage.md)
+- [T3 provider-instance identities and configuration](https://github.com/pingdotgg/t3code/blob/99e08526e5ec84f294940cba5929841518c52fec/packages/contracts/src/providerInstance.ts)
+- [T3 Claude router configuration guidance](https://github.com/pingdotgg/t3code/blob/99e08526e5ec84f294940cba5929841518c52fec/docs/user/providers-claude.md)
+- [T3 CLIProxyAPI management/usage adapter](https://github.com/pingdotgg/t3code/blob/99e08526e5ec84f294940cba5929841518c52fec/apps/server/src/usage/cliproxyApi.ts)
+- [T3 usage-source scheduling and publishing](https://github.com/pingdotgg/t3code/blob/99e08526e5ec84f294940cba5929841518c52fec/apps/server/src/usage/UsageLimitSources.ts)
 
 The Yep Anywhere proposal chooses a home for an official CLI session and leaves
 all credentials with that CLI. This router instead reads provider credentials
 to forward model API requests while delegating their renewal. Those are related
-but different responsibilities; this repository does not change YA's plan.
+but different responsibilities. The agreed, optional integration is now recorded
+in YA tactical 143 (`docs/tactical/143-agent-auth-router-integration.md`): it
+keeps YA's native client state separate while AAR owns account access,
+allocation and quota reads. The direct profile path remains independent. See
+[the integration direction](plan.md#yep-anywhere-integration); the control API
+and YA integration are not implemented.
 
 The conversation began with [Theo's video](https://www.youtube.com/watch?v=D8PikZ1KhUo).
 The exact custom fork discussed in that video was not identified, so no claims

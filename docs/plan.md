@@ -1,10 +1,35 @@
 # Implementation and validation plan
 
-Status: proposed. Synthetic-fixture parts of phases 1–3 are prototyped; see
+Status: research and implementation plan, updated 2026-10-03.
+Synthetic-fixture parts of phases 1–4 are prototyped; see
 [prototype status](prototype.md). Each provider has completed one real streamed
-client interaction; full phase acceptance and durable renewal remain unverified.
-Ordered to resolve credential and protocol
-uncertainty before investing in UI or release packaging.
+client interaction and an on-demand quota read; full phase acceptance and
+durable renewal remain unverified. Control/pairing and account allocation are
+now planned with YA; they are not implemented. The research phases resolve
+credential and protocol uncertainty before UI or release packaging.
+
+## Yep Anywhere integration
+
+The canonical cross-repository plan is Yep Anywhere tactical 143,
+`docs/tactical/143-agent-auth-router-integration.md`, in the
+[Yep Anywhere repository](https://github.com/kzahel/yepanywhere). It covers:
+
+- Local HTTP over an owner-only Unix control socket, explicit pairing, scoped
+  integration credentials and separately authorized inference credentials.
+- Integration-owned provider pools, Manual/Auto/Earliest reset/Most remaining/
+  Round robin policies, model-aware quota freshness and atomic admission.
+- Durable per-session pins and gateway credentials, idempotent allocation and
+  crash/revocation recovery, with no silent account switching or direct fallback.
+- YA server launch adapters, settings and session controls, subscription-usage
+  normalization, existing source authorization and compatibility gates.
+
+Follow its contract → local pairing → quotas/pools → allocator/bindings → native
+YA launch → UI → authorized live-proof sequence. A standalone router dashboard
+is not a prerequisite for YA integration. The phases below retain provider
+renewal, protocol and failure-containment research; incomplete renewal remains
+a visible limitation rather than justification for router-owned OAuth. Remote
+control, Windows parity, automatic failover and cross-account continuation are
+separate later proofs. YA's direct CLI profiles remain independent.
 
 ## 1 — Prove official CLI credential renewal
 
@@ -80,6 +105,10 @@ from a happy-path request or absence of known upstream advisories.
 
 ## 5 — Add the local dashboard and account onboarding
 
+Local control/pairing for YA follows tactical 143 above and can precede the
+router's independent browser dashboard. CLI enrollment already prints the
+official login command; terminal launch and graphical onboarding are future work.
+
 Serve embedded assets. Show account readiness, renewal state, client policy,
 active requests, cooldowns and actual provider-reported usage. Implement
 authenticated browser administration with Host/Origin and CSRF enforcement.
@@ -96,8 +125,8 @@ Acceptance:
 
 ## 6 — Add constrained multi-account routing
 
-Only after the preceding evidence, add conversation affinity, explicit account
-sets and observed cooldowns. Define a safe pre-generation rejection policy
+With the identity/protocol/failure boundaries tested, add conversation affinity,
+explicit account sets and observed cooldowns. Define a safe pre-generation rejection policy
 before enabling any failover. Preserve failures after ambiguous acceptance or
 streamed output rather than replaying automatically.
 
@@ -119,15 +148,15 @@ target macOS; assess other host platforms independently.
 ## Outstanding decisions
 
 - Which exact helper operation renews each provider without inference?
-- Can the chosen Claude Keychain reader access only the enrolled profile with
-  acceptable prompts and permissions?
+- Which additional Claude versions/platforms support the tested profile-specific
+  reader, and what access prompts/failure behavior do they produce?
 - Which installed CLI versions and wire paths form the initial support floor?
-- Which conversation identifier gives stable routing without trusting arbitrary
-  client identity claims?
+- How should the proposed per-session gateway allocation persist/recover pins
+  and credentials across clients, router restarts and YA worker handoff?
 - How should CLI helper processes coordinate with user-requested login and
   service restart?
-- What is the smallest useful dashboard/control surface after the headless
-  compatibility proof?
+- What exact versioned operations and recovery semantics implement the agreed
+  local control/pairing surface before a standalone dashboard?
 
 Resolve these through bounded experiments, recording versioned observations
 separately from intended product behavior.

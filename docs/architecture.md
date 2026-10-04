@@ -1,7 +1,9 @@
 # Architecture and security boundaries
 
-Status: proposed. Created 2026-10-02. The experiments in [the plan](plan.md)
-must establish behavior before this becomes an implemented contract.
+Status: mixed implemented prototype and intended architecture, updated
+2026-10-03. [Prototype status](prototype.md) identifies the code, fixture
+coverage and limited live proofs. Control/pairing, durable session bindings,
+pools, balancing, dashboard and remote administration remain proposals.
 
 ## Product boundary
 
@@ -12,11 +14,17 @@ headers or payload adjustments; prove and document those adaptations for the
 tested CLI versions. A simple header swap is the conceptual authentication
 boundary, not a promise of complete wire compatibility.
 
-The first slice has one explicitly selected account per provider. Later,
+The current slice has one explicitly selected account per provider per gateway
+credential, rather than a limit of one enrolled account overall. Later,
 gateway client policy can select from an allowed account set, with stable
 conversation affinity and cooldown handling. An HTTP request does not reveal
 a client's local PID or home directory. Client identity comes from its gateway
 credential; conversation identity needs an explicit, validated identifier.
+
+The agreed YA integration direction uses a router allocation and per-session
+gateway credential pinned to an account. This can enforce affinity without
+depending on a native session header. Allocation, persistence and recovery are
+not implemented; see [the cross-repository plan](plan.md#yep-anywhere-integration).
 
 No protocol translation between providers is planned. Token counting should
 use supported provider endpoints and usage should preserve provider-returned
@@ -39,6 +47,10 @@ is a compatibility question for the first experiment.
   state and explicit provider/account permissions.
 - A separate local control surface owns account setup, client enrollment and
   status. Inference credentials do not grant administrative authority.
+
+Today that control surface is the filesystem-backed `aar` CLI. On-demand
+`account quotas` emits normalized usage metadata through the CLI, outside the
+inference listener. There is no control socket, HTTP administration or polling.
 
 ## Credential ownership
 
@@ -109,7 +121,20 @@ OS or arbitrary malicious code already running as the same user.
 
 ## Dashboard and desktop
 
-Start with a small embedded web dashboard showing accounts, auth health,
+The planned YA integration starts with versioned HTTP over an owner-only local
+Unix socket. Its scoped integration credential is separate from inference
+credentials and permits metadata, own-pool management and session allocation
+within an explicit account grant. YA's server holds it privately; UI clients
+use YA's existing authenticated transport. Local socket permissions are the
+bootstrap boundary, not protection from a malicious process under the same
+OS user. Pairing/revocation/recovery semantics still need implementation.
+
+Keep inference on loopback HTTP for native clients. Control WebSockets are not
+required; metadata SSE, HTTPS remote control and Windows named-pipe parity are
+later capabilities. Control operations must not appear on the inference
+listener. See [the cross-repository plan](plan.md#yep-anywhere-integration).
+
+An independent embedded web dashboard can later show accounts, auth health,
 client permissions, active request counts, cooldowns and observed usage.
 Initial account login can remain a documented terminal command while a native
 launcher is absent. Launching an OS terminal from a headless service is an
@@ -123,8 +148,9 @@ update them together. Headless operation stays independent of the shell.
 
 ## Deliberate scope limits
 
-Start without plugins, third-party provider relays, cross-provider translation,
-local tokenizer tables, prompt rewriting, arbitrary proxy targets, remote
+The current prototype has no plugins, third-party provider relays,
+cross-provider translation, local tokenizer tables, prompt rewriting,
+arbitrary proxy targets, remote
 administration or public listener exposure. Broader multi-account scheduling,
 private-network enrollment and desktop distribution follow successful auth
 and wire-compatibility evidence.

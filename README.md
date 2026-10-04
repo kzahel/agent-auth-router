@@ -1,6 +1,6 @@
 # Agent Auth Router
 
-A proposed small, private gateway for Claude Code and Codex subscription
+A small, private gateway prototype for Claude Code and Codex subscription
 accounts. Clients authenticate to the router with revocable gateway tokens;
 the router selects an account and authenticates upstream with that account's
 current provider credential.
@@ -10,8 +10,9 @@ synthetic credentials, fake helpers and mock upstreams. An authorized real
 Codex client and a real Claude Code client each completed one streamed
 interaction through the router using gateway tokens. Claude's dedicated
 macOS Keychain entry is read through an explicit enrollment mode. Durable
-renewal remains unverified for both providers. See
-[prototype status](docs/prototype.md).
+renewal remains unverified for both providers. Each gateway credential has one
+fixed account assignment per provider; pools and balancing are not implemented.
+See [prototype status](docs/prototype.md).
 
 ```sh
 npm install
@@ -32,20 +33,33 @@ inference. Codex uses the official app-server quota RPC; Claude uses the
 internal OAuth usage endpoint observed in Claude Code 2.1.280. There is no
 background polling or automatic account switching.
 
-The implementation direction is Node.js with TypeScript, headless first, with
-a small embedded HTML/CSS/JavaScript dashboard. A desktop tray application can
-later supervise the same service and adopt Desktop Release Kit's packaging
-and signed-update contracts.
+The core is Node.js/TypeScript with no runtime dependencies, requiring Node 24
+or newer. The recorded live experiments and 65-test check used Node v26.7.0.
+Administration currently uses the local CLI. A control socket, dashboard and
+desktop tray application are planned; none exists yet.
 
-## Approach to try
+## Credential ownership and enrollment
 
 Use the official provider CLIs as the owners of OAuth login, storage and
 refresh. Give each upstream account a dedicated `CODEX_HOME` or
-`CLAUDE_CONFIG_DIR`. An Add account action opens a terminal for the official
-CLI's login. A serialized helper invocation later lets that CLI renew its
-credentials; the router rereads the authoritative store after renewal.
+`CLAUDE_CONFIG_DIR`. `aar account add` enrolls a profile and prints the official
+CLI login command for the user to run. It does not open a terminal or sign in.
+Serialized helper invocations ask the official CLI to renew; the router rereads
+the authoritative store and verifies whether the credential actually changed.
 
-This is a hypothesis to validate, especially for Claude. Merely starting a
+Credential storage defaults to files. On macOS, Claude enrollment needs
+`--credential-store claude-keychain` to read only that profile's Keychain entry.
+There is no fallback to the user's normal Claude account. Codex enrollment
+seeds file storage; that mode was verified for the tested dedicated login.
+Claude defaults to no renewal helper. See
+[credential lifecycle](docs/auth-lifecycle.md).
+
+`aar client add <name> --claude <account-id> --codex <account-id>` issues a
+gateway credential and prints native-client configuration; grant either or
+both providers. Gateway client homes/configuration stay separate from the
+upstream account profiles. `aar serve` starts the loopback inference listener.
+
+Reliable delegated renewal is still a hypothesis to validate. Merely starting a
 process or observing a successful exit does not prove that credentials were
 renewed and persisted. If a reliable helper invocation cannot be established,
 surface that limitation before choosing a different credential architecture.
@@ -69,6 +83,20 @@ helpers reach the real provider, without inheriting the router's base URL or
 gateway credentials. The router does not run a full CLI agent to fulfill each
 model request.
 
+## Yep Anywhere integration
+
+The agreed integration direction is local HTTP over an owner-only Unix control
+socket, scoped pairing credentials, account pools and balancing, and durable
+per-session account bindings. YA's server connects to the router; its browser
+and phone clients keep using their existing YA connection. Coding processes
+receive separate inference credentials. These control and allocation features
+are not implemented.
+
+The canonical plan covering both repositories is tactical 143,
+`docs/tactical/143-agent-auth-router-integration.md`, in the
+[Yep Anywhere repository](https://github.com/kzahel/yepanywhere). YA's direct
+CLI profile-directory work remains a separate proposal.
+
 ## Read next
 
 - [Prototype status, observations and next experiment](docs/prototype.md)
@@ -77,9 +105,8 @@ model request.
 - [Implementation and validation plan](docs/plan.md)
 - [Source repositories and evidence](docs/sources.md)
 
-Initial focus is a local macOS host. Private access from other devices and
-cross-platform packaging are later extensions. This project stays separate
-from Yep Anywhere's CLI profile-directory work.
+Initial focus is a local macOS host. Remote router control, Windows transport
+parity and cross-platform packaging are later extensions.
 
 ## License
 

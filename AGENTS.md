@@ -1,8 +1,15 @@
 # Repository instructions
 
-This repository currently contains a proposal, not a working implementation.
-Read README.md and the relevant docs before changing its direction. Keep
-proposed behavior, source observations and verified product behavior distinct.
+This repository contains an early headless Node/TypeScript prototype, synthetic
+tests and limited authorized live observations. Read README.md,
+docs/prototype.md and the relevant docs before changing its direction. Keep
+implemented behavior, proposals, source observations and verified product
+behavior distinct; successful proxy requests do not prove credential renewal.
+
+The cross-repository integration plan is Yep Anywhere tactical 143,
+`docs/tactical/143-agent-auth-router-integration.md` in the Yep Anywhere
+repository. Read it before implementing control/pairing, account pools,
+balancing or YA integration. Those features are planned, not implemented here.
 
 - Keep the core headless and independent of any desktop shell.
 - Prefer a small Node.js/TypeScript implementation and narrow dependencies.

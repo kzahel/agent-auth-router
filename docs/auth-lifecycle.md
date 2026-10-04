@@ -1,6 +1,9 @@
 # Credential lifecycle and refresh experiment
 
-Status: approach to test, not demonstrated by this repository.
+Status: credential readers and coordination are prototyped and fixture-tested;
+dedicated login/read access and one native proxy turn per provider were verified.
+Durable renewal remains unverified for both providers. See the versioned
+[prototype observations](prototype.md).
 
 ## Initial enrollment
 
@@ -46,17 +49,32 @@ the credential unchanged. Handle sleep/wake and service restart by checking
 current state before routing; background timers alone cannot guarantee renewal.
 Inactive accounts should not cause indefinite background helper activity.
 
+The current coordinator checks expiry on demand, with a configurable renewal
+window defaulting to five minutes. There is no background keep-warm loop. A
+failed due renewal can leave an unexpired credential usable with backoff;
+forced 401 recovery requires a different readable credential. An expired
+credential without a helper requires official CLI login. These paths are
+fixture-tested, not proof of real provider renewal.
+
 An upstream 401 may indicate early invalidation rather than ordinary expiry.
 Recheck storage and allow one coordinated recovery attempt where replay is
 known safe. Never turn authentication recovery into an unbounded replay loop.
 Revoked or exhausted refresh credentials require interactive login.
 
-## Helper selection is the first research task
+## Helper selection and current findings
 
 Prefer an auth-only official operation that completes renewal and persistence.
 Codex app-server account/auth methods are worth evaluating before paying for
 a maintenance inference. Inspect the installed version's protocol and prove
 its behavior; legacy method names and current source may differ.
+
+The implemented Codex helper reads cached account state, then requests
+`account/read {"refreshToken": true}`. In the recorded Codex 0.159.0
+experiment, forced refresh returned no account after cached state had recognized
+the login; stored credentials did not change. The helper classifies that result
+as failed/unverified renewal, rather than assuming an unexpired login is revoked.
+Ordinary automatic renewal when due has not been verified. Quota reads use
+`account/rateLimits/read` separately and do not request forced renewal.
 
 `codex login status` in the inspected source only loads and reports cached
 authentication. Opening a terminal, starting a CLI and killing it, or running
@@ -82,9 +100,12 @@ what runs and what is billed rather than assuming a tiny prompt is harmless.
 
 - Codex supports file, OS credential-store and other storage modes. Choose
   and document one mode per tested host; do not assume `auth.json` exists.
-- Claude storage on macOS may involve Keychain entries associated with the
-  configuration directory. Establish the exact current identity/format and
-  access behavior for an enrolled profile.
+- Claude storage on macOS uses a version-specific, profile-derived Keychain
+  service in the tested 2.1.280 runtime. An explicitly enrolled
+  `claude-keychain` reader selects only that service and OS account, bounds
+  output/lifecycle and discards stderr. The dedicated live read succeeded;
+  broader version/platform behavior and renewal remain unverified. File storage
+  remains the default, with no automatic Keychain enumeration or fallback.
 - Readers must tolerate credential replacement, temporary writes and malformed
   state without truncating or repairing the provider-owned store.
 - File permissions depend on the actual writer and existing directory. Verify
@@ -100,6 +121,10 @@ Accounts should distinguish: not enrolled, ready, renewing, temporarily
 unavailable and login required. Show sanitized errors and last successful
 renewal. A healthy status must reflect a usable credential, not merely a file
 timestamp or a successful helper launch.
+
+The current coordinator's `ready` state means a locally usable credential,
+not a fresh provider health check. Its renewal/error/backoff metadata is
+process-local. There is no persisted account-health dashboard or control API.
 
 Gateway-token revocation and provider-account expiration are separate states.
 Upstream token rotation must not require changing a client's gateway token.

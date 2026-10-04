@@ -8,8 +8,8 @@ unverified for both providers.
 
 ## What exists
 
-`src/` is a Node 24 / TypeScript service with no runtime dependencies. Node
-runs the `.ts` sources directly; `npm run build` emits `dist/`.
+`src/` requires Node 24 or newer and uses TypeScript with no runtime
+dependencies. Node runs the `.ts` sources directly; `npm run build` emits `dist/`.
 
 | Module | Responsibility |
 | --- | --- |
@@ -43,7 +43,7 @@ tests below. Claude model listing and Messages streaming also worked.
 Compaction and Claude token counting remain source observations from the
 references in [sources](sources.md), unverified against the live services.
 
-## Local observations
+## Earlier local observations (2026-10-02)
 
 Recorded in the preceding session on 2026-10-02 without signing in or reading
 credentials. These are earlier version observations, not the current host's
@@ -68,8 +68,9 @@ version inventory.
   Claude credential reports `login_required`. The generic `command` helper
   exists to test candidate invocations.
 - On macOS Claude Code normally stores credentials in the Keychain. The
-  Claude reader only handles `.credentials.json` and reports `unsupported`
-  when it is absent on macOS. No Keychain reader exists.
+  reader at that point only handled `.credentials.json` and reported
+  `unsupported` when it was absent on macOS. No Keychain reader existed then;
+  the later explicit enrollment mode and live proof are recorded below.
 
 ## Authorized Codex experiment
 
@@ -402,12 +403,19 @@ All automated cases use fixtures:
   remain unverified.
 - Body bytes, header bytes, request time, active requests, upstream header
   wait and stream idle time are bounded. Slow-reader, TLS-failure,
-  repeated-429 and shutdown-during-stream cases are untested.
+  repeated-429 inference and shutdown-during-stream cases are untested. The
+  quota reader's stalled-response and repeated-429 cases are fixture-tested;
+  those do not cover inference streaming containment.
 - File credential stores and an explicitly enrolled, profile-specific Claude
   macOS Keychain entry are supported. Claude renewal is not implemented or
   verified; an expired Claude credential requires official CLI login unless
   a verified helper is enrolled. There is no dashboard, no HTTP administration
-  and no multi-account routing.
+  and no automatic multi-account routing. Multiple enrolled accounts can be
+  assigned to different gateway clients, each with fixed provider assignments.
+- The agreed YA tactical 143 plans local socket pairing/control, scoped grants,
+  account pools/policies and durable per-session bindings across both
+  repositories. None of these features is implemented; see
+  [the integration direction](plan.md#yep-anywhere-integration).
 - Renewal after a router restart in the middle of a helper run is not
   coordinated with an orphaned helper.
 
