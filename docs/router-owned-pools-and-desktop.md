@@ -95,9 +95,11 @@ an enrollment must not erase the official credential store implicitly.
 Guide official CLI login with a dedicated profile and controlled environment.
 Provider authentication remains owned by the official CLI; browser consent or
 other human login steps remain visible. The app should remove the need to type
-commands. UI messages and progress contain safe metadata, never access/refresh
-tokens, raw auth files or unfiltered CLI output. Provider CLI availability and
-version requirements must be discovered and explained during onboarding.
+commands. General UI messages and progress contain safe metadata, never
+access/refresh tokens, raw auth files or unfiltered CLI output. The proposed
+local sign-in terminal below is a separate interactive surface for official
+CLI output. Provider CLI availability and version requirements must be
+discovered and explained during onboarding.
 
 This does not implement or establish durable OAuth renewal. Do not replace
 failed official renewal with router-owned token exchange or credential copying.
@@ -133,6 +135,60 @@ candidate), credential-store access, process-tree cleanup, startup registration,
 paths and packaging. Windows access controls must be tested rather than inferred
 from Unix permissions. No privileged helper is required by the product model.
 Mac-first release scope does not constitute Windows runtime support.
+
+### Embedded sign-in terminal direction (2026-10-04)
+
+Maintainer-approved direction, not implemented: use an app-owned sign-in window
+with [xterm.js](https://xtermjs.org/) as the intended shared terminal UI for
+Windows and Linux, and eventually macOS. Keep the existing macOS Terminal.app
+launcher available while validating the embedded path. Current desktop sign-in
+is macOS-only; there is no Windows PowerShell or Linux external-terminal
+launcher today. Existing synthetic PTY tests do not establish completed human
+provider consent in either presentation.
+
+The purpose remains official CLI authentication against the selected profile.
+The terminal changes presentation, not OAuth ownership: preserve `CODEX_HOME` /
+`CLAUDE_CONFIG_DIR`, clean provider environments, browser/device-code/SSO choices,
+and the official CLI's credential storage. Browser consent still uses the normal
+system browser. An embedded terminal does not require launching a general shell
+such as PowerShell; prefer launching the approved login helper directly.
+
+Use a terminal display plus a native pseudo-terminal (PTY) adapter. Evaluate
+[portable-pty](https://docs.rs/portable-pty/latest/portable_pty/) in the Tauri Rust
+layer as a candidate backend; the dependency choice and platform acceptance are
+still pending. Keep desktop terminal dependencies outside the headless router.
+The router remains the authority for login exclusion, cancellation and status;
+both presentations use the same lifecycle contract rather than separate
+authentication implementations. Preserve the ten-minute deadline, renewal/stop
+exclusion, and cleanup on account disablement, window close or runner loss.
+
+Introduce a build-time backend selector when implementing this work. Proposed
+values are `external` and `embedded` (flag name is not yet fixed or available).
+Initially, normal macOS builds keep `external`; opt-in macOS test/candidate builds
+use `embedded` with the same profiles and lifecycle. Target Windows/Linux builds
+use `embedded` once their platform prerequisites pass. Unsupported combinations
+must fail clearly, without silently selecting a different backend. Record the
+selected backend in build metadata so candidate results are attributable. No
+end-user setting is needed for the first experiment, and changing the backend
+must not migrate accounts, copy credentials or change profile identity.
+
+Keep the sign-in window compact and system-themed, showing provider, profile
+folder, terminal, status and Cancel. Scope its native bridge to the owned login
+session, with bounded output buffering and no persisted terminal transcript or
+raw output in logs, telemetry, overview responses or integration APIs. Terminal
+output may contain login URLs/codes and belongs only in this local owner window.
+Use normal browser handling for consent links; do not give terminal escape
+sequences unrestricted clipboard, file or command execution privileges.
+
+Prove both backends with synthetic interactive CLIs and temporary profiles:
+method selection, real TTY input/output, resize, paste, Ctrl-C, completion,
+timeout, window close, process-tree cleanup, concurrent login rejection and
+renewal/stop exclusion. Verify output stays out of durable/shared metadata.
+Check actual keyboard interaction and rendering on each target OS, then perform
+separately authorized human consent acceptance for both providers. Keep external
+macOS coverage during rollout. Windows transport/ACL, executable discovery and
+process lifecycle support, plus Linux packaging, remain separate requirements;
+adding xterm.js alone does not establish cross-platform app support.
 
 ## Migration and compatibility
 

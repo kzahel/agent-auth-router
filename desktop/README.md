@@ -75,6 +75,12 @@ identity and the core digest; dirty local builds are labeled. Native startup,
 credentials, process control and packaging are OS adapter boundaries. Windows
 runtime/ACL/process-tree/startup/update acceptance is still future work.
 
+The [embedded sign-in terminal plan](../docs/router-owned-pools-and-desktop.md#embedded-sign-in-terminal-direction-2026-10-04)
+records xterm.js as the intended Windows/Linux and eventual shared sign-in UI.
+A proposed build-time backend selector will allow embedded-terminal candidates
+while retaining the current macOS Terminal.app path. Neither the embedded
+terminal nor that selector is implemented yet.
+
 ## Candidate signing and updates
 
 `.github/workflows/desktop.yml` checks both Mac architectures on pushes and PRs.
