@@ -1,5 +1,7 @@
 // Private control protocol v1: integration use credentials and a separate
 // local-owner administration credential. The inference listener serves neither.
+import { modelCapabilities, supportsThinking, validThinking, type CatalogModel } from "./model-capabilities.ts";
+export type { CatalogModel } from "./model-capabilities.ts";
 import { OwnerService } from "./owner.ts";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -19,11 +21,11 @@ interface Binding {
   id: string; integrationId: string; accountId: string; provider: Provider;
   model: string; tokenHash: string; state: "prepared" | "committed" | "cancelled";
   createdAt: number;
+  thinking?: string;
   policyVersion?: number; selectionEvidence?: SelectionEvidence;
   poolId?: string; policy?: PoolPolicy; request?: string; reason?: string; observedAt?: string | undefined;
 }
 interface ControlState { version: 3; routerId: string; integrations: Integration[]; bindings: Binding[]; pools?: Pool[]; cancellations?: { id: string; integrationId: string }[] }
-export interface CatalogModel { id: string; name: string; contextWindow?: number }
 export class ControlError extends Error {
   status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
@@ -194,7 +196,8 @@ export class ControlRegistry {
     const requestedPolicy = body.policy;
     if (requestedPolicy !== undefined && !isPoolPolicy(requestedPolicy)) reject(400, "invalid pool policy");
     const manual = body.accountId === undefined ? undefined : field(body, "accountId");
-    const request = JSON.stringify([poolId, model, body.provider, requestedPolicy ?? null, manual ?? null, tokenHash]);
+    if (body.thinking !== undefined && !validThinking(body.thinking)) reject(400, "invalid thinking");
+    const request = JSON.stringify([poolId, model, body.provider, requestedPolicy ?? null, manual ?? null, tokenHash, ...(body.thinking === undefined ? [] : [body.thinking])]);
     if (this.state.cancellations?.some(c => c.id === id && c.integrationId === integration.id)) reject(409, "allocation cancelled");
     const existing = this.state.bindings.find(b => b.id === id);
     if (existing && (existing.integrationId !== integration.id || existing.request !== request)) reject(409, "allocation conflicts with existing pin");
@@ -234,11 +237,11 @@ export class ControlRegistry {
   }
   preparePool(integration: Integration, body: Record<string, unknown>, evidence: PoolEvidence): object {
     const { id, poolId, model, tokenHash, pool, request, existing, policy, manual } = this.poolRequest(integration, body);
-    if (existing) return this.prepare(integration, { id, accountId: existing.accountId, provider: pool.provider, model, tokenHash });
+    if (existing) return this.prepare(integration, { id, accountId: existing.accountId, provider: pool.provider, model, tokenHash, thinking: existing.thinking });
     const now = Date.now();
     const eligible = pool.accountIds.filter(accountId => {
       const a = this.store.loadAccounts().find(a => a.id === accountId);
-      return eligibility(pool.provider, !!a && a.enabled !== false, model, evidence.get(accountId), policy !== "manual", now) === "eligible";
+      return eligibility(pool.provider, !!a && a.enabled !== false, model, evidence.get(accountId), policy !== "manual", now) === "eligible" && supportsThinking(evidence.get(accountId).models.find(m => m.id === model), body.thinking as string | undefined);
     });
     let chosen = manual;
     if (chosen && !eligible.includes(chosen)) reject(409, "manual account is not eligible; refresh pool overview");
@@ -251,7 +254,7 @@ export class ControlRegistry {
     if (this.state.bindings.length >= 100_000) reject(409, "binding limit reached");
     const selectedEvidence = selectionEvidence(pool.provider, evidence.get(chosen!), model, this.reservations(pool.id, chosen!, now));
     const binding: Binding = { id, integrationId: integration.id, accountId: chosen!, provider: pool.provider, model, tokenHash,
-      state: "prepared", createdAt: now, poolId, policy, request,
+      state: "prepared", createdAt: now, poolId, policy, request, ...(body.thinking === undefined ? {} : { thinking: body.thinking as string }),
       policyVersion: 1, selectionEvidence: selectedEvidence,
       reason: policy === "most-remaining" ? `Most remaining: tightest window has ${selectedEvidence.headroomPercent}% remaining; among accounts with fewest startup reservations` : policy === "round-robin" ? "Round robin among eligible accounts" : "Explicit manual account",
       observedAt: evidence.get(chosen!).quota?.observedAt };
@@ -297,7 +300,7 @@ export class ControlRegistry {
     if (this.state.cancellations?.some(c => c.id === id && c.integrationId === integration.id)) reject(409, "allocation cancelled");
     const existing = this.state.bindings.find((b) => b.id === id);
     if (existing) {
-      if (existing.integrationId !== integration.id || existing.accountId !== accountId || existing.model !== model || !equalHash(existing.tokenHash, tokenHash)) reject(409, "allocation conflicts with existing pin");
+      if (existing.integrationId !== integration.id || existing.accountId !== accountId || existing.model !== model || existing.thinking !== body.thinking || !equalHash(existing.tokenHash, tokenHash)) reject(409, "allocation conflicts with existing pin");
       if (!this.poolAllows(existing)) reject(409, "pinned account or pool grant removed");
       if (existing.state === "cancelled") reject(409, "allocation cancelled");
       if (existing.state === "prepared" && existing.createdAt + PREPARE_MS <= Date.now()) reject(409, "allocation expired");
@@ -305,7 +308,7 @@ export class ControlRegistry {
     }
     if (!this.current(integration).accountIds.includes(accountId)) reject(403, "direct account access not granted; allocate through a pool");
     if (this.state.bindings.length >= 100_000) reject(409, "binding limit reached");
-    const binding: Binding = { id, integrationId: integration.id, accountId, provider: account.provider, model, tokenHash, state: "prepared", createdAt: Date.now() };
+    const binding: Binding = { id, integrationId: integration.id, accountId, provider: account.provider, model, tokenHash, state: "prepared", createdAt: Date.now(), ...(body.thinking === undefined ? {} : { thinking: body.thinking as string }) };
     this.change((state) => state.bindings.push(binding));
     return this.metadata(binding);
   }
@@ -371,7 +374,7 @@ export async function readCatalog(coordinator: CredentialCoordinator, origin?: s
     if (typeof id !== "string" || !id.length || id.length > 200) return [];
     const name = row.display_name ?? row.name ?? id;
     return [{ id, name: typeof name === "string" ? name.slice(0, 200) : id,
-      ...(typeof row.context_window === "number" ? { contextWindow: row.context_window } : {}) }];
+      ...modelCapabilities(provider, row) }];
   });
 }
 
@@ -386,6 +389,13 @@ export async function startControl(store: StateStore, origin: string, coordinato
   const generations = new Map<string, number>();
   const catalogJobs = new Map<string, Promise<CatalogModel[]>>();
   const quotaJobs = new Map<string, ReturnType<typeof fetchAccountQuotas>>();
+  let catalogActive = 0;
+  const catalogWaiters: (() => void)[] = [];
+  const catalogSlot = async () => {
+    if (catalogActive >= 4) await new Promise<void>(resolve => catalogWaiters.push(resolve));
+    else catalogActive++;
+    return () => { const next = catalogWaiters.shift(); if (next) next(); else catalogActive--; };
+  };
   const catalogs = new Map<string, { models: CatalogModel[]; until: number }>();
   const catalog = (id: string, fresh = false) => {
     const cached = catalogs.get(id);
@@ -394,7 +404,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     if (!job) {
       const generation = generations.get(id);
       const coordinator = coordinators.get(id) ?? reject(409, "account unavailable; enroll through owner administration");
-      job = readCatalog(coordinator, store.loadConfig().upstreams?.[coordinator.account.provider]).then((models) => { if (generation !== generations.get(id)) reject(409, "account changed during catalog read"); catalogs.set(id, { models, until: Date.now() + 60_000 }); return models; }).finally(() => catalogJobs.delete(id));
+      job = (async () => { const release = await catalogSlot(); try { return await readCatalog(coordinator, store.loadConfig().upstreams?.[coordinator.account.provider]); } finally { release(); } })().then((models) => { if (generation !== generations.get(id)) reject(409, "account changed during catalog read"); catalogs.set(id, { models, until: Date.now() + 60_000 }); return models; }).finally(() => catalogJobs.delete(id));
       catalogJobs.set(id, job);
     }
     return job;
@@ -411,7 +421,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     void (async () => {
       if (req.headers.origin || req.headers.host !== "localhost") reject(403, "invalid control origin");
       const path = req.url;
-      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "admission-refresh-v1"], supportedPolicies: POOL_POLICIES });
+      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "admission-refresh-v1", "session-selection-v1"], supportedPolicies: POOL_POLICIES });
       const isOwner = path?.startsWith("/v1/owner/");
       if (isOwner) owner.authenticate(req.headers.authorization);
       let integration = path === "/v1/pair" || isOwner ? undefined : registry.authenticate(req.headers.authorization);
@@ -427,6 +437,21 @@ export async function startControl(store: StateStore, origin: string, coordinato
       integration = registry.authenticate(req.headers.authorization);
       if (path === "/v1/pools/save") return reject(403, "pools are managed by the local router owner");
       if (path === "/v1/pools/remove") return reject(403, "pools are managed by the local router owner");
+      if (path === "/v1/selection") {
+        if (body.provider !== "claude" && body.provider !== "codex") reject(400, "invalid provider");
+        const ids = registry.accounts(integration).filter(a => a.provider === body.provider && a.enabled).map(a => a.id);
+        if (ids.length > 256) reject(409, "too many accounts for discovery");
+        const controller = new AbortController();
+        const cancel = () => controller.abort(new ControlError(409, "discovery cancelled"));
+        const timer = setTimeout(cancel, 12_000);
+        res.once("close", cancel);
+        try {
+          await evidence.discover(ids, controller.signal, id => {
+            try { registry.account(registry.authenticate(req.headers.authorization), id); return true; } catch { return false; }
+          });
+          return reply(200, registry.overview(registry.authenticate(req.headers.authorization), evidence));
+        } finally { clearTimeout(timer); controller.abort(); res.removeListener("close", cancel); }
+      }
       if (path === "/v1/overview") return reply(200, registry.overview(integration, evidence, body));
       if (path === "/v1/overview/refresh") {
         const account = registry.account(integration, field(body, "accountId"));
@@ -457,7 +482,8 @@ export async function startControl(store: StateStore, origin: string, coordinato
       if (path === "/v1/bindings/prepare") {
         const account = registry.account(integration, field(body, "accountId"));
         const model = field(body, "model");
-        if (!(await catalog(account.id)).some((m) => m.id === model)) reject(409, "model absent from account catalog");
+        if (body.thinking !== undefined && !validThinking(body.thinking)) reject(400, "invalid thinking");
+        if (!supportsThinking((await catalog(account.id)).find(m => m.id === model), body.thinking as string | undefined)) reject(409, "model or thinking unavailable for account");
         // Reauthenticate after asynchronous reads: revocation wins admission races.
         return reply(200, registry.prepare(registry.authenticate(req.headers.authorization), body));
       }

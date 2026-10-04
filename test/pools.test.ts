@@ -298,3 +298,18 @@ test("cancelling admission stops queued refreshes without cancelling a shared re
   release(); await shared; await new Promise(r => setImmediate(r));
   assert.equal(calls, 4); assert.equal(evidence.active(), 0);
 });
+
+test("thinking-aware allocation excludes incompatible members and persists request identity", async () => {
+  const f = fixture();
+  await Promise.all([f.evidence.refresh("a"), f.evidence.refresh("b")]);
+  f.evidence.setCatalog("a", [{ id: "claude-sonnet-fixture", name: "Fixture", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "" }] }]);
+  f.evidence.setCatalog("b", [{ id: "claude-sonnet-fixture", name: "Fixture", supportedReasoningEfforts: [{ reasoningEffort: "high", description: "" }] }]);
+  const body = { ...f.allocation(), thinking: "on:high" };
+  const selected = f.registry.preparePool(f.integration, body, f.evidence) as any;
+  assert.equal(selected.accountId, "b");
+  f.registry.transition(f.integration, body.id, "commit", f.evidence);
+  assert.deepEqual(f.registry.preparePool(f.integration, body, f.evidence), { ...selected, state: "committed" });
+  assert.throws(() => f.registry.preparePool(f.integration, { ...body, thinking: "on:low" }, f.evidence), /conflicts/);
+  assert.throws(() => f.registry.preparePool(f.integration, { ...f.allocation(), thinking: "on:max" }, f.evidence), /no eligible/);
+  assert.throws(() => f.registry.preparePool(f.integration, { ...f.allocation(), thinking: "invalid" }, f.evidence), /invalid thinking/);
+});

@@ -5,6 +5,33 @@ AAR owns single-provider pools; integrations receive use grants. Owner pool edit
 and live enrollment require no restart or re-pairing. YA renders scoped metadata
 and requests allocation; it cannot administer router-owned pools.
 
+## Unified session discovery and thinking (2026-10-04)
+
+The [unified selection plan](unified-session-selection.md) adds
+`session-selection-v1`. Authenticated POST `/v1/selection` with `provider` reads
+current granted metadata and refreshes missing/stale catalogs for that provider.
+It performs no quota reads or inference. Discovery is bounded to 256 visible
+accounts, four catalog requests globally, a 12-second caller deadline and
+per-account coalescing/failure backoff. Cancellation stops admitting queued
+discovery work; shared provider reads retain their own bounded deadline. Grants
+are rechecked after asynchronous reads. Ordinary overview remains passive.
+
+Model rows retain provider-reported reasoning levels/defaults, adaptive-thinking
+support and context size. Unknown capabilities remain unknown, never inferred
+from a model's name. Codex's catalog shape was inspected at upstream revision
+`06f82c123c6ed295f0ef19b5cbf49cf78bbc092e`; Claude's shape was inspected in YA's
+installed Anthropic SDK model declarations. These are source observations, not
+proof of every live account's capabilities.
+
+Prepare accepts optional `thinking` (`auto`, `off`, or `on:low|medium|high|xhigh|max`).
+Explicit effort requires matching account model evidence; YA's Max also accepts
+native `ultra`. It participates in the durable allocation request identity, so
+retries cannot change the requested settings or chosen account. Omitting the
+field retains the previous protocol behavior. Pool policies still check quota
+readiness independently of model/thinking compatibility. Existing pins retain
+their allocation settings; YA validates deliberate subsequent setting changes
+against the pinned account without rerunning pool selection.
+
 ## Most remaining and admission refresh (2026-10-04)
 
 Policies are Manual, Round robin and **Most remaining**. The latter compares each

@@ -181,3 +181,33 @@ test("HTTP automatic admission refreshes cold evidence and refuses unsupported c
   assert.equal(repeat.value.accountId, admitted.value.accountId);
   assert.equal(upstream.requests.length, 2);
 });
+
+test("session discovery reads only granted provider catalogs, coalesces and projects capabilities", { skip: process.platform === "win32" }, async () => {
+  const store = storeFixture();
+  let reads = 0;
+  const upstream = await mockUpstream((_req, res) => {
+    reads++;
+    setTimeout(() => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ data: [{ id: "fixture", display_name: "Fixture", capabilities: { effort: { supported: true, high: { supported: true } } } }] })); }, 20);
+  });
+  writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
+  const router = await startRouter(store); after(() => router.close());
+  const socket = router.controlSocket!, token = ctlToken(), id = randomUUID();
+  await request(socket, "/v1/pair", undefined, { id, name: "Discovery", tokenHash: hashGatewayToken(token) });
+  assert.equal((await request(socket, "/v1/selection", undefined, { provider: "claude" })).status, 401);
+  const empty = await request(socket, "/v1/selection", token, { provider: "claude" });
+  assert.equal(empty.value.accounts.length, 0); assert.equal(reads, 0);
+  await ownerRequest(store, "grants/save", { id, revision: 1, poolIds: [], accountIds: ["fixture"] });
+  const results = await Promise.all([1, 2, 3].map(() => request(socket, "/v1/selection", token, { provider: "claude" })));
+  assert.equal(reads, 1);
+  for (const result of results) {
+    assert.equal(result.status, 200);
+    assert.equal(result.value.accounts[0].models[0].supportedReasoningEfforts[0].reasoningEffort, "high");
+    assert.equal(result.value.accounts[0].quota, null);
+    assert.doesNotMatch(JSON.stringify(result.value), /synthetic-provider-secret|tokenHash|profiles/);
+  }
+  await request(socket, "/v1/selection", token, { provider: "codex" });
+  assert.equal(reads, 1);
+  assert.equal((await request(socket, "/v1/selection", token, { provider: "unknown" })).status, 400);
+  await ownerRequest(store, "grants/save", { id, revision: 2, poolIds: [], accountIds: [] });
+  assert.equal((await request(socket, "/v1/selection", token, { provider: "claude" })).value.accounts.length, 0);
+});

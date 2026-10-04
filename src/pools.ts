@@ -133,6 +133,35 @@ export class PoolEvidence {
       }
     }));
   }
+  private readonly discoveries = new Map<string, Promise<void>>();
+  private readonly discoveryRetryAt = new Map<string, number>();
+  /** Catalog-only discovery; no quota I/O and no idle work. */
+  async discover(ids: string[], signal: AbortSignal, allowed: (id: string) => boolean): Promise<void> {
+    const queue = [...new Set(ids)].slice(0, 256);
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+      for (let id = queue.shift(); id; id = queue.shift()) {
+        signal.throwIfAborted();
+        if (!allowed(id)) continue;
+        const before = this.get(id), now = Date.now();
+        if (before.catalogAt && now - Date.parse(before.catalogAt) < CATALOG_FRESH_MS && now >= Date.parse(before.catalogAt)) continue;
+        if ((this.discoveryRetryAt.get(id) ?? 0) > now || (before.blocked && Date.parse(before.cooldownUntil ?? "") > now)) continue;
+        let job = this.discoveries.get(id);
+        if (!job) {
+          const accountId = id, generation = this.generations.get(id);
+          job = this.catalog(id).then(models => {
+            if (generation === this.generations.get(accountId)) this.setCatalog(accountId, models);
+          }).catch(() => { this.discoveryRetryAt.set(accountId, Date.now() + 5_000); })
+            .finally(() => this.discoveries.delete(accountId));
+          this.discoveries.set(id, job);
+        }
+        let abort!: () => void;
+        try { await Promise.race([job, new Promise<never>((_, reject) => {
+          abort = () => reject(signal.reason); signal.addEventListener("abort", abort, { once: true });
+          if (signal.aborted) abort();
+        })]); } finally { signal.removeEventListener("abort", abort); }
+      }
+    }));
+  }
   refresh(id: string): Promise<Observation> {
     const pending = this.jobs.get(id);
     if (pending) return pending;
