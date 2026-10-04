@@ -44,9 +44,13 @@ Each provider exercises:
 - Scoped pool creation, passive overview, explicit quota/catalog refresh,
   parallel Round robin starts on distinct accounts, restart/resume after a
   default-policy change, exhaustion refusal, and deletion revoking old pins.
+- Automatic selection discovery reads current grants and model/effort catalogs
+  without refreshing quotas.
 - Most remaining chooses the tightest-window winner from cold evidence without
   explicit refresh, persists its reason, and keeps the same pin/token after restart
-  despite reversed quota rankings, for both providers.
+  despite reversed quota rankings, for both providers. The pool default is used
+  without a YA policy override; explicit Max reaches Claude as `max` and Codex as
+  `ultra` using the allocated account catalog.
 - Pairing, account/catalog discovery and manual selection among two accounts.
 - Real native launch overrides, overriding poisoned direct-auth environment
   variables, streamed replies and YA's persisted transcript reader.

@@ -1,7 +1,7 @@
 # Unified session selection in Yep Anywhere
 
-Status: implementation approved 2026-10-04; work in progress. This document owns
-the cross-repository plan. YA's `topics/agent-auth-router.md` owns its shipped UX
+Status: implemented and verified in both repositories, 2026-10-04. This document owns
+the cross-repository plan. YA's `topics/agent-auth-router.md` owns its current UX
 contract. This supersedes the initial separate router model/default-thinking UI.
 
 ## User experience
@@ -88,13 +88,29 @@ active YA process is a separate operational step and must preserve live sessions
 ## Implementation evidence
 
 2026-10-04: AAR catalog capabilities, bounded catalog-only discovery and
-thinking-aware prepare/commit are implemented. The 120-test core check passed;
-the subsequent commit-time capability-change regression also passed. All 12
-SHA-pinned cross-repository tests passed, including newly asserted explicit High
-effort at the native Claude/Codex boundary and after restart/resume. Those tests
-exercise YA's existing API capability, not the proposed unified UI.
+thinking-aware prepare/commit are implemented. `npm run check` passes all 121
+core tests. YA commit `fb2c5b1ffac1c6c4a756effe858cef69c8976f3b` implements the
+unified launch controls, automatic discovery, scoped native catalogs and thinking
+validation. YA's full test suite, lint, format check and type check passed. One
+unrelated service-worker timing test failed in the first full run, then passed
+both in isolation and in the full rerun without changes to that test.
 
-YA implementation and the final pin update are in progress. The maintainer
-approved coordinated changes under the existing overall feature capability,
-without a separate compatibility layer. No live app replacement or YA restart
-has been performed for this change yet.
+Desktop 1000×600 and phone 375×812 selector captures were inspected. The browser
+fixture retained all 32 sequential prompt keystrokes during discovery; maximum
+measured update latency was 7.1 ms. Component tests cover the actual New Session
+form's retained model/thinking selection, alias resolution, manual pools,
+incompatible/revoked selections and source/provider changes.
+
+All 12 cross-repository tests pass against that immutable YA pin in temporary
+profiles. Both native adapters receive explicit High and retain it after
+restart/resume. Pool launches exercise catalog-only discovery, use the pool's
+default policy without a YA override, and map explicit Max to Claude `max` or
+Codex `ultra` using the allocated account's metadata. Native Codex unit tests also
+cover scoped one-turn modifiers and restoring normal effort.
+
+These are synthetic CLI/upstream tests, not new live-provider observations.
+Commits are local; the clean pinned fixture was seeded from the local YA commit
+with its original GitHub origin retained. Publish YA before AAR when pushing
+these commits so CI can fetch the new pin. No installed app replacement or active
+YA restart has been performed; the installed desktop must be rebuilt with this
+core and YA restarted before the new UX is available in the running applications.

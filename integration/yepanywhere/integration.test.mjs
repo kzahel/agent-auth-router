@@ -931,10 +931,17 @@ for (const provider of ["claude", "codex"]) {
     const overview = await f.api("/agent-auth-router/overview", { poolId: pool.id, model: "synthetic-model" });
     assert.ok(overview.value.supportedPolicies.includes("most-remaining"));
     assert.equal(overview.value.selection.decisions[0].reason, "catalog-unknown");
+    const discovered = await f.api("/agent-auth-router/selection", { provider });
+    assert.equal(discovered.status, 200);
+    assert.equal(discovered.value.pools[0].id, pool.id);
+    assert.ok(discovered.value.accounts.every(a => a.models[0].supportedReasoningEfforts.some(e => e.reasoningEffort === (provider === "codex" ? "ultra" : "max"))));
+    assert.ok(discovered.value.accounts.every(a => a.quota === null), "selection discovers models without reading quotas");
     const startPath = `/projects/${Buffer.from(f.project).toString("base64url")}/sessions`;
-    const start = await f.api(startPath, { message: "most-remaining", provider, model: "synthetic-model", routerPoolId: pool.id, routerPolicy: "most-remaining", mode: "bypassPermissions" });
+    const start = await f.api(startPath, { message: "most-remaining", provider, model: "synthetic-model", routerPoolId: pool.id, thinking: "on:max", mode: "bypassPermissions" });
     const idle = await eventually(async () => (await f.api("/processes")).value.processes.find(p => p.id === start.value.processId && p.state === "idle"), "Most remaining native turn finishes");
     const allocation = Object.values(f.privateState().allocations)[0];
+    assert.equal(allocation.thinking, "on:max");
+    assert.equal(f.native().find(row => row.event === (provider === "claude" ? "spawn" : "turn/start"))?.effort, provider === "codex" ? "ultra" : "max", "pool thinking uses the selected account catalog");
     assert.equal(allocation.accountId, "other");
     const registry = JSON.parse(readFileSync(join(f.store.dir, "control.json"), "utf8"));
     const binding = registry.bindings.find(b => b.id === allocation.id);
