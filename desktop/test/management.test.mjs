@@ -74,13 +74,16 @@ test("management UI preserves typing while observations update, and offers owner
     };
     window.fixtureState = state;
     window.operations = [];
+    window.routerEvents = {};
     window.__TAURI__ = {
+      event: { listen: async (name, callback) => { window.routerEvents[name] = callback; return () => { delete window.routerEvents[name]; }; } },
       core: {
         invoke: async (command, args) => {
           window.operations.push({ command, ...args });
           if (command === "startup") return false;
           if (command === "check_update") return { current: true };
-          if (args.operation === "overview") {
+          if (args.operation === "observe" && window.coreStopped) throw Error("Router unavailable");
+          if (args.operation === "overview" || args.operation === "observe") {
             await new Promise((r) => setTimeout(r, 150));
             return structuredClone(state);
           }
@@ -149,6 +152,15 @@ test("management UI preserves typing while observations update, and offers owner
   await page.getByRole("tab", { name: "Connections", exact: true }).click();
   await page.getByRole("button", { name: "Manage access", exact: true }).click();
   await page.locator("#grant-pools input").check();
+  await page.evaluate(() => {
+    window.fixtureState.integrations.push({ id: "new-pairing", name: "New pairing", revision: 1, revoked: false, poolIds: [], accountIds: [] });
+    for (let i = 0; i < 8; i++) window.routerEvents["router-state-changed"]({});
+  });
+  await page.getByRole("heading", { name: "New pairing", exact: true }).waitFor();
+  assert.equal(await page.locator("#grant-pools input").isChecked(), true, "automatic pairing refresh preserves unsaved access choices");
+  const observes = (await page.evaluate(() => window.operations)).filter(o => o.operation === "observe");
+  assert.ok(observes.length > 0 && observes.length <= 2, "external change bursts are coalesced");
+
   await page.getByRole("button", { name: "Save access", exact: true }).click();
   assert.ok(
     (await page.evaluate(() => window.operations)).some(
@@ -294,6 +306,10 @@ test("management UI preserves typing while observations update, and offers owner
   assert.equal(await deletion.isDisabled(), true);
   await dialog.getByText("Imported profiles are kept.", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  const startsBeforeObservation = (await page.evaluate(() => window.operations)).filter(o => o.operation === "overview").length;
+  await page.evaluate(() => { window.coreStopped = true; window.routerEvents["router-state-changed"]({}); });
+  await page.getByText("Router unavailable", { exact: true }).waitFor();
+  assert.equal((await page.evaluate(() => window.operations)).filter(o => o.operation === "overview").length, startsBeforeObservation, "background refresh never calls the auto-starting overview operation");
   assert.deepEqual(errors, []);
   t.diagnostic(
     `${samples.length} sequential keystrokes; maximum ${Math.max(...samples.map((s) => s.elapsed)).toFixed(1)} ms`,

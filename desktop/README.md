@@ -14,6 +14,12 @@ Accounts keep Sign in and Refresh usage visible; **More** holds sign-in checks,
 nickname editing and disable/remove actions. CLI setup help is under **Account
 setup**, and launch/update/stop controls are on **App**.
 
+Pairing from YA and external account/pool/grant edits refresh this window
+automatically. The native shell checks only registry file metadata every 250 ms
+and emits a local change notification; it does not poll provider quotas or read
+profile credentials. Refreshes coalesce and leave open editors unchanged.
+Background observation never starts a router stopped with **Stop router**.
+
 1. Open the app. It attaches to an available local router or starts its core.
 2. Choose **Check installed CLIs**, then **Add account**. Choose **Create dedicated
    profile** or **Use existing profile**. Existing profiles offer **Find profiles**
@@ -114,6 +120,7 @@ For an isolated native WebView/CSP/IPC smoke, prepare the bundle, then run:
 TAURI_CONFIG='{"identifier":"com.graehlarts.agent-auth-router.smoke"}' cargo build --manifest-path desktop/src-tauri/Cargo.toml
 node desktop/scripts/smoke-embedded.mjs
 node desktop/scripts/smoke-lifecycle.mjs
+node desktop/scripts/smoke-pairing.mjs
 ```
 
 This uses a distinct app identity, temporary state and a synthetic CLI. Its

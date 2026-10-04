@@ -54,6 +54,7 @@ jobs:
           TAURI_CONFIG='{"identifier":"com.graehlarts.agent-auth-router.smoke"}' cargo build --manifest-path desktop/src-tauri/Cargo.toml
           node desktop/scripts/smoke-embedded.mjs
           node desktop/scripts/smoke-lifecycle.mjs
+          node desktop/scripts/smoke-pairing.mjs
       - name: Reclaim debug build space before release packaging
         run: cargo clean --manifest-path desktop/src-tauri/Cargo.toml --profile dev
       - name: Build bundled app

@@ -162,3 +162,19 @@ open, and leaves Cancel focused. Browser tests cover cancellation, failures,
 retired rows, imported profiles and both removal choices. Synthetic core tests
 cover scope, revision/identity checks, filesystem failure, preserved credentials,
 reference cleanup, restart and non-revival of old account access.
+
+
+## Automatic desktop observation (0.1.7)
+
+Successful pairing or other external registry writes update an already-open
+management window without Reload. The native shell observes metadata for
+`control.json`, `accounts.json` and `clients.json` at 250 ms intervals, including
+atomic file replacements, then emits a payload-free event to the owner window.
+This does not read credential files, perform provider requests or add a public
+subscription endpoint. The UI coalesces updates and preserves open editors.
+
+The native `observe` operation only reads the running owner's overview; unlike
+explicit Reload, it cannot start the core. The native WebView smoke pairs through
+the real private control socket after the empty Connections view is rendered,
+then checks that the connection appears without a reload and that observation
+cannot revive an explicitly stopped core.

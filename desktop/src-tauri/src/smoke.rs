@@ -38,11 +38,36 @@ pub fn smoke_window(window: tauri::WebviewWindow, close: bool) -> Result<bool, S
         .is_visible()
         .map_err(|_| "Cannot inspect window".into())
 }
+#[tauri::command]
+pub fn smoke_ready(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    if !enabled() || window.label() != "main" {
+        return Err("Smoke unavailable".into());
+    }
+    std::fs::write(super::state_dir(&app)?.join("pairing-ready"), "ready")
+        .map_err(|_| "Cannot record readiness".into())
+}
 pub fn loaded(webview: &tauri::Webview, payload: &tauri::webview::PageLoadPayload<'_>) {
     if !enabled() || payload.event() != tauri::webview::PageLoadEvent::Finished {
         return;
     }
-    let script = if std::env::var("AAR_LIFECYCLE_SMOKE").as_deref() == Ok("1") {
+    let script = if std::env::var("AAR_PAIRING_SMOKE").as_deref() == Ok("1") {
+        r#"(async()=>{
+          const invoke=window.__TAURI__.core.invoke;
+          const wait=async(check)=>{for(let i=0;i<200;i++){if(check())return;await new Promise(r=>setTimeout(r,50));}throw Error();};
+          try {
+            await wait(()=>document.querySelector('#integrations')?.textContent.includes('No connections.'));
+            await invoke('smoke_ready');
+            // The runner pairs externally after our initial view is rendered.
+            await wait(()=>document.querySelector('#integrations')?.textContent.includes('Synthetic YA'));
+            const status=await invoke('router',{operation:'observe',body:{}});
+            await invoke('router',{operation:'stop',body:{routerId:status.routerId}});
+            await new Promise(r=>setTimeout(r,300));
+            let refused=false;try{await invoke('router',{operation:'observe',body:{}});}catch{refused=true;}
+            if(!refused)throw Error();
+            await invoke('smoke_result',{ok:true});
+          } catch { await invoke('smoke_result',{ok:false}); }
+        })()"#
+    } else if std::env::var("AAR_LIFECYCLE_SMOKE").as_deref() == Ok("1") {
         r#"(async()=>{
           const invoke=window.__TAURI__.core.invoke;
           try {

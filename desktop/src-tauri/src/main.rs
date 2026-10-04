@@ -2,6 +2,7 @@
 mod lifecycle;
 #[cfg(debug_assertions)]
 mod smoke;
+mod state_watch;
 mod terminal;
 use serde_json::{json, Value};
 use std::{
@@ -321,6 +322,7 @@ async fn router(
     }
     const OPERATIONS: &[&str] = &[
         "overview",
+        "observe",
         "providers",
         "accounts/add",
         "profiles/discover",
@@ -358,6 +360,10 @@ async fn router(
         }
         if operation == "overview" {
             return ensure_core(&app, &mut core);
+        }
+        if operation == "observe" {
+            // Background observation must not start a core stopped by the owner.
+            return request(&app, "overview", json!({}));
         }
         if operation == "accounts/terminal-login" {
             let id = body["id"].as_str().ok_or("Missing account")?;
@@ -559,7 +565,8 @@ fn main() {
             install_update,
             terminal::terminal,
             smoke::smoke_result,
-            smoke::smoke_window
+            smoke::smoke_window,
+            smoke::smoke_ready
         ])
         .on_page_load(smoke::loaded);
     #[cfg(not(debug_assertions))]
@@ -594,6 +601,20 @@ fn main() {
                     window.hide()?;
                 }
             }
+            let mut watch = state_watch::StateWatch::new(state_dir(app.handle())?);
+            let observer = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_millis(250));
+                let runtime = observer.state::<Runtime>();
+                match runtime.2.load(Ordering::Acquire) {
+                    2 => break,
+                    1 => continue,
+                    _ => {}
+                }
+                if watch.changed() {
+                    let _ = observer.emit_to("main", "router-state-changed", ());
+                }
+            });
             let handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
                 let runtime = handle.state::<Runtime>();

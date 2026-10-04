@@ -131,10 +131,10 @@ $("remove-form").onsubmit = async event => {
     $("delete-profile").disabled = !removal.canDeleteProfile;
   }
 };
-async function reload() {
+async function reload(observe = false) {
   const generation = ++observationGeneration;
   let next;
-  try { next = await api("overview"); }
+  try { next = await api(observe ? "observe" : "overview"); }
   catch (failure) { if (generation === observationGeneration) $("status").textContent = "Router unavailable"; throw failure; }
   if (generation !== observationGeneration) return;
   snapshot = next;
@@ -514,7 +514,6 @@ $("stop").onclick = () =>
     await api("stop", { routerId: snapshot.routerId });
     $("status").textContent = "Router stopped. Reload to start it again.";
   }, $("stop"));
-void run(reload);
 void invoke("startup", { enabled: null })
   .then((enabled) => {
     $("startup").checked = enabled;
@@ -549,3 +548,19 @@ $("terminal-presentation").value = localStorage.getItem("terminal-presentation")
 $("terminal-presentation").onchange = () => localStorage.setItem("terminal-presentation", $("terminal-presentation").value);
 
 void window.__TAURI__.event?.listen("router-lifecycle-error", ({ payload }) => { error(payload); $("status").textContent = "Router could not stop"; });
+
+// External pairing and CLI edits arrive through the native registry watcher.
+// Coalesce bursts; observation preserves editors and never starts a stopped core.
+let observationDirty = false, observationJob;
+function stateChanged() {
+  observationDirty = true;
+  if (observationJob) return;
+  observationJob = (async () => {
+    while (observationDirty) {
+      observationDirty = false;
+      try { await reload(true); } catch { /* The status conveys unavailability. */ }
+    }
+  })().finally(() => { observationJob = undefined; });
+}
+void Promise.resolve(window.__TAURI__.event?.listen("router-state-changed", stateChanged))
+  .then(() => run(reload)).catch(error);
