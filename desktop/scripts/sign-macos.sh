@@ -13,8 +13,8 @@ mkdir -p "$output"
 output="$(cd "$output" && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/aar-sign.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
-codesign --force --timestamp --options runtime --sign "$MACOS_SIGNING_IDENTITY" --entitlements desktop/scripts/node-entitlements.plist "$app/Contents/Resources/resources/node"
-codesign --force --timestamp --options runtime --sign "$MACOS_SIGNING_IDENTITY" "$app"
+bash desktop/scripts/codesign-with-retry.sh --force --timestamp --options runtime --sign "$MACOS_SIGNING_IDENTITY" --entitlements desktop/scripts/node-entitlements.plist "$app/Contents/Resources/resources/node"
+bash desktop/scripts/codesign-with-retry.sh --force --timestamp --options runtime --sign "$MACOS_SIGNING_IDENTITY" "$app"
 codesign --verify --deep --strict -R "=anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\" and identifier \"com.graehlarts.agent-auth-router\"" "$app"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$work/notarize.zip"
 xcrun notarytool submit "$work/notarize.zip" --key "$APPLE_API_KEY_PATH" --key-id "$ASC_API_KEY_ID" --issuer "$ASC_API_ISSUER_ID" --wait --timeout 20m --output-format json > "$output/app-notarization.json"
@@ -35,7 +35,7 @@ ditto "$app" "$work/dmg/Agent Auth Router.app"
 ln -s /Applications "$work/dmg/Applications"
 dmg="$output/AgentAuthRouter_${version}_${arch}.dmg"
 hdiutil create -volname 'Agent Auth Router' -srcfolder "$work/dmg" -ov -format UDZO "$dmg" >/dev/null
-codesign --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$dmg"
+bash desktop/scripts/codesign-with-retry.sh --force --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$dmg"
 xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$ASC_API_KEY_ID" --issuer "$ASC_API_ISSUER_ID" --wait --timeout 20m --output-format json > "$output/dmg-notarization.json"
 python3 - "$output/dmg-notarization.json" <<'PY'
 import json,sys
