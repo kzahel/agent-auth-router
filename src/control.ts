@@ -331,7 +331,7 @@ export class ControlRegistry {
     if (action !== "cancel") { if (!this.poolAllows(b)) reject(409, "pinned account or pool grant removed"); this.account(integration, b.accountId); }
     if (action === "inspect") return this.metadata(b);
     if (action === "commit" && (b.state === "cancelled" || (b.state === "prepared" && b.createdAt + PREPARE_MS <= Date.now()))) reject(409, "allocation cancelled or expired");
-    if (action === "commit" && b.state === "prepared" && b.poolId && (!evidence || eligibility(b.provider, true, b.model, evidence.get(b.accountId), b.policy !== "manual") !== "eligible")) reject(409, "pool evidence changed; refresh and start a new session");
+    if (action === "commit" && b.state === "prepared" && b.poolId && (!evidence || eligibility(b.provider, true, b.model, evidence.get(b.accountId), b.policy !== "manual") !== "eligible" || !supportsThinking(evidence.get(b.accountId).models.find(m => m.id === b.model), b.thinking))) reject(409, "pool evidence changed; refresh and start a new session");
     const state = action === "commit" ? "committed" : "cancelled";
     this.change((next) => {
       next.bindings.find((v) => v.id === id)!.state = state;

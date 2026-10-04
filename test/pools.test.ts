@@ -313,3 +313,14 @@ test("thinking-aware allocation excludes incompatible members and persists reque
   assert.throws(() => f.registry.preparePool(f.integration, { ...f.allocation(), thinking: "on:max" }, f.evidence), /no eligible/);
   assert.throws(() => f.registry.preparePool(f.integration, { ...f.allocation(), thinking: "invalid" }, f.evidence), /invalid thinking/);
 });
+
+test("commit rechecks requested thinking without changing a prepared pin", async () => {
+  const f = fixture(); await f.evidence.refresh("a");
+  f.evidence.setCatalog("a", [{ id: "claude-sonnet-fixture", name: "Fixture", supportedReasoningEfforts: [{ reasoningEffort: "high", description: "" }] }]);
+  const body = { ...f.allocation(), thinking: "on:high" };
+  f.registry.preparePool(f.integration, body, f.evidence);
+  f.evidence.setCatalog("a", [{ id: "claude-sonnet-fixture", name: "Fixture", supportsEffort: false }]);
+  assert.throws(() => f.registry.transition(f.integration, body.id, "commit", f.evidence), /evidence changed/);
+  assert.equal(f.registry.binding(f.integration, body.id).accountId, "a");
+  assert.equal(f.registry.clients().length, 0);
+});
