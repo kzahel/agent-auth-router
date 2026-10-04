@@ -344,17 +344,16 @@ $("cancel-grants").onclick = () => {
 };
 $("pool-form").elements.provider.onchange = () => members();
 const accountForm = $("account-form");
-let profileGeneration = 0, inspectedProfile;
+let profileGeneration = 0, addingAccount = false;
 const profileInput = () => ({ provider: accountForm.elements.provider.value, home: accountForm.elements.home.value, credentialStore: accountForm.elements.credentialStore.value });
 function accountSetupChanged() {
   profileGeneration++;
-  inspectedProfile = undefined;
   const existing = accountForm.elements.enrollment.value === "existing";
   $("existing-profile").hidden = !existing;
   accountForm.elements.home.required = existing;
   accountForm.elements.home.placeholder = existing ? "/path/to/existing/profile" : "Leave blank to create a dedicated profile";
   $("profile-preview").textContent = "";
-  accountForm.querySelector("button[type=submit]").disabled = existing;
+  $("account-error").hidden = true;
 }
 for (const name of ["enrollment", "provider", "home", "credentialStore"]) accountForm.elements[name].addEventListener("input", accountSetupChanged);
 $("discover-profiles").onclick = () => run(async () => {
@@ -377,27 +376,38 @@ $("inspect-profile").onclick = () => run(async () => {
   const result = await api("profiles/inspect", input);
   if (generation !== profileGeneration) return;
   $("profile-preview").textContent = `${result.credentialStore} · ${result.credentialStatus} · ${result.detail}`;
-  if (result.canEnroll) inspectedProfile = { input: JSON.stringify(input), credentialStore: result.credentialStore };
-  accountForm.querySelector("button[type=submit]").disabled = !result.canEnroll;
 }, $("inspect-profile"));
-accountForm.onsubmit = (e) => {
+accountForm.onsubmit = async (e) => {
   e.preventDefault();
+  if (addingAccount) return;
+  addingAccount = true;
   const body = Object.fromEntries(new FormData(accountForm));
-  void run(async () => {
-    if (body.enrollment === "existing") {
-      if (inspectedProfile?.input !== JSON.stringify(profileInput())) throw new Error("Check this profile before enrolling it.");
-      body.credentialStore = inspectedProfile.credentialStore;
-    } else {
+  const submit = accountForm.querySelector("button[type=submit]");
+  const controls = [...accountForm.elements].map(control => [control, control.disabled]);
+  for (const [control] of controls) control.disabled = true;
+  submit.textContent = body.enrollment === "existing" ? "Checking & adding…" : "Adding…";
+  $("account-error").hidden = true;
+  try {
+    if (body.enrollment !== "existing") {
       delete body.enrollment;
       delete body.credentialStore;
     }
     if (!body.home) delete body.home;
+    // The owner API validates existing profiles on every enrollment. A separate
+    // preview is optional and must never be an unexplained submission gate.
     await api("accounts/add", body);
     accountForm.reset();
     accountSetupChanged();
     $("profile-candidates").replaceChildren();
     await reload();
-  }, accountForm.querySelector("button[type=submit]"));
+  } catch (failure) {
+    $("account-error").textContent = String(failure);
+    $("account-error").hidden = false;
+  } finally {
+    addingAccount = false;
+    for (const [control, disabled] of controls) control.disabled = disabled;
+    submit.textContent = "Add account";
+  }
 };
 $("pool-form").onsubmit = (e) => {
   e.preventDefault();

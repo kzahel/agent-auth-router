@@ -96,6 +96,10 @@ test("management UI preserves typing while observations update, and offers owner
             state.accounts = state.accounts.filter(a => a.id !== args.body.id);
             for (const p of state.pools) p.accountIds = p.accountIds.filter(id => id !== args.body.id);
           }
+          if (args.operation === "accounts/add") {
+            await new Promise(r => setTimeout(r, 100));
+            if (window.enrollmentFailure) throw Error("Existing profile folder is missing or unreadable");
+          }
           if (args.operation === "accounts/set-nickname") {
             Object.assign(state.accounts.find(a => a.id === args.body.id), { nickname: args.body.nickname, revision: args.body.revision + 1 });
           }
@@ -183,18 +187,36 @@ test("management UI preserves typing while observations update, and offers owner
   await page.locator("#account-form button[type=submit]").click();
   const enrollment = (await page.evaluate(() => window.operations)).find(o => o.operation === "accounts/add");
   assert.deepEqual(enrollment.body, { nickname: "", provider: "codex" });
+  await page.waitForFunction(() => !document.querySelector("#account-form button[type=submit]").disabled);
   await page.locator("#account-form select[name=enrollment]").selectOption("existing");
-  assert.equal(await page.locator("#account-form button[type=submit]").isDisabled(), true);
+  const addAccount = page.locator("#account-form button[type=submit]");
+  assert.equal(await addAccount.isDisabled(), false, "optional preview never gates Add account");
   await page.getByRole("button", { name: "Find profiles" }).click();
   await page.getByRole("button", { name: "/Users/example/.codex", exact: true }).click();
+  await page.evaluate(() => { window.enrollmentFailure = true; });
+  await addAccount.click();
+  assert.equal(await addAccount.textContent(), "Checking & adding…");
+  assert.equal(await page.locator("#account-form input[name=home]").isDisabled(), true);
+  await page.locator("#account-error").filter({ hasText: "Existing profile folder is missing or unreadable" }).waitFor();
+  assert.equal(await addAccount.isDisabled(), false, "failure allows retry");
+  assert.equal(await page.locator("#account-form input[name=home]").inputValue(), "/Users/example/.codex");
+  await page.evaluate(() => { window.enrollmentFailure = false; });
+  await addAccount.click();
+  await page.waitForFunction(() => !document.querySelector("#account-form button[type=submit]").disabled);
+  const directReuse = (await page.evaluate(() => window.operations)).filter(o => o.operation === "accounts/add").at(-1);
+  assert.deepEqual(directReuse.body, { nickname: "", provider: "codex", enrollment: "existing", home: "/Users/example/.codex", credentialStore: "auto" });
+  assert.equal((await page.evaluate(() => window.operations)).filter(o => o.operation === "profiles/inspect").length, 0, "enrollment needs no separate Check profile request");
+  await page.locator("#account-form select[name=enrollment]").selectOption("existing");
+  await page.locator("#account-form input[name=home]").fill("/Users/example/.codex");
   await page.getByRole("button", { name: "Check profile", exact: true }).click();
   await page.getByText("file · ok · Stored credentials readable; provider access is not checked", { exact: true }).waitFor();
   await page.locator("#account-form input[name=home]").fill("/Users/example/other");
-  assert.equal(await page.locator("#account-form button[type=submit]").isDisabled(), true, "editing profile invalidates inspection");
-  await page.getByRole("button", { name: "Check profile", exact: true }).click();
-  await page.locator("#account-form button[type=submit]").click();
+  assert.equal(await page.locator("#profile-preview").textContent(), "");
+  assert.equal(await addAccount.isDisabled(), false, "editing profile clears preview without blocking enrollment");
+  await addAccount.click();
+  await page.waitForFunction(() => !document.querySelector("#account-form button[type=submit]").disabled);
   const reuse = (await page.evaluate(() => window.operations)).filter(o => o.operation === "accounts/add").at(-1);
-  assert.deepEqual(reuse.body, { nickname: "", provider: "codex", enrollment: "existing", home: "/Users/example/other", credentialStore: "file" });
+  assert.deepEqual(reuse.body, { nickname: "", provider: "codex", enrollment: "existing", home: "/Users/example/other", credentialStore: "auto" });
   await page.getByText("Add account", { exact: true }).first().click();
   // Present a compact account slice for visual inspection while preserving the volume test above.
   await page.evaluate(() => { window.fixtureState.accounts = window.fixtureState.accounts.slice(0, 4); });

@@ -17,7 +17,9 @@ setup**, and launch/update/stop controls are on **App**.
 1. Open the app. It attaches to an available local router or starts its core.
 2. Choose **Check installed CLIs**, then **Add account**. Choose **Create dedicated
    profile** or **Use existing profile**. Existing profiles offer **Find profiles**
-   and **Check profile** before enrollment, with an explicit storage choice.
+   and an optional **Check profile** preview, with an explicit storage choice.
+   **Add account** validates the profile automatically and shows any failure in
+   the form; a separate preview is not required.
    Reuse leaves files and permissions unchanged; readable credentials do not need
    another login. Unsupported Codex non-file storage is reported without changing
    its configuration. Select a profile folder
