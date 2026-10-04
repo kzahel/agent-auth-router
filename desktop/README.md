@@ -11,7 +11,7 @@ pools, grants and sessions live in the same default state directory as `aar`.
 The compact window has Accounts, Pools, Connections and App tabs. Appearance
 follows the system's light/dark theme, including changes while the app is open.
 Accounts keep Sign in and Refresh usage visible; **More** holds sign-in checks,
-nickname editing and disable/retire actions. CLI setup help is under **Account
+nickname editing and disable/remove actions. CLI setup help is under **Account
 setup**, and launch/update/stop controls are on **App**.
 
 1. Open the app. It attaches to an available local router or starts its core.
@@ -43,9 +43,19 @@ setup**, and launch/update/stop controls are on **App**.
 
 Disabling an account, removing pool membership, deleting a pool or revoking a
 grant blocks subsequent requests on affected pins; accepted streams may finish.
-**Retire** permanently reserves the old account ID and retains its credential
-profile. Re-enable a disabled account when appropriate; retired IDs cannot be
-reused. No operation implicitly deletes provider credentials.
+**Disable** pauses routing and can be reversed with **Enable**. **Remove** takes
+an account out of the list, pools and direct integration grants. Existing session
+pins stay invalid; the same folder can be enrolled again with a fresh identity.
+Old retired accounts can also be removed. Retire is no longer a desktop action.
+
+The Remove dialog keeps files by default. **Also delete the profile folder** is
+unchecked and available only for dedicated direct children of the router's
+profiles folder, not imported/external profiles, symlinks or shared parent
+folders. It permanently deletes that folder's files, settings and history;
+Keychain entries remain. The backend rechecks the account revision and folder
+identity from the dialog. Removal waits for idle routing/metadata work and for
+that account's sign-in/renewal to finish. A deletion failure leaves a disabled
+account visible so you can inspect it or remove it while keeping remaining files.
 
 Closing the management window hides it to the tray. Closing an embedded sign-in
 window cancels that login. **Quit** stops the router, including active requests,

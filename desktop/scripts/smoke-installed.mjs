@@ -55,6 +55,18 @@ try {
   assert.equal(first.build.source, bundledBuild.source);
   request("accounts/add", { id: "work", provider: "codex" });
   assert.equal(request("overview").accounts[0].id, "work");
+  const preserved = request("accounts/removal-preview", { id: "work" });
+  request("accounts/remove", { id: "work", revision: preserved.revision });
+  assert.ok(existsSync(preserved.home), "Remove keeps files by default");
+  request("accounts/add", { id: "reused", provider: "codex", enrollment: "existing", home: preserved.home });
+  const imported = request("accounts/removal-preview", { id: "reused" });
+  assert.equal(imported.canDeleteProfile, false);
+  request("accounts/remove", { id: "reused", revision: imported.revision });
+  request("accounts/add", { id: "disposable", provider: "codex" });
+  const deleted = request("accounts/removal-preview", { id: "disposable" });
+  request("accounts/remove", { ...deleted, deleteProfile: true });
+  assert.equal(existsSync(deleted.home), false);
+  assert.equal(request("overview").accounts.length, 0);
   child.kill("SIGTERM");
   await once(child, "exit");
   child = undefined;
@@ -85,6 +97,7 @@ try {
         source: first.build.source,
         coreSha256: first.build.coreSha256,
         enrollment: true,
+        removalAndOptionalFolderDeletion: true,
         stoppedRouterOnAppExit: true,
         relaunch: true,
         stop: true,

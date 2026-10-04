@@ -20,7 +20,7 @@ The desktop's native bridge and CLI read the owner key; the web view receives
 metadata only in the management window. A separate embedded sign-in window can
 receive ephemeral CLI output through its own native PTY bridge. Owner POST
 operations include `overview`, `providers`,
-`profiles/discover`, `profiles/inspect`, `accounts/add`, `accounts/set-nickname`, `accounts/set-enabled`, `accounts/retire`, `accounts/login`,
+`profiles/discover`, `profiles/inspect`, `accounts/add`, `accounts/set-nickname`, `accounts/set-enabled`, `accounts/retire` (legacy), `accounts/removal-preview`, `accounts/remove`, `accounts/login`,
 `accounts/login-status`, `accounts/open-login`, `accounts/cancel-login`,
 `accounts/refresh`, `accounts/renew`, `pools/save`, `pools/remove`,
 `grants/save`, `integrations/revoke`, `clients/add`, `clients/revoke`, and `stop`.
@@ -132,3 +132,33 @@ current router ID and cancels active work. Integration credentials cannot use it
 crash) triggers shutdown. The ordinary headless CLI remains independently usable;
 the desktop exposes no keep-running mode. Startup errors use a bounded safe
 message envelope, never raw provider output or configuration contents.
+
+
+## Account removal (0.1.5)
+
+Desktop account actions are Disable/Enable (reversible) and Remove. The legacy
+Retire API remains compatible but is no longer offered in the UI. Retired rows
+can be removed too. Removal is owner-only, revision-checked and refuses active
+routing, metadata work, or the selected account's renewal/sign-in.
+
+Removal atomically drops the account row and reserves its old ID in
+`accounts.json`'s `removedIds`. Only the ID is retained, not the profile path or
+credentials. Pool membership and direct integration grants are cleaned up and
+revisioned; startup completes that cleanup after a crash between registry writes.
+Durable session pins and legacy gateway references cannot attach to a new
+account. The same preserved folder can be enrolled using a fresh account ID.
+
+`accounts/removal-preview` returns the selected path, current revision, deletion
+eligibility/reason and an opaque filesystem identity. `accounts/remove` defaults
+to keeping files. Deletion requires explicit `deleteProfile: true`, the matching
+`home` and `deleteIdentity`. Only router-managed direct child directories are
+eligible; imported/external homes, aliases, shared parent folders and other
+filesystems are refused. Recursive deletion does not follow symlinks. The
+account is disabled before deletion, and a filesystem failure leaves that row
+available for recovery. Deleting a folder does not remove Keychain entries.
+
+The confirmation dialog shows the exact folder, defaults deletion off on every
+open, and leaves Cancel focused. Browser tests cover cancellation, failures,
+retired rows, imported profiles and both removal choices. Synthetic core tests
+cover scope, revision/identity checks, filesystem failure, preserved credentials,
+reference cleanup, restart and non-revival of old account access.

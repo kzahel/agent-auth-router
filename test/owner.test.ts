@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -243,6 +243,7 @@ test("private owner enrollment and grants take effect without restart or re-pair
   });
   const overview = await ownerRequest(store, "overview");
   await assert.rejects(ownerRequest(store, "stop", { routerId: overview.routerId }), /busy/);
+  await assert.rejects(ownerRequest(store, "accounts/remove", { id: "a", revision: 1 }), /busy/);
   await ownerRequest(store, "accounts/add", { id: "b", provider: "claude" });
   await ownerRequest(store, "accounts/set-enabled", { id: "a", revision: 1, enabled: false });
   assert.equal(
@@ -320,7 +321,7 @@ test("official login is isolated, bounded, cancellable and never projects raw ou
   const script = join(bin, "claude");
   writeFileSync(
     script,
-    `#!${process.execPath}\nimport {writeFileSync} from 'node:fs';\nwriteFileSync(process.env.CLAUDE_CONFIG_DIR+'/login-probe.json',JSON.stringify({pid:process.pid,argv:process.argv.slice(2),gateway:process.env.ANTHROPIC_AUTH_TOKEN??null,base:process.env.ANTHROPIC_BASE_URL??null}));\nprocess.stdout.write('raw-sensitive-output https://attacker.invalid/oauth/authorize?access_token=never-show\\n');\nprocess.stderr.write('https://claude.ai/oauth/authorize?state=synthetic&code_challenge=fixture\\n');\nsetInterval(()=>{},1000);\n`,
+    `#!${process.execPath}\nimport {writeFileSync} from 'node:fs';\nwriteFileSync(process.env.CLAUDE_CONFIG_DIR+'/login-probe.json',JSON.stringify({pid:process.pid,argv:process.argv.slice(2),gateway:process.env.ANTHROPIC_AUTH_TOKEN??null,base:process.env.ANTHROPIC_BASE_URL??null}));\nprocess.on('SIGTERM',()=>{});\nprocess.stdout.write('raw-sensitive-output https://attacker.invalid/oauth/authorize?access_token=never-show\\n');\nprocess.stderr.write('https://claude.ai/oauth/authorize?state=synthetic&code_challenge=fixture\\n');\nsetInterval(()=>{},1000);\n`,
   );
   chmodSync(script, 0o700);
   const before = {
@@ -360,7 +361,9 @@ test("official login is isolated, bounded, cancellable and never projects raw ou
     /raw-sensitive-output|attacker|code_challenge|forbidden-gateway|never-show/,
   );
   await assert.rejects(ownerRequest(store, "stop", { routerId: overview.routerId }), /busy/);
+  await assert.rejects(ownerRequest(store, "accounts/remove", { id: "work", revision: 1, deleteProfile: true }), /busy/);
   await ownerRequest(store, "accounts/cancel-login", { id: "work" });
+  await assert.rejects(ownerRequest(store, "accounts/remove", { id: "work", revision: 1 }), /busy/, "cancelled sign-in still owns its profile until the process exits");
   assert.equal(
     (await ownerRequest(store, "accounts/login-status", { id: "work" })).loginStatus,
     "cancelled",
@@ -406,4 +409,127 @@ test("owner profile metadata, optional nicknames and expiry preserve identity an
   f.registry.grant({ id: f.first.id, revision: 1, poolIds: [f.pool.id] });
   const client = f.registry.accounts(f.first)[0]!;
   assert.equal("home" in client, false); assert.equal("nickname" in client, false);
+});
+
+
+test("removal hides retired accounts, cleans grants and pools, and never revives old pins", async t => {
+  const f = fixture(), { store } = f;
+  mkdirSync(join(store.profilesDir, "a"));
+  writeClaudeCredentials(join(store.profilesDir, "a"), "synthetic-removal", Date.now() + 3600000);
+  const original = readFileSync(join(store.profilesDir, "a/.credentials.json"), "utf8");
+  f.registry.grant({ id: f.first.id, revision: 1, poolIds: [f.pool.id], accountIds: ["a"] });
+  await f.evidence.refresh("a");
+  const allocation = { ...f.allocation(), policy: "manual", accountId: "a" };
+  f.registry.preparePool(f.first, allocation, f.evidence);
+  f.registry.transition(f.first, allocation.id, "commit", f.evidence);
+  const legacy = generateGatewayToken();
+  store.saveClients([{ id: "legacy", name: "Legacy", tokenSha256: hashGatewayToken(legacy), createdAt: new Date().toISOString(), accounts: { claude: "a" } }]);
+  writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 } });
+  let router = await startRouter(store); t.after(() => router.close());
+  for (const operation of ["accounts/removal-preview", "accounts/remove"]) {
+    assert.equal((await request(store, `/v1/owner/${operation}`, token(1), { id: "a", revision: 0 })).status, 401);
+  }
+  await ownerRequest(store, "accounts/retire", { id: "a", revision: 0 });
+  await assert.rejects(ownerRequest(store, "accounts/remove", { id: "a", revision: 0 }), /changed/);
+  await ownerRequest(store, "accounts/remove", { id: "a", revision: 1 });
+  const overview = await ownerRequest(store, "overview");
+  assert.deepEqual(overview.accounts.map((a: any) => a.id), ["b"]);
+  assert.deepEqual(overview.pools[0].accountIds, ["b"]);
+  assert.equal(overview.pools[0].revision, 2);
+  assert.deepEqual(overview.integrations[0].accountIds, []);
+  assert.equal(overview.integrations[0].revision, 3);
+  assert.equal(readFileSync(join(store.profilesDir, "a/.credentials.json"), "utf8"), original);
+  assert.equal(router.coordinators.has("a"), false);
+  await ownerRequest(store, "accounts/add", { id: "replacement", provider: "claude", enrollment: "existing", home: join(store.profilesDir, "a"), credentialStore: "file" });
+  await assert.rejects(ownerRequest(store, "accounts/add", { id: "a", provider: "claude" }), /identity was removed/);
+  const registry = new ControlRegistry(store);
+  assert.equal(registry.clients().length, 0);
+  assert.throws(() => registry.transition(registry.authenticate(`Bearer ${token(1)}`), allocation.id, "commit", f.evidence), /removed|grant/);
+  const useLegacy = () => fetch(`${router.origin}/claude/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${legacy}` }, body: "{}" });
+  assert.ok((await useLegacy()).status >= 400);
+  await router.close(); router = await startRouter(store);
+  assert.ok((await useLegacy()).status >= 400);
+  assert.equal((await ownerRequest(store, "overview")).accounts.length, 2);
+  await assert.rejects(ownerRequest(store, "accounts/add", { id: "a", provider: "claude" }), /identity was removed/);
+});
+
+test("optional folder deletion requires matching preview and never follows profile aliases", async t => {
+  const store = new StateStore(tempDir("delete-profile-")); store.init();
+  writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 } });
+  const router = await startRouter(store); t.after(() => router.close());
+  await ownerRequest(store, "accounts/add", { id: "dedicated", provider: "claude" });
+  const preview = await ownerRequest(store, "accounts/removal-preview", { id: "dedicated" });
+  assert.equal(preview.canDeleteProfile, true);
+  const outside = tempDir("keep-profile-"); writeFileSync(join(outside, "keep"), "keep");
+  symlinkSync(outside, join(preview.home, "linked-data"));
+  writeFileSync(join(preview.home, "credentials-fixture"), "synthetic-only");
+  await assert.rejects(ownerRequest(store, "accounts/remove", { ...preview, home: outside, deleteProfile: true }), /changed/);
+  await assert.rejects(ownerRequest(store, "accounts/remove", { ...preview, deleteIdentity: "wrong", deleteProfile: true }), /changed/);
+  assert.ok(existsSync(preview.home));
+  await ownerRequest(store, "accounts/remove", { ...preview, deleteProfile: true });
+  assert.equal(existsSync(preview.home), false);
+  assert.equal(readFileSync(join(outside, "keep"), "utf8"), "keep");
+
+  await ownerRequest(store, "accounts/add", { id: "changed", provider: "claude" });
+  const changed = await ownerRequest(store, "accounts/removal-preview", { id: "changed" });
+  renameSync(changed.home, changed.home + "-original"); mkdirSync(changed.home);
+  await assert.rejects(ownerRequest(store, "accounts/remove", { ...changed, deleteProfile: true }), /changed/);
+  assert.ok(existsSync(changed.home + "-original"));
+  renameSync(changed.home, changed.home + "-replacement"); symlinkSync(outside, changed.home);
+  assert.equal((await ownerRequest(store, "accounts/removal-preview", { id: "changed" })).canDeleteProfile, false);
+  await assert.rejects(ownerRequest(store, "accounts/remove", { ...changed, deleteProfile: true }), /type or owner/);
+  await ownerRequest(store, "accounts/remove", { id: "changed", revision: 1 });
+  assert.ok(existsSync(changed.home), "keep-folder removal does not unlink an alias");
+});
+
+test("imported, external and parent profiles cannot be recursively deleted through removal", async t => {
+  const store = new StateStore(tempDir("remove-import-")); store.init();
+  writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 } });
+  const imported = join(store.profilesDir, "imported"); mkdirSync(imported);
+  writeClaudeCredentials(imported, "synthetic-import", Date.now() + 3600000);
+  const external = tempDir("external-profile-");
+  const router = await startRouter(store); t.after(() => router.close());
+  await ownerRequest(store, "accounts/add", { id: "imported", provider: "claude", enrollment: "existing", home: imported, credentialStore: "file" });
+  await ownerRequest(store, "accounts/add", { id: "external", provider: "claude", home: external });
+  await ownerRequest(store, "accounts/add", { id: "parent", provider: "claude", home: store.profilesDir });
+  for (const id of ["imported", "external", "parent"]) {
+    const preview = await ownerRequest(store, "accounts/removal-preview", { id });
+    assert.equal(preview.canDeleteProfile, false);
+    await assert.rejects(ownerRequest(store, "accounts/remove", { ...preview, deleteProfile: true }), /Imported|Only dedicated/);
+    assert.ok(existsSync(preview.home));
+    await ownerRequest(store, "accounts/remove", { id, revision: 1 });
+    assert.ok(existsSync(preview.home));
+  }
+});
+
+test("restart finishes reference cleanup after account removal was durably saved", () => {
+  const f = fixture();
+  f.registry.grant({ id: f.first.id, revision: 1, poolIds: [f.pool.id], accountIds: ["a"] });
+  f.store.removeAccount("a"); // Simulate a crash before the second registry write.
+  const recovered = new ControlRegistry(f.store);
+  assert.deepEqual(recovered.pools()[0]!.accountIds, ["b"]);
+  assert.deepEqual(recovered.ownerIntegrations()[0]!.accountIds, []);
+  assert.throws(() => f.store.saveAccounts([...f.store.loadAccounts(), { id: "a", provider: "claude", home: join(f.store.profilesDir, "new-a") }]), /identity was removed/);
+  const first = readFileSync(join(f.store.dir, "control.json"), "utf8");
+  new ControlRegistry(f.store);
+  assert.equal(readFileSync(join(f.store.dir, "control.json"), "utf8"), first);
+});
+
+test("failed folder deletion retains a disabled account for recovery", { skip: process.getuid?.() === 0 }, async t => {
+  const store = new StateStore(tempDir("remove-failure-")); store.init();
+  writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 } });
+  const router = await startRouter(store); t.after(() => router.close());
+  await ownerRequest(store, "accounts/add", { id: "locked", provider: "claude" });
+  const preview = await ownerRequest(store, "accounts/removal-preview", { id: "locked" });
+  writeFileSync(join(preview.home, "keep"), "synthetic");
+  chmodSync(preview.home, 0o500);
+  try {
+    await assert.rejects(ownerRequest(store, "accounts/remove", { ...preview, deleteProfile: true }), /account is disabled and remains/);
+    assert.equal(store.loadAccounts()[0]!.enabled, false);
+    assert.equal(router.coordinators.get("locked")!.account.enabled, false);
+    assert.deepEqual(store.removedAccountIds(), []);
+    assert.equal(readFileSync(join(preview.home, "keep"), "utf8"), "synthetic");
+    await ownerRequest(store, "accounts/remove", { id: "locked", revision: 2 });
+    assert.equal((await ownerRequest(store, "overview")).accounts.length, 0);
+  } finally { chmodSync(preview.home, 0o700); }
 });

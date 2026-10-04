@@ -1,5 +1,6 @@
 // Local owner authority. Never expose this credential or raw CLI output to a web view.
 import { discoverProfiles, inspectProfile, physicalHome, profileHome, profileStore } from "./profiles.ts";
+import { deleteProfile, profileRemoval } from "./profile-removal.ts";
 import { TerminalLogin } from "./terminal-login.ts";
 import { BUILD_INFO } from "./build-info.ts";
 import { providerExecutable } from "./platform.ts";
@@ -251,6 +252,7 @@ export class OwnerService {
         !isProvider(body.provider)
       )
         throw new ControlError(400, "invalid account id or provider");
+      if (this.store.removedAccountIds().includes(body.id as string)) throw new ControlError(409, "account identity was removed; choose a new ID");
       let accounts = this.store.loadAccounts();
       if (accounts.length >= 256) throw new ControlError(409, "account limit reached");
       if (typeof body.home === "string" && body.home.startsWith("~/")) body.home = join(homedir(), body.home.slice(2));
@@ -311,6 +313,39 @@ export class OwnerService {
       this.coordinators.set(account.id, coordinator);
       this.invalidate(account.id);
       return { id: account.id, provider: account.provider, revision: 1 };
+    }
+    if (operation === "accounts/removal-preview") {
+      const account = this.account(body);
+      return { id: account.id, revision: account.revision ?? 0, home: account.home, ...profileRemoval(this.store, account) };
+    }
+    if (operation === "accounts/remove") {
+      const account = this.account(body);
+      if (body.revision !== (account.revision ?? 0)) throw new ControlError(409, "Account changed; reopen the Remove dialog.");
+      if (body.deleteProfile !== undefined && typeof body.deleteProfile !== "boolean") throw new ControlError(400, "deleteProfile must be a boolean");
+      // No await between this gate and removal. Do not race router-owned writes
+      // or let a new enrollment overlap an old sign-in/renewal using its folder.
+      if (this.lifecycle.active() || this.lifecycle.busy?.() || this.coordinators.get(account.id)?.authenticationBusy()
+        || this.logins.get(account.id)?.status === "running" || this.terminals.get(account.id)?.busy())
+        throw new ControlError(409, "Router busy; finish requests, usage checks and this account's sign-ins before removing it.");
+      if (body.deleteProfile) {
+        const preview = profileRemoval(this.store, account);
+        if (!preview.canDeleteProfile) throw new ControlError(409, preview.reason);
+        if (body.home !== account.home || body.deleteIdentity !== preview.deleteIdentity) throw new ControlError(409, "Profile folder changed; reopen the Remove dialog.");
+        // A partial filesystem failure must leave an inspectable, disabled row.
+        this.store.saveAccounts(this.store.loadAccounts().map(a => a.id === account.id ? { ...a, enabled: false, revision: (a.revision ?? 0) + 1 } : a));
+        const coordinator = this.coordinators.get(account.id);
+        if (coordinator) coordinator.account.enabled = false;
+        this.invalidate(account.id);
+        try { deleteProfile(this.store, account, preview.deleteIdentity!); }
+        catch { throw new ControlError(409, "Could not fully delete the profile folder. The account is disabled and remains in the list. Reload to inspect it or remove it without deleting files."); }
+      }
+      this.store.removeAccount(account.id);
+      this.coordinators.delete(account.id);
+      this.logins.delete(account.id);
+      this.terminals.delete(account.id);
+      this.invalidate(account.id);
+      this.registry.forgetAccounts([account.id]);
+      return { removed: true, profileDeleted: body.deleteProfile === true };
     }
     if (operation === "accounts/set-enabled" || operation === "accounts/retire") {
       const account = this.account(body);

@@ -90,6 +90,47 @@ function editGrants(integration) {
   for (const a of snapshot.accounts)
     check($("grant-accounts"), a.id, accountLabel(a), integration.accountIds.includes(a.id));
 }
+let removal, removing = false;
+async function openRemoval(account) {
+  removal = await api("accounts/removal-preview", { id: account.id });
+  $("remove-form").reset();
+  $("remove-profile").textContent = removal.home;
+  $("remove-impact").textContent = `Remove this account from the list and all pools. Existing sessions using it will lose access. You can enroll the folder again later as a new account.`;
+  $("delete-profile").disabled = !removal.canDeleteProfile;
+  $("delete-profile-detail").textContent = removal.reason;
+  $("remove-error").hidden = true;
+  $("confirm-remove").textContent = "Remove account";
+  $("remove-dialog").showModal();
+}
+$("delete-profile").onchange = () => {
+  $("confirm-remove").textContent = $("delete-profile").checked ? "Remove & delete folder" : "Remove account";
+};
+$("cancel-remove").onclick = () => $("remove-dialog").close();
+$("remove-dialog").addEventListener("cancel", event => { if (removing) event.preventDefault(); });
+$("remove-form").onsubmit = async event => {
+  event.preventDefault();
+  if (removing || !removal) return;
+  removing = true;
+  $("confirm-remove").disabled = $("cancel-remove").disabled = true;
+  const deleteProfile = $("delete-profile").checked;
+  $("delete-profile").disabled = true;
+  $("remove-error").hidden = true;
+  try {
+    await api("accounts/remove", { id: removal.id, revision: removal.revision, deleteProfile,
+      ...(deleteProfile ? { home: removal.home, deleteIdentity: removal.deleteIdentity } : {}) });
+    $("remove-dialog").close();
+    // Do not leave an editor targeting an enrollment which no longer exists.
+    if ($("nickname-form").elements.id.value === removal.id) $("nickname-form").hidden = true;
+    await reload();
+  } catch (failure) {
+    $("remove-error").textContent = String(failure);
+    $("remove-error").hidden = false;
+  } finally {
+    removing = false;
+    $("confirm-remove").disabled = $("cancel-remove").disabled = false;
+    $("delete-profile").disabled = !removal.canDeleteProfile;
+  }
+};
 async function reload() {
   const generation = ++observationGeneration;
   let next;
@@ -182,24 +223,8 @@ async function reload() {
         a.enabled,
       ),
     );
-    if (!a.retired)
-      actions.append(
-        button(
-          "Retire",
-          async () => {
-            if (
-              !confirm(
-                `Retire ${a.id}? ${a.bindingCount ?? 0} session pins reference it. Requests will be blocked, and this ID cannot be reused. The official credential profile will be kept.`,
-              )
-            )
-              return;
-            await api("accounts/retire", { id: a.id, revision: a.revision });
-            await reload();
-          },
-          true,
-        ),
-      );
-    else actions.replaceChildren(element("span", "Retired · credential profile retained", "hint"));
+    if (a.retired) actions.replaceChildren(element("span", "Retired · credential profile retained", "hint"));
+    actions.append(button("Remove", () => openRemoval(a), true));
     if (login?.status === "running")
       actions.append(
         button("Cancel sign-in", async () => {

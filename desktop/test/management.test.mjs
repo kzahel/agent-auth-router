@@ -86,6 +86,16 @@ test("management UI preserves typing while observations update, and offers owner
           }
           if (args.operation === "profiles/discover") return { profiles: [{ home: "/Users/example/.codex", enrolled: false }] };
           if (args.operation === "profiles/inspect") return { credentialStore: "file", credentialStatus: "ok", canEnroll: true, detail: "Stored credentials readable; provider access is not checked" };
+          if (args.operation === "accounts/removal-preview") {
+            const a = state.accounts.find(a => a.id === args.body.id);
+            return { id: a.id, revision: a.revision, home: a.home, canDeleteProfile: !a.imported,
+              deleteIdentity: a.imported ? null : "1:fixture", reason: a.imported ? "Imported profiles are kept." : "Permanently deletes this folder and everything inside it. Keychain credentials are not deleted." };
+          }
+          if (args.operation === "accounts/remove") {
+            if (window.removalFailure) throw Error("Router busy; finish sign-ins before removing it.");
+            state.accounts = state.accounts.filter(a => a.id !== args.body.id);
+            for (const p of state.pools) p.accountIds = p.accountIds.filter(id => id !== args.body.id);
+          }
           if (args.operation === "accounts/set-nickname") {
             Object.assign(state.accounts.find(a => a.id === args.body.id), { nickname: args.body.nickname, revision: args.body.revision + 1 });
           }
@@ -217,6 +227,51 @@ test("management UI preserves typing while observations update, and offers owner
     }
   }
   assert.notEqual(colors[0], colors[1], "palette follows system color scheme without reload");
+  // Confirmation defaults to preserving files; cancellation and Escape do not mutate.
+  assert.equal(await page.getByRole("button", { name: "Retire", exact: true }).count(), 0);
+  await account.getByText("More", { exact: true }).click();
+  await account.getByRole("button", { name: "Remove", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Remove account?", exact: true });
+  const deletion = dialog.getByRole("checkbox", { name: "Also delete the profile folder" });
+  assert.equal(await deletion.isChecked(), false);
+  assert.equal(await page.locator(":focus").textContent(), "Cancel");
+  await deletion.check();
+  if (captures) await page.screenshot({ path: join(captures, "remove-dialog-dark.png") });
+  await page.keyboard.press("Escape");
+  assert.equal(await dialog.isVisible(), false);
+  assert.equal((await page.evaluate(() => window.operations)).filter(o => o.operation === "accounts/remove").length, 0);
+  await account.getByRole("button", { name: "Remove", exact: true }).click();
+  assert.equal(await deletion.isChecked(), false, "reopening never preserves deletion consent");
+  await page.evaluate(() => { window.removalFailure = true; });
+  await dialog.getByRole("button", { name: "Remove account", exact: true }).click();
+  await dialog.getByRole("alert").filter({ hasText: "Router busy" }).waitFor();
+  assert.equal(await page.locator("#accounts article").count(), 4);
+  await page.evaluate(() => { window.removalFailure = false; });
+  await dialog.getByRole("button", { name: "Remove account", exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll("#accounts article").length === 3);
+  const keep = (await page.evaluate(() => window.operations)).filter(o => o.operation === "accounts/remove").at(-1);
+  assert.equal(keep.body.deleteProfile, false);
+  assert.equal(keep.body.home, undefined);
+  // The same action is available for legacy retired rows.
+  await page.evaluate(() => { window.fixtureState.accounts[0].retired = true; });
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await account.getByText("Retired · credential profile retained", { exact: true }).waitFor();
+  await account.getByRole("button", { name: "Remove", exact: true }).click();
+  await deletion.check();
+  await dialog.getByRole("button", { name: "Remove & delete folder", exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll("#accounts article").length === 2);
+  const destroy = (await page.evaluate(() => window.operations)).filter(o => o.operation === "accounts/remove").at(-1);
+  assert.equal(destroy.body.deleteProfile, true);
+  assert.equal(destroy.body.home, "/Users/example/.agent-auth-router/profiles/work-2");
+  assert.equal(destroy.body.deleteIdentity, "1:fixture");
+  await page.evaluate(() => { window.fixtureState.accounts[0].imported = true; });
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await account.getByText("More", { exact: true }).click();
+  await account.getByRole("button", { name: "Remove", exact: true }).click();
+  assert.equal(await deletion.isChecked(), false);
+  assert.equal(await deletion.isDisabled(), true);
+  await dialog.getByText("Imported profiles are kept.", { exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   assert.deepEqual(errors, []);
   t.diagnostic(
     `${samples.length} sequential keystrokes; maximum ${Math.max(...samples.map((s) => s.elapsed)).toFixed(1)} ms`,

@@ -329,6 +329,17 @@ remains its owning product contract; its
 [deferred follow-ups](https://github.com/kzahel/yepanywhere/blob/main/topics/agent-auth-router.md#deferred-follow-ups)
 retain the later candidates. This plan does not reprioritize unrelated YA work.
 
+## Account removal revision (2026-10-04)
+
+Version 0.1.5 simplifies desktop account actions to Disable/Enable and Remove.
+Retire remains a legacy API; existing retired rows can be removed. Remove hides
+the account and removes pool/direct-grant membership while reserving its old ID
+so sessions cannot regain access through a later enrollment. Preserved folders
+can be enrolled again with fresh IDs. Folder deletion is an explicit, unchecked
+option for router-managed dedicated profiles only; imported profiles are kept.
+See [account removal](owner-management.md#account-removal-015) for lifecycle,
+filesystem safeguards and recovery behavior.
+
 ## Desktop lifecycle revision (2026-10-04)
 
 Version 0.1.4 supersedes the original retained-core desktop behavior: closing the

@@ -117,3 +117,9 @@ footer { font-size: 11px; margin-top: 14px; }
 nav { display: flex; gap: 4px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
 nav button { border-color: transparent; background: transparent; padding: 5px 12px; }
 nav button[aria-selected="true"] { background: var(--hover); color: var(--accent); }
+
+dialog { max-width: min(460px, calc(100vw - 32px)); padding: 0; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; }
+dialog::backdrop { background: #0006; }
+dialog form { margin: 0; padding: 16px; border: 0; }
+dialog .actions { justify-content: flex-end; }
+dialog button.danger { color: var(--danger); border-color: var(--danger); }

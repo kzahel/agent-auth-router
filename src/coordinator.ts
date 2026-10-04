@@ -62,6 +62,7 @@ export class CredentialCoordinator {
   private externalLogin = false;
   beginLogin(): boolean { if (this.inflight || this.externalLogin) return false; this.externalLogin = true; return true; }
   endLogin(): void { this.externalLogin = false; this.retryAt = 0; this.failures = 0; }
+  authenticationBusy(): boolean { return !!this.inflight || this.externalLogin; }
   private inflight: Promise<UpstreamCredential> | undefined;
 
   constructor(options: CoordinatorOptions) {

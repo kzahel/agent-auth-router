@@ -92,6 +92,20 @@ export class ControlRegistry {
       this.state = { version: 3, routerId: randomUUID(), integrations: [], bindings: [] };
       persist(this.path, this.state);
     }
+    this.forgetAccounts(store.removedAccountIds());
+  }
+  forgetAccounts(ids: string[]): void {
+    const removed = new Set(ids);
+    const affected = (this.state.pools ?? []).some(p => p.accountIds.some(id => removed.has(id)))
+      || this.state.integrations.some(i => i.accountIds.some(id => removed.has(id)));
+    if (!affected) return;
+    this.change(state => {
+      for (const item of [...(state.pools ?? []), ...state.integrations]) {
+        if (!item.accountIds.some(id => removed.has(id))) continue;
+        item.accountIds = item.accountIds.filter(id => !removed.has(id));
+        item.revision++;
+      }
+    });
   }
   private current(integration: Integration): Integration {
     return this.state.integrations.find(i => i.id === integration.id && !i.revoked) ?? reject(401, "integration revoked");

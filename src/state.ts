@@ -85,7 +85,24 @@ export class StateStore {
   }
 
   saveAccounts(accounts: AccountConfig[]): void {
-    writePrivateJson(this.accountsPath, { version: 3, accounts: validateAccounts(accounts) });
+    const removedIds = this.removedAccountIds();
+    if (accounts.some(a => removedIds.includes(a.id))) throw new Error("account identity was removed; choose a new ID");
+    writePrivateJson(this.accountsPath, { version: 3, accounts: validateAccounts(accounts), removedIds });
+  }
+
+  removedAccountIds(): string[] {
+    const value = readJsonFile<{ removedIds?: string[] }>(this.accountsPath, {});
+    const ids = value.removedIds ?? [];
+    if (!Array.isArray(ids) || ids.some(id => typeof id !== "string" || !ACCOUNT_ID.test(id))) throw new Error("invalid removed account identities");
+    return ids;
+  }
+
+  removeAccount(id: string): void {
+    const accounts = this.loadAccounts().filter(a => a.id !== id);
+    // One atomic write hides the enrollment and reserves its identity. Old pins
+    // and legacy gateway tokens can never attach to a later enrollment.
+    const removedIds = [...new Set([...this.removedAccountIds(), id])];
+    writePrivateJson(this.accountsPath, { version: 3, accounts, removedIds });
   }
 
   loadClients(): GatewayClientRecord[] {

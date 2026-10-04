@@ -19,6 +19,7 @@ test("existing enrollment preserves files and permissions, rejects aliases, and 
   writeCodexAuth(home, fakeJwt(2_000_000_000, "first"), "synthetic-account");
   writeFileSync(join(home, "unrelated.txt"), "preserve me", { mode: 0o640 });
   const before = contents(home);
+  writeFileSync(store.configPath, JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }));
   const router = await startRouter(store); t.after(() => router.close());
   const preview = await ownerRequest(store, "profiles/inspect", { provider: "codex", home });
   assert.equal(preview.canEnroll, true); assert.equal(preview.credentialStatus, "ok");
@@ -38,6 +39,7 @@ test("existing enrollment preserves files and permissions, rejects aliases, and 
 
 test("existing profile checks reject unsupported stores, provider overrides and missing folders without changes", async t => {
   const store = new StateStore(tempDir("reject-router-"));
+  writeFileSync(store.configPath, JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }));
   const router = await startRouter(store); t.after(() => router.close());
   for (const config of ['cli_auth_credentials_store = "keyring"\n', 'model_provider = "gateway"\n']) {
     const home = tempDir("unsupported-profile-");
@@ -56,6 +58,7 @@ test("existing profile checks reject unsupported stores, provider overrides and 
 
 test("parallel inspected enrollments preserve both accounts and logged-out profiles need no provisioning", async t => {
   const store = new StateStore(tempDir("parallel-enroll-"));
+  writeFileSync(store.configPath, JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }));
   const router = await startRouter(store); t.after(() => router.close());
   const homes = [tempDir(), tempDir()];
   await Promise.all(homes.map(home => ownerRequest(store, "accounts/add", { provider: "codex", home, enrollment: "existing" })));
