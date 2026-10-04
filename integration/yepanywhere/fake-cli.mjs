@@ -79,6 +79,7 @@ const audit = (event) =>
   );
 audit({
   event: "spawn",
+  effort: provider === "claude" ? arg("--effort") : config.model_reasoning_effort,
   tokenHash: createHash("sha256").update(token).digest("hex"),
   baseUrl,
 });
@@ -336,7 +337,7 @@ lines.on("line", (line) => {
       cwd = message.params.cwd ?? cwd;
       model = message.params.model ?? model;
       initializeTranscript();
-      audit({ event: message.method, sessionId });
+      audit({ event: message.method, sessionId, effort: message.params.config?.model_reasoning_effort });
       reply({
         thread: { id: sessionId, cwd, turns: [] },
         model,
@@ -345,6 +346,7 @@ lines.on("line", (line) => {
       });
       break;
     case "turn/start": {
+      audit({ event: "turn/start", sessionId, effort: message.params.effort });
       const id = randomUUID();
       reply({ turn: { id, status: "inProgress", items: [], error: null } });
       emit({

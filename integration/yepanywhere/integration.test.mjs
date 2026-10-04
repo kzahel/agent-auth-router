@@ -106,7 +106,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
       response.setHeader("content-type", "application/json");
       response.end(
         JSON.stringify({
-          data: [{ id: "synthetic-model", display_name: "Synthetic" }],
+          data: [{ id: "synthetic-model", display_name: "Synthetic", supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }, { effort: "ultra" }], default_reasoning_level: "low", capabilities: { effort: { supported: true, low: { supported: true }, high: { supported: true }, max: { supported: true } }, thinking: { types: { adaptive: { supported: true } } } } }],
         }),
       );
       return;
@@ -415,7 +415,7 @@ for (const provider of ["codex", "claude"]) {
         .models[0].id,
       "synthetic-model",
     );
-    const created = (await launch("first")).value;
+    const created = (await launch("first", { thinking: "on:high" })).value;
     t.diagnostic(`created ${provider}`);
     const idle = async () =>
       eventually(async () => {
@@ -425,6 +425,8 @@ for (const provider of ["codex", "claude"]) {
         );
       }, `${provider} first turn completes`);
     const processInfo = await idle();
+    assert.equal(f.launches()[0].effort, "high");
+    assert.equal(f.native().find(row => row.event === (provider === "claude" ? "spawn" : "turn/start"))?.effort, "high", "explicit effort reaches native CLI");
     const sessionId = processInfo.sessionId;
     assert.notEqual(
       sessionId,
@@ -525,6 +527,8 @@ for (const provider of ["codex", "claude"]) {
         3,
       "resume reaches AAR",
     );
+    assert.equal(f.launches().at(-1).effort, "high", "resume retains selected effort");
+    assert.equal(f.native().filter(row => row.event === (provider === "claude" ? "spawn" : "turn/start")).at(-1)?.effort, "high");
     const idleProcess = (id) =>
       eventually(
         async () =>

@@ -50,6 +50,9 @@ Each provider exercises:
 - Pairing, account/catalog discovery and manual selection among two accounts.
 - Real native launch overrides, overriding poisoned direct-auth environment
   variables, streamed replies and YA's persisted transcript reader.
+- Explicit High thinking reaches Claude's native `--effort` argument and Codex's
+  `turn/start` effort, and remains High after restarting and resuming the session.
+  The fixture audits only these selected fields, never complete CLI arguments.
 - Provisional-to-native session ID remapping and continuation under one binding.
 - Restarting both servers and resuming with the same allocation and token.
 - No native launch or account fallback when AAR is unavailable or the selected

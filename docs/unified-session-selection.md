@@ -84,3 +84,17 @@ Commit directly on current branches in both repositories; preserve unrelated
 concurrent work. AAR desktop packaging must include the new core before claiming
 the installed application supports the new UX. Updating/restarting the user's
 active YA process is a separate operational step and must preserve live sessions.
+
+## Implementation evidence
+
+2026-10-04: AAR catalog capabilities, bounded catalog-only discovery and
+thinking-aware prepare/commit are implemented. The 120-test core check passed;
+the subsequent commit-time capability-change regression also passed. All 12
+SHA-pinned cross-repository tests passed, including newly asserted explicit High
+effort at the native Claude/Codex boundary and after restart/resume. Those tests
+exercise YA's existing API capability, not the proposed unified UI.
+
+YA implementation and the final pin update remain pending. Its compatibility
+rules require explicit review of the new discovery endpoint/capability and
+older-server fallback; that review was presented to the maintainer during this
+work. No live app replacement or YA restart has been performed for this change.

@@ -30,6 +30,8 @@ provider.startSession = async (options) => {
     JSON.stringify({
       provider: providerName,
       routed: !!options.routerLaunch,
+      thinking: options.thinking,
+      effort: options.effort,
       resume: options.resumeSessionId ?? null,
       metadataId: Object.entries(
         JSON.parse(
