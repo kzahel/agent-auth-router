@@ -26,6 +26,19 @@ async function run(action, button) {
     if (button) button.disabled = false;
   }
 }
+// WKWebView does not provide browser confirmation dialogs. Keep confirmation
+// in our document so cancellation and keyboard behavior are the same everywhere.
+function askConfirmation(message, action = "Continue") {
+  const dialog = $("confirmation-dialog");
+  if (dialog.open) return Promise.resolve(false);
+  $("confirmation-message").textContent = message;
+  $("confirmation-accept").textContent = action;
+  dialog.returnValue = "cancel";
+  return new Promise(resolve => {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "accept"), { once: true });
+    dialog.showModal();
+  });
+}
 function button(text, action, danger = false) {
   const el = element("button", text, danger ? "danger" : "");
   el.type = "button";
@@ -208,9 +221,9 @@ async function reload(observe = false) {
         async () => {
           if (
             a.enabled &&
-            !confirm(
+            !(await askConfirmation(
               `Disable ${a.id}? ${a.bindingCount ?? 0} session pins reference this account. New requests on its session pins will be blocked. Accepted streams may finish. Credentials will be kept.`,
-            )
+            ))
           )
             return;
           await api("accounts/set-enabled", {
@@ -285,9 +298,9 @@ async function reload(observe = false) {
           "Revoke integration",
           async () => {
             if (
-              !confirm(
+              !(await askConfirmation(
                 `Revoke ${i.name}? Its session credentials will stop working. Pools and accounts remain available to other clients.`,
-              )
+              ))
             )
               return;
             await api("integrations/revoke", { id: i.id });
@@ -430,9 +443,9 @@ $("delete-pool").onclick = () =>
   run(async () => {
     const form = $("pool-form");
     if (
-      !confirm(
+      !(await askConfirmation(
         `Delete ${form.elements.name.value}? Its session pins will stop working. Accounts remain enrolled.`,
-      )
+      ))
     )
       return;
     await api("pools/remove", {
@@ -499,16 +512,24 @@ setInterval(
 
 $("install-update").onclick = () =>
   run(async () => {
-    if (update && confirm(`Install ${update.version} and relaunch? The router must be idle.`))
-      await invoke("install_update", { version: update.version });
+    if (!update) return;
+    const version = update.version;
+    if (!await askConfirmation(`Install ${version} and relaunch? The router must be idle.`, "Install & relaunch")) return;
+    $("update-status").textContent = `Downloading and installing ${version}… The app will relaunch when finished.`;
+    try {
+      await invoke("install_update", { version });
+    } catch (e) {
+      $("update-status").textContent = `Update failed: ${String(e)}`;
+      throw e;
+    }
   }, $("install-update"));
 $("stop").onclick = () =>
   run(async () => {
     if (
       !snapshot ||
-      !confirm(
+      !(await askConfirmation(
         "Stop the router? Idle sessions will be unable to send requests until it is started again. Active requests or sign-ins prevent stopping.",
-      )
+      ))
     )
       return;
     await api("stop", { routerId: snapshot.routerId });

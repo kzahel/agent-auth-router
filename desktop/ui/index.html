@@ -28,5 +28,9 @@
 <p id="delete-profile-detail" class="hint"></p><p id="remove-error" class="danger" role="alert" hidden></p>
 <div class="actions"><button type="button" id="cancel-remove" autofocus>Cancel</button><button type="submit" id="confirm-remove" class="danger">Remove account</button></div>
 </form></dialog>
+<dialog id="confirmation-dialog" aria-labelledby="confirmation-title" aria-describedby="confirmation-message"><form method="dialog">
+<h2 id="confirmation-title">Confirm action</h2><p id="confirmation-message"></p>
+<div class="actions"><button value="cancel" autofocus>Cancel</button><button id="confirmation-accept" value="accept">Continue</button></div>
+</form></dialog>
 <footer><span id="version"></span></footer>
 </main><script type="module" src="app.js"></script></body></html>

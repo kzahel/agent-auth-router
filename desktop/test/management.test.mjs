@@ -306,6 +306,40 @@ test("management UI preserves typing while observations update, and offers owner
   assert.equal(await deletion.isDisabled(), true);
   await dialog.getByText("Imported profiles are kept.", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  // Browser dialogs are unavailable in the native WebView: use our own dialog.
+  await page.evaluate(() => {
+    window.confirm = () => { throw Error("Browser confirmation must not be used"); };
+    const original = window.__TAURI__.core.invoke;
+    window.updateCalls = [];
+    window.__TAURI__.core.invoke = async (command, args) => {
+      if (command === "check_update") return { version: "0.1.999" };
+      if (command === "install_update") {
+        window.updateCalls.push(args.version);
+        return new Promise((_, reject) => { window.rejectUpdate = reject; });
+      }
+      return original(command, args);
+    };
+  });
+  await page.getByRole("tab", { name: "App", exact: true }).click();
+  await page.getByRole("button", { name: "Check for updates", exact: true }).click();
+  const install = page.getByRole("button", { name: "Install update & relaunch", exact: true });
+  const confirmation = page.getByRole("dialog", { name: "Confirm action", exact: true });
+  await install.click();
+  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.updateCalls), []);
+  await install.click();
+  await page.keyboard.press("Escape");
+  assert.deepEqual(await page.evaluate(() => window.updateCalls), []);
+  await install.click();
+  await confirmation.getByRole("button", { name: "Install & relaunch", exact: true }).click();
+  await page.getByText("Downloading and installing 0.1.999… The app will relaunch when finished.", { exact: true }).waitFor();
+  assert.equal(await install.isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => window.updateCalls), ["0.1.999"]);
+  await page.evaluate(() => window.rejectUpdate("Synthetic download failure"));
+  await page.getByText("Update failed: Synthetic download failure", { exact: true }).waitFor();
+  assert.equal(await install.isDisabled(), false);
+  await install.click();
+  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
   const startsBeforeObservation = (await page.evaluate(() => window.operations)).filter(o => o.operation === "overview").length;
   await page.evaluate(() => { window.coreStopped = true; window.routerEvents["router-state-changed"]({}); });
   await page.getByText("Router unavailable", { exact: true }).waitFor();

@@ -121,6 +121,7 @@ TAURI_CONFIG='{"identifier":"com.graehlarts.agent-auth-router.smoke"}' cargo bui
 node desktop/scripts/smoke-embedded.mjs
 node desktop/scripts/smoke-lifecycle.mjs
 node desktop/scripts/smoke-pairing.mjs
+node desktop/scripts/smoke-update.mjs
 ```
 
 This uses a distinct app identity, temporary state and a synthetic CLI. Its
@@ -169,3 +170,13 @@ References: [Desktop Release Kit](https://github.com/kzahel/desktop-release-kit)
 [Machine Control](https://github.com/kzahel/machine-control/tree/main/desktop),
 and [Lid Awake](https://github.com/kzahel/lid-awake). The signing sequence adapts Machine Control; its MIT notice is retained in
 [NOTICE](NOTICE) and [MACHINE-CONTROL-LICENSE](MACHINE-CONTROL-LICENSE).
+
+
+Version 0.1.9 replaces browser `confirm()` calls with document dialogs: the
+macOS WebView has no browser-confirmation delegate, so prior versions silently
+cancelled update, stop, disable, revoke and pool-deletion actions. Installation
+now shows progress text and failures beside its button. The native update smoke
+uses an isolated debug identity and synthetic check/install responses to test
+cancel, acceptance, real command dispatch and visible errors; it does not claim
+an actual older-to-newer binary replacement. Users on affected versions need a
+one-time manual app installation to obtain the corrected update button.

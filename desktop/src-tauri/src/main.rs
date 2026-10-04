@@ -408,6 +408,10 @@ async fn check_update(
     if window.label() != "main" {
         return Err("Owner window required".into());
     }
+    #[cfg(debug_assertions)]
+    if smoke::update_enabled() {
+        return Ok(json!({ "version": "0.1.999" }));
+    }
     let update = app
         .updater_builder()
         .timeout(Duration::from_secs(20))
@@ -429,6 +433,12 @@ async fn install_update(
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("Owner window required".into());
+    }
+    #[cfg(debug_assertions)]
+    if smoke::update_enabled() {
+        std::fs::write(state_dir(&app)?.join("update-invoked"), version)
+            .map_err(|_| "Cannot record update smoke")?;
+        return Err("Synthetic download failure".into());
     }
     let update = app
         .updater_builder()

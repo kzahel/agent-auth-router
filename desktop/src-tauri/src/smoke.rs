@@ -8,6 +8,9 @@ pub fn enabled() -> bool {
                 .is_ok_and(|value| value == "synthetic-only")
         })
 }
+pub fn update_enabled() -> bool {
+    enabled() && std::env::var("AAR_UPDATE_SMOKE").as_deref() == Ok("1")
+}
 #[tauri::command]
 pub fn smoke_result(
     app: tauri::AppHandle,
@@ -50,7 +53,28 @@ pub fn loaded(webview: &tauri::Webview, payload: &tauri::webview::PageLoadPayloa
     if !enabled() || payload.event() != tauri::webview::PageLoadEvent::Finished {
         return;
     }
-    let script = if std::env::var("AAR_PAIRING_SMOKE").as_deref() == Ok("1") {
+    let script = if update_enabled() {
+        r#"(async()=>{
+          const invoke=window.__TAURI__.core.invoke;
+          const wait=async(check)=>{for(let i=0;i<200;i++){if(check())return;await new Promise(r=>setTimeout(r,50));}throw Error();};
+          try {
+            window.confirm=()=>{throw Error('Browser dialog used');};
+            await wait(()=>document.querySelector('#status')?.textContent.includes('requests'));
+            document.querySelector('#tab-app').click();
+            document.querySelector('#check-update').click();
+            await wait(()=>!document.querySelector('#install-update').hidden);
+            const install=document.querySelector('#install-update'), dialog=document.querySelector('#confirmation-dialog');
+            install.click(); await wait(()=>dialog.open);
+            dialog.querySelector('[value=cancel]').click();
+            await wait(()=>!install.disabled);
+            install.click(); await wait(()=>dialog.open);
+            document.querySelector('#confirmation-accept').click();
+            await wait(()=>document.querySelector('#update-status').textContent.includes('Update failed: Synthetic download failure'));
+            if(install.disabled)throw Error();
+            await invoke('smoke_result',{ok:true});
+          } catch { await invoke('smoke_result',{ok:false}); }
+        })()"#
+    } else if std::env::var("AAR_PAIRING_SMOKE").as_deref() == Ok("1") {
         r#"(async()=>{
           const invoke=window.__TAURI__.core.invoke;
           const wait=async(check)=>{for(let i=0;i<200;i++){if(check())return;await new Promise(r=>setTimeout(r,50));}throw Error();};

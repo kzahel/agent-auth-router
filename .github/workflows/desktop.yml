@@ -55,6 +55,7 @@ jobs:
           node desktop/scripts/smoke-embedded.mjs
           node desktop/scripts/smoke-lifecycle.mjs
           node desktop/scripts/smoke-pairing.mjs
+          node desktop/scripts/smoke-update.mjs
       - name: Reclaim debug build space before release packaging
         run: cargo clean --manifest-path desktop/src-tauri/Cargo.toml --profile dev
       - name: Build bundled app
