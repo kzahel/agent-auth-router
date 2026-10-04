@@ -239,6 +239,62 @@ AAR allocates at session start. A session may continue across multiple resets,
 so even perfect initial ranking cannot continuously harvest expiring allowance.
 Cross-account continuation remains separate work, not an implicit feature of Auto.
 
+## Auto with an expected task size
+
+Discussion refinement, 2026-10-04: the maintainer proposed optionally telling
+the router whether a new session is a small task or substantial, long-running
+work. Auto should consider likely demand before favoring allowance approaching
+reset. This is a proposed product input, not an implemented demand estimator.
+
+Keep the session-creation choice small and optional:
+
+| Expected work | Proposed Auto preference |
+| --- | --- |
+| Small | Allow lower headroom, then prefer usable allowance resetting soon. |
+| Standard (default) | Balance headroom and reset urgency with a moderate reserve. |
+| Large | Require more headroom and favor room to continue over an imminent reset. |
+
+These labels describe expected inference work, not guaranteed duration or a token
+budget. Long elapsed time can include idle/tool time; a brief task can consume
+substantial inference. Avoid an initial form asking users to predict token counts
+or session hours. Keep the hint separate from the pool's policy so one Auto pool
+can serve different task sizes. Initially only Auto consumes it; Manual and the
+explicit comparators retain their documented semantics.
+
+Proposed decision structure:
+
+1. Apply the existing permission, model, freshness and quota eligibility gates.
+2. Apply the task class's headroom requirements to each applicable window,
+   distinguishing short, weekly and model-specific limits. Start with explicit,
+   versioned thresholds chosen through fixtures/simulation; no numeric defaults
+   are approved here. Percentages across plans/windows are not interchangeable
+   amounts of work, so describe this as a conservative heuristic.
+3. Rank candidates that pass by the class's headroom/reset preference, with
+   documented startup reservation behavior and deterministic ties. Never count
+   a future reset as capacity already available.
+4. If none meet the requested class, explain that and offer an explicit smaller
+   class, Manual choice, or refresh. Do not silently downgrade the request or
+   promise that waiting until the displayed reset will make it fit.
+
+For example, an account with a small usable allowance resetting tonight may be
+a good Small-task candidate; substantial work should favor another account with
+more short and weekly headroom. Neither decision guarantees completion: the task
+can grow, observations can lag, and other sessions or direct CLI use can consume
+the same account's quota. A size hint is not a provider-side reservation.
+
+Persist the effective hint and decision version with the allocation, include the
+hint in idempotency conflict checks, and show it in the preview/reason. Explicit
+changes apply to new allocations; a task growing later does not move its existing
+pin. Additive capability negotiation must prevent an older router from silently
+ignoring a requested hint. Later, opt-in metadata about observed task usage could
+help calibrate thresholds; concurrent account usage makes attribution uncertain,
+and collecting prompts or building a prediction system is not part of this idea.
+
+Before implementing, compare identical pool snapshots under all three classes,
+including insufficient headroom, different plan sizes, concurrent starts, tasks
+outgrowing their hint, missing hints and unsupported clients. Evaluate this after
+the simpler explicit policies, using the same evidence and preview infrastructure.
+
 ## Metadata and UI contract to add
 
 Expose the same policy metadata through the headless owner/integration APIs so
