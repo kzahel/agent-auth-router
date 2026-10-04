@@ -84,6 +84,8 @@ test("management UI preserves typing while observations update, and offers owner
             await new Promise((r) => setTimeout(r, 150));
             return structuredClone(state);
           }
+          if (args.operation === "profiles/discover") return { profiles: [{ home: "/Users/example/.codex", enrolled: false }] };
+          if (args.operation === "profiles/inspect") return { credentialStore: "file", credentialStatus: "ok", canEnroll: true, detail: "Stored credentials readable; provider access is not checked" };
           if (args.operation === "accounts/set-nickname") {
             Object.assign(state.accounts.find(a => a.id === args.body.id), { nickname: args.body.nickname, revision: args.body.revision + 1 });
           }
@@ -165,9 +167,21 @@ test("management UI preserves typing while observations update, and offers owner
   await page.getByRole("button", { name: "Save nickname" }).click();
   await page.waitForFunction(() => !document.querySelector("#accounts .nickname"));
   await page.getByText("Add account", { exact: true }).first().click();
-  await page.locator("#account-form button").click();
+  await page.locator("#account-form button[type=submit]").click();
   const enrollment = (await page.evaluate(() => window.operations)).find(o => o.operation === "accounts/add");
   assert.deepEqual(enrollment.body, { nickname: "", provider: "codex" });
+  await page.locator("#account-form select[name=enrollment]").selectOption("existing");
+  assert.equal(await page.locator("#account-form button[type=submit]").isDisabled(), true);
+  await page.getByRole("button", { name: "Find profiles" }).click();
+  await page.getByRole("button", { name: "/Users/example/.codex", exact: true }).click();
+  await page.getByRole("button", { name: "Check profile", exact: true }).click();
+  await page.getByText("file · ok · Stored credentials readable; provider access is not checked", { exact: true }).waitFor();
+  await page.locator("#account-form input[name=home]").fill("/Users/example/other");
+  assert.equal(await page.locator("#account-form button[type=submit]").isDisabled(), true, "editing profile invalidates inspection");
+  await page.getByRole("button", { name: "Check profile", exact: true }).click();
+  await page.locator("#account-form button[type=submit]").click();
+  const reuse = (await page.evaluate(() => window.operations)).filter(o => o.operation === "accounts/add").at(-1);
+  assert.deepEqual(reuse.body, { nickname: "", provider: "codex", enrollment: "existing", home: "/Users/example/other", credentialStore: "file" });
   await page.getByText("Add account", { exact: true }).first().click();
   // Present a compact account slice for visual inspection while preserving the volume test above.
   await page.evaluate(() => { window.fixtureState.accounts = window.fixtureState.accounts.slice(0, 4); });

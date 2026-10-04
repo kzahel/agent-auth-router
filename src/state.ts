@@ -154,12 +154,14 @@ export function validateAccounts(accounts: AccountConfig[]): AccountConfig[] {
     if (typeof account.home !== "string" || !account.home.startsWith("/")) {
       throw new Error(`account ${account.id} home must be an absolute path`);
     }
-    if (account.credentialStore !== undefined && account.credentialStore !== "file" && account.credentialStore !== "claude-keychain") {
+    if (account.credentialStore !== undefined && account.credentialStore !== "file" && account.credentialStore !== "claude-keychain" && account.credentialStore !== "claude-keychain-default") {
       throw new Error(`account ${account.id} has unknown credential store`);
     }
-    if (account.credentialStore === "claude-keychain" && account.provider !== "claude") {
+    if (account.credentialStore?.startsWith("claude-keychain") && account.provider !== "claude") {
       throw new Error(`account ${account.id}: claude-keychain requires a Claude account`);
     }
+    if (account.credentialStore === "claude-keychain-default" && account.home !== join(homedir(), ".claude")) throw new Error("default Claude Keychain requires the normal CLI profile");
+    if (account.enrollment !== undefined && account.enrollment !== "existing") throw new Error("invalid enrollment mode");
     // Two accounts sharing a home would share one refresh credential.
     const home = resolve(account.home);
     if (homes.has(home)) throw new Error(`account ${account.id} shares a profile home with another account`);

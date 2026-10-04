@@ -43,7 +43,9 @@ export interface AccountConfig {
   /** Dedicated CODEX_HOME or CLAUDE_CONFIG_DIR. */
   home: string;
   /** Explicit, version-specific Keychain opt-in; absent selects file storage. */
-  credentialStore?: "file" | "claude-keychain";
+  credentialStore?: "file" | "claude-keychain" | "claude-keychain-default";
+  /** Existing profiles are enrolled without provisioning or changing permissions. */
+  enrollment?: "existing";
   enabled?: boolean;
   revision?: number;
   retired?: boolean;

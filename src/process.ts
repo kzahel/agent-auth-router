@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import type { Provider } from "./types.ts";
+import { dirname } from "node:path";
+import type { AccountConfig, Provider } from "./types.ts";
 
 export interface ProcessResult {
   code: number | null;
@@ -122,5 +123,15 @@ export function helperEnv(provider: Provider, home: string, source: NodeJS.Proce
   }
   if (provider === "codex") env.CODEX_HOME = home;
   else env.CLAUDE_CONFIG_DIR = home;
+  return env;
+}
+
+/** Preserve normal Claude CLI Keychain identity when explicitly enrolled. */
+export function accountEnv(account: AccountConfig, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = helperEnv(account.provider, account.home, source);
+  if (account.credentialStore === "claude-keychain-default") {
+    delete env.CLAUDE_CONFIG_DIR;
+    env.HOME = dirname(account.home);
+  }
   return env;
 }

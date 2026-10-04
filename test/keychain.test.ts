@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { claudeKeychainService, readClaudeKeychain, type KeychainReadOptions } from "../src/credentials.ts";
@@ -79,4 +80,12 @@ describe("profile-specific Claude Keychain reader", () => {
     assert.throws(() => validateAccounts([{ id: "codex", provider: "codex", home: f.home, credentialStore: "claude-keychain" }]));
     assert.throws(() => validateAccounts([{ id: "claude", provider: "claude", home: f.home, credentialStore: "unknown" as "file" }]));
   });
+});
+
+test("explicit normal Claude profile reads only the unsuffixed Keychain service", async () => {
+  const f = fixture();
+  const result = await readClaudeKeychain(join(homedir(), ".claude"), { ...f.options, defaultProfile: true, cwd: f.home });
+  assert.equal(result.status, "ok");
+  assert.equal(JSON.parse(readFileSync(f.argv, "utf8")).at(-1), "Claude Code-credentials");
+  assert.equal((await readClaudeKeychain(f.home, { ...f.options, defaultProfile: true, cwd: f.home })).status, "malformed");
 });

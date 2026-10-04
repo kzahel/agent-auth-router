@@ -4,7 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { randomUUID } from "node:crypto";
 import { ownerRequest } from "./owner.ts";
 import { providerExecutable } from "./platform.ts";
-import { helperEnv } from "./process.ts";
+import { accountEnv } from "./process.ts";
 import type { StateStore } from "./state.ts";
 import type { AccountConfig } from "./types.ts";
 
@@ -111,7 +111,7 @@ export async function terminalLogin(store: StateStore, id: string): Promise<void
     if (cancelled || !args) return;
     // Keep the official CLI in Terminal's foreground process group with real TTY fds.
     child = spawn(providerExecutable(account.provider), args, {
-      env: { ...helperEnv(account.provider, account.home), TERM: process.env.TERM ?? "xterm-256color" },
+      env: { ...accountEnv(account), TERM: process.env.TERM ?? "xterm-256color" },
       cwd: account.home, stdio: "inherit", shell: false,
     });
     const done = new Promise<number | null>((resolve) => {

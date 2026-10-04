@@ -62,6 +62,7 @@ describe("credential readers", () => {
     assert.equal((await readCodexFile(home)).status, "unsupported");
     writeFileSync(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-synthetic", tokens: null }));
     assert.equal((await readCodexFile(home)).status, "unsupported");
+    writeFileSync(join(home, "config.toml"), 'cli_auth_credentials_store = "file"\n');
     writeFileSync(join(home, "auth.json"), '{"tokens": {"access_tok');
     assert.equal((await readCodexFile(home)).status, "malformed");
   });

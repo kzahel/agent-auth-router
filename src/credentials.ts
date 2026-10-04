@@ -14,7 +14,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { userInfo } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { helperEnv, startBounded } from "./process.ts";
 import type { AccountConfig, Provider, UpstreamCredential } from "./types.ts";
 
@@ -27,9 +27,9 @@ export type ReadResult =
 export type CredentialReader = () => Promise<ReadResult>;
 
 export function credentialReaderFor(provider: Provider, home: string, store?: AccountConfig["credentialStore"]): CredentialReader {
-  if (store === "claude-keychain") {
+  if (store === "claude-keychain" || store === "claude-keychain-default") {
     if (provider !== "claude") return async () => ({ status: "unsupported", reason: "Keychain store requires Claude" });
-    return () => readClaudeKeychain(home);
+    return () => readClaudeKeychain(home, { defaultProfile: store === "claude-keychain-default" });
   }
   return provider === "codex" ? () => readCodexFile(home) : () => readClaudeFile(home);
 }
@@ -81,13 +81,9 @@ export function jwtExpiryMs(token: string): number | undefined {
 }
 
 export async function readCodexFile(home: string): Promise<ReadResult> {
+  if (await codexUsesNonFileStore(home)) return { status: "unsupported", reason: "profile uses a non-file Codex credential store; keep its configuration and use a dedicated file-backed profile instead" };
   const parsed = await readJson(join(home, "auth.json"));
-  if (parsed.status !== "json") {
-    if (parsed.status === "missing" && (await codexUsesNonFileStore(home))) {
-      return { status: "unsupported", reason: "profile uses a non-file Codex credential store" };
-    }
-    return parsed;
-  }
+  if (parsed.status !== "json") return parsed;
   const tokens = record(record(parsed.value)?.tokens);
   if (!tokens) {
     return { status: "unsupported", reason: "profile has no ChatGPT tokens (API-key or other auth mode)" };
@@ -106,7 +102,7 @@ export async function readCodexFile(home: string): Promise<ReadResult> {
 async function codexUsesNonFileStore(home: string): Promise<boolean> {
   try {
     const config = await readFile(join(home, "config.toml"), "utf8");
-    const match = /^\s*cli_auth_credentials_store\s*=\s*"([^"]+)"/m.exec(config);
+    const match = /^\s*cli_auth_credentials_store\s*=\s*["']([^"']+)["']/m.exec(config);
     return match !== null && match[1] !== "file";
   } catch {
     return false;
@@ -145,11 +141,13 @@ export function claudeKeychainService(home: string): string {
   return `Claude Code-credentials-${suffix}`;
 }
 
-/** Overrides exist for synthetic process fixtures, never account configuration. */
+/** defaultProfile is explicit enrollment; process overrides are synthetic fixtures only. */
 export interface KeychainReadOptions {
+  defaultProfile?: boolean;
   platform?: NodeJS.Platform;
   username?: string;
   command?: string;
+  cwd?: string;
   args?: string[];
   timeoutMs?: number;
 }
@@ -159,7 +157,10 @@ export async function readClaudeKeychain(home: string, options: KeychainReadOpti
     return { status: "unsupported", reason: "Claude Keychain storage requires macOS" };
   }
   let service: string;
-  try { service = claudeKeychainService(home); }
+  try {
+    if (options.defaultProfile && home !== join(homedir(), ".claude")) throw new Error("wrong default profile");
+    service = options.defaultProfile ? "Claude Code-credentials" : claudeKeychainService(home);
+  }
   catch { return { status: "malformed", reason: "Keychain profile home must be absolute" }; }
   const username = options.username ?? userInfo().username;
   if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
@@ -169,7 +170,7 @@ export async function readClaudeKeychain(home: string, options: KeychainReadOpti
     command: options.command ?? "/usr/bin/security",
     args: [...(options.args ?? []), "find-generic-password", "-a", username, "-w", "-s", service],
     env: helperEnv("claude", home),
-    cwd: home,
+    cwd: options.cwd ?? home,
     timeoutMs: options.timeoutMs ?? 5_000,
     killGraceMs: 100,
     maxStderrBytes: 0,

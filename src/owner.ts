@@ -1,4 +1,5 @@
 // Local owner authority. Never expose this credential or raw CLI output to a web view.
+import { discoverProfiles, inspectProfile, physicalHome, profileHome, profileStore } from "./profiles.ts";
 import { TerminalLogin } from "./terminal-login.ts";
 import { BUILD_INFO } from "./build-info.ts";
 import { providerExecutable } from "./platform.ts";
@@ -12,7 +13,7 @@ import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { helperFor } from "./helpers.ts";
 import type { PoolEvidence } from "./pools.ts";
-import { helperEnv, startBounded, type BoundedProcess } from "./process.ts";
+import { accountEnv, helperEnv, startBounded, type BoundedProcess } from "./process.ts";
 import { ensurePrivateDir, type StateStore, validateAccounts } from "./state.ts";
 import { isProvider, type AccountConfig, type GatewayClientRecord } from "./types.ts";
 
@@ -236,6 +237,12 @@ export class OwnerService {
       this.store.saveAccounts(this.store.loadAccounts().map(a => a.id === next.id ? next : a));
       return { updated: true };
     }
+    if (operation === "profiles/discover" || operation === "profiles/inspect") {
+      if (!isProvider(body.provider)) throw new ControlError(400, "invalid provider");
+      if (operation === "profiles/discover") return { profiles: discoverProfiles(body.provider).map(p => ({ ...p, enrolled: this.store.loadAccounts().some(a => physicalHome(a.home) === physicalHome(p.home)) })) };
+      const home = profileHome(body.home), credentialStore = profileStore(body.provider, home, body.credentialStore);
+      return inspectProfile({ id: "preview", provider: body.provider, home, credentialStore });
+    }
     if (operation === "accounts/add") {
       if (body.id === undefined) body.id = randomUUID();
       if (
@@ -244,7 +251,7 @@ export class OwnerService {
         !isProvider(body.provider)
       )
         throw new ControlError(400, "invalid account id or provider");
-      const accounts = this.store.loadAccounts();
+      let accounts = this.store.loadAccounts();
       if (accounts.length >= 256) throw new ControlError(409, "account limit reached");
       if (typeof body.home === "string" && body.home.startsWith("~/")) body.home = join(homedir(), body.home.slice(2));
       if (body.home !== undefined && (typeof body.home !== "string" || !isAbsolute(body.home))) throw new ControlError(400, "profile folder must be an absolute path");
@@ -254,10 +261,21 @@ export class OwnerService {
           : typeof body.home === "string"
             ? resolve(body.home)
             : "";
+      if (body.enrollment !== undefined && body.enrollment !== "existing") throw new ControlError(400, "invalid enrollment mode");
+      if (body.enrollment === "existing" && body.home === undefined) throw new ControlError(400, "Choose an existing profile folder");
       const account: AccountConfig = { id: body.id, provider: body.provider, home, revision: 1 };
       const nickname = this.nickname(body.nickname ?? "");
       if (nickname) account.nickname = nickname;
-      if (body.credentialStore !== undefined) {
+      if (body.enrollment === "existing") {
+        account.home = profileHome(body.home);
+        account.enrollment = "existing";
+        account.credentialStore = profileStore(account.provider, account.home, body.credentialStore);
+        const preview = await inspectProfile(account);
+        if (!preview.canEnroll) throw new ControlError(409, preview.detail);
+        // Inspection awaits I/O. Reload before publishing to retain concurrent owner edits.
+        accounts = this.store.loadAccounts();
+        if (accounts.length >= 256) throw new ControlError(409, "account limit reached");
+      } else if (body.credentialStore !== undefined) {
         if (
           body.credentialStore !== "file" &&
           !(
@@ -276,13 +294,14 @@ export class OwnerService {
         (body.helper === undefined && body.provider === "codex")
       )
         account.helper = { kind: "codex-app-server" };
+      if (accounts.some(a => physicalHome(a.home) === physicalHome(account.home))) throw new ControlError(409, "profile is already enrolled");
       try {
         validateAccounts([...accounts, account]);
       } catch {
         throw new ControlError(409, "account id or profile is already enrolled, or invalid");
       }
-      ensurePrivateDir(home);
-      if (account.provider === "codex" && !existsSync(join(home, "config.toml")))
+      if (!account.enrollment) ensurePrivateDir(home);
+      if (!account.enrollment && account.provider === "codex" && !existsSync(join(home, "config.toml")))
         writeFileSync(join(home, "config.toml"), 'cli_auth_credentials_store = "file"\n', {
           flag: "wx",
           mode: 0o600,
@@ -395,7 +414,7 @@ export class OwnerService {
       const child = startBounded({
         command: providerExecutable(account.provider),
         args: account.provider === "codex" ? ["login"] : ["auth", "login", "--claudeai"],
-        env: helperEnv(account.provider, account.home),
+        env: accountEnv(account),
         cwd: this.store.workDir,
         timeoutMs: 10 * 60_000,
         maxStderrBytes: 0,
@@ -454,7 +473,7 @@ export class OwnerService {
         command: "/usr/bin/open",
         args: [url],
         cwd: this.store.workDir,
-        env: helperEnv(account.provider, account.home),
+        env: accountEnv(account),
         timeoutMs: 3000,
         maxStderrBytes: 0,
       });

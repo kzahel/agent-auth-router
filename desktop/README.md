@@ -15,7 +15,12 @@ nickname editing and disable/retire actions. CLI setup help is under **Account
 setup**, and launch/update/stop controls are on **App**.
 
 1. Open the app. It attaches to an available local router or starts its core.
-2. Choose **Check installed CLIs**, then **Add account**. Select a profile folder
+2. Choose **Check installed CLIs**, then **Add account**. Choose **Create dedicated
+   profile** or **Use existing profile**. Existing profiles offer **Find profiles**
+   and **Check profile** before enrollment, with an explicit storage choice.
+   Reuse leaves files and permissions unchanged; readable credentials do not need
+   another login. Unsupported Codex non-file storage is reported without changing
+   its configuration. Select a profile folder
    (or let AAR create a dedicated one) and an optional nickname. The folder is
    the primary label. **Edit nickname** changes or clears the label without
    moving the folder or changing routing identity. Mac Claude profiles use

@@ -18,7 +18,7 @@ explicit API authority boundary, not a sandbox against the same OS user.
 
 The desktop's native bridge and CLI read the owner key; the web view receives
 metadata only. Owner POST operations include `overview`, `providers`,
-`accounts/add`, `accounts/set-nickname`, `accounts/set-enabled`, `accounts/retire`, `accounts/login`,
+`profiles/discover`, `profiles/inspect`, `accounts/add`, `accounts/set-nickname`, `accounts/set-enabled`, `accounts/retire`, `accounts/login`,
 `accounts/login-status`, `accounts/open-login`, `accounts/cancel-login`,
 `accounts/refresh`, `accounts/renew`, `pools/save`, `pools/remove`,
 `grants/save`, `integrations/revoke`, `clients/add`, `clients/revoke`, and `stop`.
@@ -48,6 +48,27 @@ Account addition supports a stable ID, provider and optional dedicated home,
 credential-store choice and supported official helper. The desktop creates its
 profile under the private state directory. No arbitrary helper argv is accepted
 through enrollment. New coordinators join the live map without rebuilding peers.
+
+Existing-profile enrollment (2026-10-04) is explicit: `accounts/add` with
+`enrollment: "existing"` requires a folder and inspects its supported credential
+store and direct-provider configuration before registering it. It never creates
+configuration or credential files or changes folder permissions. Discovery lists
+only normal/environment profile directories, without reading credentials. Owner
+inspection returns sanitized status/expiry; it does not contact the provider or
+prove live access. Existing Codex non-file stores are refused without migration,
+even if an old `auth.json` remains. File-store and provider endpoint overrides
+must match the supported router contract.
+
+On macOS, Claude's normal `~/.claude` profile can explicitly use
+`claude-keychain-default`, selecting only `Claude Code-credentials` and leaving
+`CLAUDE_CONFIG_DIR` unset for official login. `claude-keychain` retains the
+profile-derived service for explicitly set configuration directories, including
+when that directory happens to be `~/.claude`. The inspection UI lets the owner
+choose either or file storage; readers never fall back between them. These are
+version-specific readers, covered by synthetic tests, not new live-consent or
+renewal claims. Accounts retain their store choice after restart. Every routed
+credential read observes the current store, including changes by an ordinary CLI;
+AAR's own login exclusion cannot lock unrelated CLI processes.
 
 Pool/grant/account edits require the last observed revision. Stale edits fail
 with 409. Account provider/profile identity cannot be edited. Retirement retains

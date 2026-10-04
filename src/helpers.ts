@@ -5,7 +5,7 @@ import { providerExecutable } from "./platform.ts";
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { helperEnv, startBounded, type ProcessResult } from "./process.ts";
+import { accountEnv, helperEnv, startBounded, type ProcessResult } from "./process.ts";
 import type { AccountConfig, HelperConfig } from "./types.ts";
 
 export type HelperOutcome =
@@ -83,7 +83,7 @@ async function runCommand(config: Extract<HelperConfig, { kind: "command" }>, co
   const proc = startBounded({
     command: config.command,
     args: config.args,
-    env: helperEnv(context.account.provider, context.account.home, context.env),
+    env: accountEnv(context.account, context.env),
     cwd: context.workDir,
     timeoutMs: (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
   });

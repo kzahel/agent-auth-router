@@ -316,16 +316,61 @@ $("cancel-grants").onclick = () => {
   $("grant-form").hidden = true;
 };
 $("pool-form").elements.provider.onchange = () => members();
-$("account-form").onsubmit = (e) => {
+const accountForm = $("account-form");
+let profileGeneration = 0, inspectedProfile;
+const profileInput = () => ({ provider: accountForm.elements.provider.value, home: accountForm.elements.home.value, credentialStore: accountForm.elements.credentialStore.value });
+function accountSetupChanged() {
+  profileGeneration++;
+  inspectedProfile = undefined;
+  const existing = accountForm.elements.enrollment.value === "existing";
+  $("existing-profile").hidden = !existing;
+  accountForm.elements.home.required = existing;
+  accountForm.elements.home.placeholder = existing ? "/path/to/existing/profile" : "Leave blank to create a dedicated profile";
+  $("profile-preview").textContent = "";
+  accountForm.querySelector("button[type=submit]").disabled = existing;
+}
+for (const name of ["enrollment", "provider", "home", "credentialStore"]) accountForm.elements[name].addEventListener("input", accountSetupChanged);
+$("discover-profiles").onclick = () => run(async () => {
+  const generation = profileGeneration;
+  const result = await api("profiles/discover", { provider: accountForm.elements.provider.value });
+  if (generation !== profileGeneration) return;
+  $("profile-candidates").replaceChildren();
+  for (const p of result.profiles) {
+    const choice = button(`${p.home}${p.enrolled ? " · already enrolled" : ""}`, () => {
+      accountForm.elements.home.value = p.home;
+      accountSetupChanged();
+    });
+    choice.disabled = p.enrolled;
+    $("profile-candidates").append(choice);
+  }
+  if (!result.profiles.length) $("profile-candidates").textContent = "No profiles found. Enter a folder to check it.";
+}, $("discover-profiles"));
+$("inspect-profile").onclick = () => run(async () => {
+  const input = profileInput(), generation = profileGeneration;
+  const result = await api("profiles/inspect", input);
+  if (generation !== profileGeneration) return;
+  $("profile-preview").textContent = `${result.credentialStore} · ${result.credentialStatus} · ${result.detail}`;
+  if (result.canEnroll) inspectedProfile = { input: JSON.stringify(input), credentialStore: result.credentialStore };
+  accountForm.querySelector("button[type=submit]").disabled = !result.canEnroll;
+}, $("inspect-profile"));
+accountForm.onsubmit = (e) => {
   e.preventDefault();
-  const form = e.currentTarget,
-    body = Object.fromEntries(new FormData(form));
+  const body = Object.fromEntries(new FormData(accountForm));
   void run(async () => {
+    if (body.enrollment === "existing") {
+      if (inspectedProfile?.input !== JSON.stringify(profileInput())) throw new Error("Check this profile before enrolling it.");
+      body.credentialStore = inspectedProfile.credentialStore;
+    } else {
+      delete body.enrollment;
+      delete body.credentialStore;
+    }
     if (!body.home) delete body.home;
     await api("accounts/add", body);
-    form.reset();
+    accountForm.reset();
+    accountSetupChanged();
+    $("profile-candidates").replaceChildren();
     await reload();
-  }, form.querySelector("button"));
+  }, accountForm.querySelector("button[type=submit]"));
 };
 $("pool-form").onsubmit = (e) => {
   e.preventDefault();

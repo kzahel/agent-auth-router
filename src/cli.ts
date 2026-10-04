@@ -5,7 +5,7 @@ import { terminalLogin } from "./terminal-login.ts";
 import { ownerRequest } from "./owner.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
 import { credentialReaderFor } from "./credentials.ts";
@@ -43,6 +43,7 @@ function loginCommand(account: AccountConfig): string {
   if (account.provider === "codex") {
     return `env -u OPENAI_BASE_URL -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME=${home} codex login`;
   }
+  if (account.credentialStore === "claude-keychain-default") return `env -i PATH="$PATH" HOME=${quote(dirname(account.home))} USER=${quote(userInfo().username)} claude auth login --claudeai`;
   return `env -i PATH="$PATH" HOME="$HOME" USER=${quote(userInfo().username)} CLAUDE_CONFIG_DIR=${home} claude auth login --claudeai`;
 }
 

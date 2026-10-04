@@ -151,6 +151,7 @@ fn enrollment_body(operation: &str, mut body: Value) -> Value {
     if cfg!(target_os = "macos")
         && operation == "accounts/add"
         && body["provider"] == "claude"
+        && body["enrollment"] != "existing"
         && body.get("credentialStore").is_none()
     {
         body["credentialStore"] = json!("claude-keychain");
@@ -280,6 +281,8 @@ async fn router(app: tauri::AppHandle, operation: String, body: Value) -> Result
         "overview",
         "providers",
         "accounts/add",
+        "profiles/discover",
+        "profiles/inspect",
         "accounts/set-nickname",
         "accounts/terminal-login",
         "accounts/set-enabled",
