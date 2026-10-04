@@ -77,9 +77,11 @@ runtime/ACL/process-tree/startup/update acceptance is still future work.
 
 The [embedded sign-in terminal plan](../docs/router-owned-pools-and-desktop.md#embedded-sign-in-terminal-direction-2026-10-04)
 records xterm.js as the intended Windows/Linux and eventual shared sign-in UI.
-A proposed build-time backend selector will allow embedded-terminal candidates
-while retaining the current macOS Terminal.app path. Neither the embedded
-terminal nor that selector is implemented yet.
+The plan includes supported terminal presentations in the same build, selectable
+at runtime, while retaining the current macOS Terminal.app path. Separately,
+Windows enrollment is planned to select native Windows or a WSL distribution/user
+and an existing or dedicated profile. Embedded rendering, runtime selection and
+Windows/WSL account support are not implemented yet; no build flag is planned.
 
 ## Candidate signing and updates
 

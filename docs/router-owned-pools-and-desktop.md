@@ -162,15 +162,56 @@ both presentations use the same lifecycle contract rather than separate
 authentication implementations. Preserve the ten-minute deadline, renewal/stop
 exclusion, and cleanup on account disablement, window close or runner loss.
 
-Introduce a build-time backend selector when implementing this work. Proposed
-values are `external` and `embedded` (flag name is not yet fixed or available).
-Initially, normal macOS builds keep `external`; opt-in macOS test/candidate builds
-use `embedded` with the same profiles and lifecycle. Target Windows/Linux builds
-use `embedded` once their platform prerequisites pass. Unsupported combinations
-must fail clearly, without silently selecting a different backend. Record the
-selected backend in build metadata so candidate results are attributable. No
-end-user setting is needed for the first experiment, and changing the backend
-must not migrate accounts, copy credentials or change profile identity.
+Revised maintainer direction: include all implemented terminal presentations for
+the target platform in the same build and let the owner choose at runtime. No
+build-time backend flag is planned. Offer embedded sign-in alongside external
+Terminal.app on macOS, retaining the current external default during initial
+validation. Embedded sign-in is the intended shared Windows/Linux path once
+their prerequisites pass; additional external launchers require their own
+implementation and acceptance. Show only supported choices and report an
+unavailable selection clearly, without silently switching it. Include the
+selected presentation in safe diagnostics and test results. Changing this UI
+preference must not migrate accounts, copy credentials or change profile identity.
+
+### Account execution environments (planned)
+
+Terminal presentation and account execution environment are independent choices.
+The terminal determines where input/output appears; the account environment
+determines where the official CLI, profile and credential store live. PowerShell
+and Command Prompt are shells, not separate account environments: the same
+Windows user, CLI and profile settings can use the same credentials from either.
+An embedded terminal can launch the approved helper directly. A Windows PTY can
+also launch `wsl.exe`, but displaying a WSL terminal alone does not implement WSL
+account support.
+
+On Windows, enrollment should offer native Windows and discovered WSL
+distributions, such as `WSL · Ubuntu`, with the Linux user shown and selectable
+where needed. Discover distribution names through the documented
+[WSL commands](https://learn.microsoft.com/en-us/windows/wsl/basic-commands).
+Resolve the user during enrollment and retain that identity rather than letting
+a later change to WSL defaults silently redirect account operations. Within the
+chosen environment, offer an existing profile or a new dedicated profile and
+show its environment-native folder path. Profile discovery must not silently
+enroll accounts or copy credentials.
+
+For an existing authenticated WSL profile, validate the CLI/profile in that
+distribution as that user and enroll it in place; sign-in is offered when needed.
+Remember environment, distribution/user where applicable, and profile identity
+per account. Login, credential reads, quota/renewal helpers and process cleanup
+must consistently target that environment. Detect credential changes made by
+the user's ordinary CLI; sharing an existing profile does not give AAR exclusive
+control over its external processes. Never treat a Linux profile as a native
+Windows profile merely because its files are accessible from Windows.
+
+The cross-environment adapter design is still open. A small helper inside WSL is
+a candidate, not an implemented or selected architecture. Define its private
+transport, lifecycle and credential-access boundaries before implementation.
+Keep this environment support independent of external/embedded presentation;
+switching the presentation must preserve the selected environment and profile.
+Execution environments, runtime terminal choice and embedded rendering are all
+future work, not claims of current Windows/WSL support.
+
+### Terminal and environment acceptance
 
 Keep the sign-in window compact and system-themed, showing provider, profile
 folder, terminal, status and Cancel. Scope its native bridge to the owned login
@@ -189,6 +230,12 @@ separately authorized human consent acceptance for both providers. Keep external
 macOS coverage during rollout. Windows transport/ACL, executable discovery and
 process lifecycle support, plus Linux packaging, remain separate requirements;
 adding xterm.js alone does not establish cross-platform app support.
+Add environment-specific fixtures for native Windows and multiple WSL
+distributions/users, existing and newly created profiles, changed WSL defaults,
+missing CLIs, stopped/unavailable distributions, external credential changes and
+cancellation across the Windows/WSL process boundary. Verify runtime presentation
+switches retain the same profile, use no credential copying, and leave unrelated
+accounts/processes untouched.
 
 ## Migration and compatibility
 
