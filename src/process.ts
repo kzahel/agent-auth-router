@@ -26,12 +26,24 @@ export interface StartOptions {
   killGraceMs?: number;
 }
 
+const managed = new Set<BoundedProcess>();
+let shuttingDown = false;
+/** Called only when the CLI process itself is shutting down. */
+export async function stopManagedProcesses(): Promise<void> {
+  shuttingDown = true;
+  while (managed.size) {
+    const current = [...managed];
+    for (const child of current) child.terminate();
+    await Promise.all(current.map(child => child.done));
+  }
+}
 /**
  * Spawns an approved executable with explicit argv (no shell), a caller-built
  * environment, a hard deadline and bounded retained output. The child gets
  * its own process group so termination also reaches its descendants.
  */
 export function startBounded(options: StartOptions): BoundedProcess {
+  if (shuttingDown) throw new Error("Router is shutting down");
   const maxStderr = options.maxStderrBytes ?? 16 * 1024;
   const graceMs = options.killGraceMs ?? 3_000;
   const child = spawn(options.command, [...options.args], {
@@ -49,10 +61,11 @@ export function startBounded(options: StartOptions): BoundedProcess {
     if (stderr.length > maxStderr) stderr = stderr.subarray(stderr.length - maxStderr);
   });
 
+  let settled = false;
   let timedOut = false;
   let killTimer: NodeJS.Timeout | undefined;
   const signalGroup = (signal: NodeJS.Signals) => {
-    if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+    if (child.pid === undefined || settled) return;
     try {
       process.kill(-child.pid, signal);
     } catch {
@@ -71,9 +84,11 @@ export function startBounded(options: StartOptions): BoundedProcess {
   deadline.unref();
 
   const done = new Promise<ProcessResult>((resolve) => {
-    let settled = false;
     const finish = (code: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;
+      // The process group can survive its leader; finish cancellation before
+      // releasing ownership, even when descendants closed their output pipes.
+      if (killTimer) signalGroup("SIGKILL");
       settled = true;
       clearTimeout(deadline);
       if (killTimer) clearTimeout(killTimer);
@@ -86,7 +101,10 @@ export function startBounded(options: StartOptions): BoundedProcess {
     child.on("close", finish);
   });
 
-  return { child, done, terminate };
+  const result = { child, done, terminate };
+  managed.add(result);
+  void done.then(() => managed.delete(result));
+  return result;
 }
 
 const INHERITED_ENV = [

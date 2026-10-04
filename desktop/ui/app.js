@@ -92,7 +92,9 @@ function editGrants(integration) {
 }
 async function reload() {
   const generation = ++observationGeneration;
-  const next = await api("overview");
+  let next;
+  try { next = await api("overview"); }
+  catch (failure) { if (generation === observationGeneration) $("status").textContent = "Router unavailable"; throw failure; }
   if (generation !== observationGeneration) return;
   snapshot = next;
   $("version").textContent = next.build?.version ?? "development";
@@ -510,3 +512,5 @@ for (const tab of tabs) {
 
 $("terminal-presentation").value = localStorage.getItem("terminal-presentation") === "embedded" ? "embedded" : "external";
 $("terminal-presentation").onchange = () => localStorage.setItem("terminal-presentation", $("terminal-presentation").value);
+
+void window.__TAURI__.event?.listen("router-lifecycle-error", ({ payload }) => { error(payload); $("status").textContent = "Router could not stop"; });

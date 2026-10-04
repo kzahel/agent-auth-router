@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Local administration shares the running owner service over private IPC.
 
+import { desktopStartupError } from "./desktop-lifecycle.ts";
+import { stopManagedProcesses } from "./process.ts";
 import { terminalLogin } from "./terminal-login.ts";
 import { ownerRequest } from "./owner.ts";
 import { randomUUID } from "node:crypto";
@@ -220,14 +222,30 @@ async function main(argv: string[]): Promise<void> {
       }
       fail("client requires add, list or revoke");
     }
-    case "serve": {
-      const router = await startRouter(store);
+    case "serve":
+    case "desktop-serve": {
+      const desktop = command === "desktop-serve";
+      let parentClosed = false;
+      let router: Awaited<ReturnType<typeof startRouter>> | undefined;
       const shutdown = () => {
-        router.close().then(() => process.exit(0));
+        parentClosed = true;
+        if (!router) return;
+        void router.close(true).then(() => process.exit(0));
         setTimeout(() => process.exit(1), 10_000).unref();
       };
+      if (desktop) {
+        // The app holds this private pipe open. EOF also covers app crashes.
+        process.stdin.on("end", shutdown);
+        process.stdin.resume();
+      }
       process.once("SIGINT", shutdown);
       process.once("SIGTERM", shutdown);
+      try { router = await startRouter(store, {}, { desktop, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(0) }); }
+      catch (error) {
+        if (desktop) { process.stderr.write(`AAR_STARTUP_ERROR:${JSON.stringify({ message: desktopStartupError(error) })}\n`); process.exit(1); }
+        throw error;
+      }
+      if (parentClosed) shutdown();
       return;
     }
     default:

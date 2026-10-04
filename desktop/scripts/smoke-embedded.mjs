@@ -28,17 +28,22 @@ try {
   const result = JSON.parse(readFileSync(resultFile));
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.match(result.window, /^signin-/);
+  for (let i = 0; i < 150 && child.exitCode === null; i++) await delay(100);
+  assert.equal(child.exitCode, 0, "App quit must finish");
+  assert.equal(existsSync(join(state, "control.sock")), false, "App quit must stop its router");
   console.log("Native WebView sign-in passed: local assets/CSP, isolated window authority, PTY input/output and completion.");
 } finally {
   if (child && child.exitCode === null && child.signalCode === null) { child.kill("SIGTERM"); await once(child, "exit"); }
   try {
     const invoke = (op, value = {}) => JSON.parse(execFileSync(node, [cli, "--state", state, "owner-request", op], { input: JSON.stringify(value), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 25000 }));
-    const overview = invoke("overview");
-    for (const login of overview.logins.filter(l => l.status === "running")) invoke("accounts/cancel-login", { id: login.id });
-    for (let i = 0; i < 30; i++) {
-      try { invoke("stop", { routerId: overview.routerId }); break; } catch { await delay(150); }
+    if (existsSync(join(state, "control.sock"))) {
+      const overview = invoke("overview");
+      for (const login of overview.logins.filter(l => l.status === "running")) invoke("accounts/cancel-login", { id: login.id });
+      for (let i = 0; i < 30; i++) {
+        try { invoke("stop", { routerId: overview.routerId }); break; } catch { await delay(150); }
+      }
+      for (let i = 0; i < 50 && existsSync(join(state, "control.sock")); i++) await delay(100);
+      assert.equal(existsSync(join(state, "control.sock")), false, "Smoke router did not stop");
     }
-    for (let i = 0; i < 50 && existsSync(join(state, "control.sock")); i++) await delay(100);
-    assert.equal(existsSync(join(state, "control.sock")), false, "Smoke router did not stop");
   } finally { if (!existsSync(join(state, "control.sock"))) rmSync(state, { recursive: true, force: true }); }
 }

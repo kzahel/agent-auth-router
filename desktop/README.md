@@ -48,14 +48,17 @@ profile. Re-enable a disabled account when appropriate; retired IDs cannot be
 reused. No operation implicitly deletes provider credentials.
 
 Closing the management window hides it to the tray. Closing an embedded sign-in
-window cancels that login; quitting the app cancels its embedded logins.
-**Quit App (Keep Router Running)**
-leaves routing available. **Stop router** is explicit and refuses active
+window cancels that login. **Quit** stops the router, including active requests,
+renewal work and sign-ins, and exits the app. Yep Anywhere connections that need
+the router remain unavailable until the app is launched again. There is no
+keep-running option. **Stop router** is explicit and refuses active
 requests, metadata reads, renewal or sign-in work. Reload starts it again.
 Updates download signed bytes and require an idle core before installation and
-relaunch. A failed installation offers restart through Reload. A crashed router
-may leave a socket: the app refuses to unlink an endpoint whose ownership it
-cannot establish. Inspect it before removing stale state.
+relaunch. A failed installation offers restart through Reload. A desktop-started router also shuts down when the app process disappears.
+On relaunch, the app recovers a private abandoned control socket only after two
+refused connection probes and an unchanged file identity. It preserves that inode
+as `control.sock.stale-*`; live sockets, foreign owners, symlinks and ordinary
+files are left untouched. Startup failures report a safe specific reason.
 
 ## Develop and check
 
@@ -74,8 +77,8 @@ node desktop/scripts/smoke-installed.mjs 'desktop/src-tauri/target/release/bundl
 
 `AAR_STATE_DIR` selects an isolated profile. The installed smoke runner always
 uses its own temporary directory and reaps the shell and router. It removes
-system Node from `PATH` and verifies enrollment, retained core after app exit,
-attachment and explicit Stop. Browser tests use bundled Playwright Chromium,
+system Node from `PATH` and verifies enrollment, router shutdown after app exit,
+relaunch and explicit Stop. Browser tests use bundled Playwright Chromium,
 48 synthetic accounts and per-keystroke latency assertions during reload.
 `AAR_UI_CAPTURE_DIR` retains screenshots for inspection.
 
@@ -98,6 +101,7 @@ For an isolated native WebView/CSP/IPC smoke, prepare the bundle, then run:
 ```sh
 TAURI_CONFIG='{"identifier":"com.graehlarts.agent-auth-router.smoke"}' cargo build --manifest-path desktop/src-tauri/Cargo.toml
 node desktop/scripts/smoke-embedded.mjs
+node desktop/scripts/smoke-lifecycle.mjs
 ```
 
 This uses a distinct app identity, temporary state and a synthetic CLI. Its

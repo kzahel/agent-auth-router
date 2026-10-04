@@ -97,7 +97,7 @@ export class OwnerService {
   private readonly evidence: PoolEvidence;
   private readonly invalidate: (id: string) => void;
   private readonly origin: string;
-  private readonly lifecycle: { active(): number; busy?(): number; stop(): void };
+  private readonly lifecycle: { active(): number; busy?(): number; stop(force?: boolean): void };
   private readonly terminals = new Map<string, TerminalLogin>();
   private readonly logins = new Map<
     string,
@@ -114,7 +114,7 @@ export class OwnerService {
     evidence: PoolEvidence,
     invalidate: (id: string) => void,
     origin: string,
-    lifecycle: { active(): number; busy?(): number; stop(): void },
+    lifecycle: { active(): number; busy?(): number; stop(force?: boolean): void },
   ) {
     this.store = store;
     this.registry = registry;
@@ -493,18 +493,18 @@ export class OwnerService {
       }
       return { cancelled: true };
     }
-    if (operation === "stop") {
+    if (operation === "stop" || operation === "shutdown") {
       if (body.routerId !== this.registry.routerId)
         throw new ControlError(409, "router identity changed");
-      if (
+      if (operation === "stop" && (
         this.lifecycle.active() ||
         this.lifecycle.busy?.() ||
         [...this.coordinators.values()].some((c) => c.status().state === "renewing") ||
         [...this.logins.values()].some((l) => l.status === "running") ||
         [...this.terminals.values()].some(t => t.busy())
-      )
+      ))
         throw new ControlError(409, "router busy; finish requests and logins before stopping");
-      this.lifecycle.stop();
+      this.lifecycle.stop(operation === "shutdown");
       return { stopping: true };
     }
     throw new ControlError(404, "unknown owner operation");

@@ -20,7 +20,7 @@ Mac and Linux CI both pass. Desktop browser tests cover optional nickname edits,
 profile labels, remaining-quota extremes/unknown values and terminal dispatch.
 PTY fixtures exercise both providers, interactive input, device-code selection,
 clean environments, cancellation, terminal hangup and renewal/stop exclusion.
-The local packaged app passes startup, enrollment, retained-core reattachment and
+The original local packaged app passed startup, enrollment, retained-core reattachment and
 stop checks in a temporary profile. Native shell quoting and package composition
 checks pass. Actual provider consent remains a user-driven verification step.
 
@@ -328,6 +328,21 @@ YA's [router topic](https://github.com/kzahel/yepanywhere/blob/main/topics/agent
 remains its owning product contract; its
 [deferred follow-ups](https://github.com/kzahel/yepanywhere/blob/main/topics/agent-auth-router.md#deferred-follow-ups)
 retain the later candidates. This plan does not reprioritize unrelated YA work.
+
+## Desktop lifecycle revision (2026-10-04)
+
+Version 0.1.4 supersedes the original retained-core desktop behavior: closing the
+window hides it, but Quit stops both router and app. Active routing, renewal and
+sign-in work is cancelled; YA must wait until the app is launched again. No
+independent/background-router preference is exposed by the desktop. A parent
+pipe also stops app-started routers after app termination.
+
+Startup distinguishes address conflicts, permission failures and invalid state.
+Private abandoned sockets are quarantined after repeated connection refusal and
+identity checks; active or unexpected endpoints remain untouched. Synthetic
+core tests cover recovery, parent loss, active-stream shutdown and relaunch. The
+native WebView runner checks window close and Quit for app-started and attached
+routers. Historical retained-core evidence below describes earlier versions.
 
 ## Implementation evidence (2026-10-03)
 

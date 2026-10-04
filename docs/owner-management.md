@@ -50,7 +50,8 @@ All use bounded JSON bodies and the same running mutation authority.
 or temporarily starts the core when offline. Interactive `accounts/login`
 requires `aar serve` or the desktop app to keep its CLI process alive.
 Socket binding serializes writers;
-occupied/stale endpoints are refused. `account add`, client mutation and renewal
+headless startup refuses occupied endpoints. Desktop startup can quarantine a
+private socket after repeated connection refusal and unchanged inode checks. `account add`, client mutation and renewal
 also use this authority. There is no owner API on the inference HTTP listener.
 Account addition supports a stable ID, provider and optional dedicated home,
 credential-store choice and supported official helper. The desktop creates its
@@ -118,3 +119,16 @@ fallbacks, and keeps pool-only accounts out of direct allocation choices.
 
 See [desktop setup](../desktop/README.md), [control](control.md),
 [pools](pools.md) and the [implementation plan](router-owned-pools-and-desktop.md).
+
+## Desktop lifecycle (0.1.4)
+
+Closing the management window hides it. Quit stops the router and app, including
+accepted streams, managed helper processes and official sign-ins. An attached
+router is also shut down through authenticated owner IPC. `stop` remains the
+idle-only operation used before updates; owner-only `shutdown` requires the
+current router ID and cancels active work. Integration credentials cannot use it.
+
+`desktop-serve` holds a private stdin pipe to the app. EOF (including an app
+crash) triggers shutdown. The ordinary headless CLI remains independently usable;
+the desktop exposes no keep-running mode. Startup errors use a bounded safe
+message envelope, never raw provider output or configuration contents.

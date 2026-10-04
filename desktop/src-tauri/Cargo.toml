@@ -1,6 +1,6 @@
 [package]
 name = "agent-auth-router-desktop"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Kyle Graehl <kgraehl@gmail.com>"]
 

@@ -1,7 +1,8 @@
 //! Debug-only native WebView smoke. The runner supplies an isolated synthetic state.
 use serde_json::{json, Value};
 pub fn enabled() -> bool {
-    std::env::var("AAR_SIGNIN_SMOKE").as_deref() == Ok("1")
+    (std::env::var("AAR_SIGNIN_SMOKE").as_deref() == Ok("1")
+        || std::env::var("AAR_LIFECYCLE_SMOKE").as_deref() == Ok("1"))
         && std::env::var_os("AAR_STATE_DIR").is_some_and(|path| {
             std::fs::read_to_string(std::path::PathBuf::from(path).join("synthetic-signin"))
                 .is_ok_and(|value| value == "synthetic-only")
@@ -25,11 +26,37 @@ pub fn smoke_result(
     app.exit(if ok { 0 } else { 1 });
     Ok(())
 }
+#[tauri::command]
+pub fn smoke_window(window: tauri::WebviewWindow, close: bool) -> Result<bool, String> {
+    if !enabled() || window.label() != "main" {
+        return Err("Smoke unavailable".into());
+    }
+    if close {
+        window.close().map_err(|_| "Cannot close window")?;
+    }
+    window
+        .is_visible()
+        .map_err(|_| "Cannot inspect window".into())
+}
 pub fn loaded(webview: &tauri::Webview, payload: &tauri::webview::PageLoadPayload<'_>) {
     if !enabled() || payload.event() != tauri::webview::PageLoadEvent::Finished {
         return;
     }
-    let script = if webview.label() == "main" {
+    let script = if std::env::var("AAR_LIFECYCLE_SMOKE").as_deref() == Ok("1") {
+        r#"(async()=>{
+          const invoke=window.__TAURI__.core.invoke;
+          try {
+            const first=await invoke('router',{operation:'overview',body:{}});
+            await invoke('smoke_window',{close:true});
+            let hidden=false;
+            for(let i=0;i<50;i++){await new Promise(r=>setTimeout(r,50));if(!await invoke('smoke_window',{close:false})){hidden=true;break;}}
+            if(!hidden) throw Error();
+            const second=await invoke('router',{operation:'overview',body:{}});
+            if(first.routerId!==second.routerId) throw Error();
+            await invoke('smoke_result',{ok:true});
+          } catch { await invoke('smoke_result',{ok:false}); }
+        })()"#
+    } else if webview.label() == "main" {
         r#"(async()=>{
           const invoke=window.__TAURI__.core.invoke;
           try {

@@ -361,7 +361,7 @@ export async function readCatalog(coordinator: CredentialCoordinator, origin?: s
   });
 }
 
-export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}, lifecycle: { active(): number; stop(): void } = { active: () => 0, stop: () => { throw new ControlError(409, "stop unavailable"); } }) {
+export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}, lifecycle: { active(): number; stop(force?: boolean): void } = { active: () => 0, stop: () => { throw new ControlError(409, "stop unavailable"); } }) {
   assertPrivatePath(store.dir);
   const socketPath = join(store.dir, "control.sock");
   if (Buffer.byteLength(socketPath) > 100) throw new Error("control socket path too long; choose a shorter state directory");

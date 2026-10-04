@@ -58,7 +58,8 @@ try {
   child.kill("SIGTERM");
   await once(child, "exit");
   child = undefined;
-  assert.equal(request("overview").routerId, first.routerId, "app exit retains the core");
+  for (let i = 0; i < 150 && existsSync(join(state, "control.sock")); i++) await delay(100);
+  assert.equal(existsSync(join(state, "control.sock")), false, "app exit stops the core");
   child = spawn(join(app, "Contents/MacOS/agent-auth-router-desktop"), ["--background"], {
     env,
     stdio: "ignore",
@@ -67,7 +68,7 @@ try {
   assert.equal(
     request("overview").routerId,
     first.routerId,
-    "second shell attaches to the existing core",
+    "relaunch preserves router identity",
   );
   request("stop", { routerId: first.routerId });
   for (let i = 0; i < 100 && existsSync(join(state, "control.sock")); i++) await delay(50);
@@ -84,8 +85,8 @@ try {
         source: first.build.source,
         coreSha256: first.build.coreSha256,
         enrollment: true,
-        retainedRouterOnAppExit: true,
-        attach: true,
+        stoppedRouterOnAppExit: true,
+        relaunch: true,
         stop: true,
       },
       null,

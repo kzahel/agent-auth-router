@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod lifecycle;
 #[cfg(debug_assertions)]
 mod smoke;
 mod terminal;
@@ -8,7 +9,7 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Mutex,
     },
     time::Duration,
@@ -16,15 +17,18 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager,
+    Emitter, Manager,
 };
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_updater::UpdaterExt;
 
+#[derive(Default)]
 struct Core {
     child: Option<Child>,
+    diagnostics: lifecycle::Diagnostics,
 }
-struct Runtime(Mutex<Core>, AtomicBool);
+// Quit state: 0 running, 1 stopping, 2 allowed to exit.
+struct Runtime(Mutex<Core>, AtomicBool, AtomicU8);
 struct Updating(tauri::AppHandle);
 impl Drop for Updating {
     fn drop(&mut self) {
@@ -81,7 +85,9 @@ fn command(app: &tauri::AppHandle) -> Result<Command, String> {
         ),
     );
     #[cfg(debug_assertions)]
-    if std::env::var("AAR_SIGNIN_SMOKE").as_deref() == Ok("1") {
+    if std::env::var("AAR_SIGNIN_SMOKE").as_deref() == Ok("1")
+        || std::env::var("AAR_LIFECYCLE_SMOKE").as_deref() == Ok("1")
+    {
         if !smoke::enabled() {
             return Err("Synthetic smoke profile required".into());
         }
@@ -125,6 +131,13 @@ fn request(app: &tauri::AppHandle, operation: &str, body: Value) -> Result<Value
 }
 fn ensure_core(app: &tauri::AppHandle, core: &mut Core) -> Result<Value, String> {
     if let Ok(value) = request(app, "overview", json!({})) {
+        if core
+            .child
+            .as_mut()
+            .is_some_and(|child| child.try_wait().ok().flatten().is_some())
+        {
+            core.child = None;
+        }
         return Ok(value);
     }
     if let Some(child) = core.child.as_mut() {
@@ -136,27 +149,31 @@ fn ensure_core(app: &tauri::AppHandle, core: &mut Core) -> Result<Value, String>
             return Err("Router is starting or unavailable. Reload to retry.".into());
         }
     }
-    core.child = Some(
-        command(app)?
-            .arg("serve")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| "Cannot start bundled router")?,
+    let mut child = command(app)?
+        .arg("desktop-serve")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Cannot start bundled router: {e}"))?;
+    core.diagnostics = lifecycle::Diagnostics::capture(
+        child
+            .stderr
+            .take()
+            .ok_or("Cannot capture startup diagnostics")?,
     );
+    core.child = Some(child);
     for _ in 0..30 {
         std::thread::sleep(Duration::from_millis(100));
         if let Ok(value) = request(app, "overview", json!({})) {
             return Ok(value);
         }
         if let Some(child) = core.child.as_mut() {
-            if child
+            if let Some(status) = child
                 .try_wait()
                 .map_err(|_| "Cannot inspect router process")?
-                .is_some()
             {
-                return Err("Router could not start. Another process or stale control socket may own this profile; inspect it with the CLI before removing anything.".into());
+                return Err(core.diagnostics.exited(status));
             }
         }
     }
@@ -332,6 +349,9 @@ async fn router(
             .0
             .lock()
             .map_err(|_| "Router lifecycle unavailable")?;
+        if runtime.2.load(Ordering::Acquire) != 0 {
+            return Err("Router is shutting down".into());
+        }
         if runtime.1.load(Ordering::Acquire) {
             return Err("Update installation is in progress".into());
         }
@@ -452,6 +472,62 @@ async fn install_update(
     }
     app.restart();
 }
+fn stop_for_quit(app: &tauri::AppHandle) -> Result<(), String> {
+    let runtime = app.state::<Runtime>();
+    let mut core = runtime
+        .0
+        .lock()
+        .map_err(|_| "Router lifecycle unavailable")?;
+    if core
+        .child
+        .as_mut()
+        .is_some_and(|child| child.try_wait().ok().flatten().is_some())
+    {
+        core.child = None;
+    }
+    if let Some(child) = core.child.as_mut() {
+        // Closing the app's private pipe requests forced router cleanup, including
+        // active streams and official login helpers. This also works after a crash.
+        drop(child.stdin.take());
+        for _ in 0..120 {
+            if child
+                .try_wait()
+                .map_err(|_| "Cannot inspect router process")?
+                .is_some()
+            {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        child.kill().map_err(|_| "Cannot stop router process")?;
+        child.wait().map_err(|_| "Cannot reap router process")?;
+        return Ok(());
+    }
+    let socket = state_dir(app)?.join("control.sock");
+    if !socket.exists() {
+        return Ok(());
+    }
+    let status = match request(app, "overview", json!({})) {
+        Ok(status) => status,
+        Err(error) if error.contains("ECONNREFUSED") || error.contains("ENOENT") => return Ok(()),
+        Err(error) => return Err(format!("Could not stop the router: {error}")),
+    };
+    let body = json!({"routerId": status["routerId"]});
+    if let Err(error) = request(app, "shutdown", body.clone()) {
+        // Earlier releases only understand idle stop. Never silently leave them running.
+        if !error.contains("unknown owner operation") {
+            return Err(error);
+        }
+        request(app, "stop", body)?;
+    }
+    for _ in 0..120 {
+        if !socket.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err("Router has not stopped. Try Quit again.".into())
+}
 fn show(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -468,8 +544,9 @@ fn main() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Runtime(
-            Mutex::new(Core { child: None }),
+            Mutex::new(Core::default()),
             AtomicBool::new(false),
+            AtomicU8::new(0),
         ))
         .manage(terminal::Terminals::default());
     #[cfg(debug_assertions)]
@@ -480,7 +557,8 @@ fn main() {
             check_update,
             install_update,
             terminal::terminal,
-            smoke::smoke_result
+            smoke::smoke_result,
+            smoke::smoke_window
         ])
         .on_page_load(smoke::loaded);
     #[cfg(not(debug_assertions))]
@@ -494,13 +572,7 @@ fn main() {
     builder
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Accounts & Pools", true, None::<&str>)?;
-            let quit = MenuItem::with_id(
-                app,
-                "quit",
-                "Quit App (Keep Router Running)",
-                true,
-                None::<&str>,
-            )?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             TrayIconBuilder::new()
                 .icon(
@@ -525,7 +597,9 @@ fn main() {
             tauri::async_runtime::spawn_blocking(move || {
                 let runtime = handle.state::<Runtime>();
                 if let Ok(mut core) = runtime.0.lock() {
-                    let _ = ensure_core(&handle, &mut core);
+                    if runtime.2.load(Ordering::Acquire) == 0 {
+                        let _ = ensure_core(&handle, &mut core);
+                    }
                 };
             });
             Ok(())
@@ -543,8 +617,37 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("Could not run Agent Auth Router")
         .run(|app, event| {
-            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
-                app.state::<terminal::Terminals>().close_all();
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                let runtime = app.state::<Runtime>();
+                if runtime.2.load(Ordering::Acquire) == 2 {
+                    return;
+                }
+                api.prevent_exit();
+                if runtime
+                    .2
+                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    return;
+                }
+                let handle = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    handle.state::<terminal::Terminals>().close_all();
+                    match stop_for_quit(&handle) {
+                        Ok(()) => {
+                            // An in-flight open may have finished while shutdown
+                            // waited for the router lock. Drain it before exiting.
+                            handle.state::<terminal::Terminals>().close_all();
+                            handle.state::<Runtime>().2.store(2, Ordering::Release);
+                            handle.exit(code.unwrap_or(0));
+                        }
+                        Err(error) => {
+                            handle.state::<Runtime>().2.store(0, Ordering::Release);
+                            show(&handle);
+                            let _ = handle.emit_to("main", "router-lifecycle-error", error);
+                        }
+                    }
+                });
             }
         });
 }
