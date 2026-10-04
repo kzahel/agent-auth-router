@@ -291,7 +291,7 @@ export class ControlRegistry {
     return this.store.loadAccounts().find((a) => a.id === id && a.enabled !== false) ?? reject(409, "account unavailable");
   }
   accounts(integration?: Integration) {
-    return this.store.loadAccounts().filter((a) => (!integration || this.visibleIds(integration).has(a.id))).map((a) => ({ id: a.id, ...(!integration ? { home: a.home, nickname: a.nickname ?? null, credentialStore: a.credentialStore ?? "file" } : {}), provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: a.helper ? "unverified" : "manual" }));
+    return this.store.loadAccounts().filter((a) => (!integration || this.visibleIds(integration).has(a.id))).map((a) => ({ id: a.id, ...(integration && a.nickname ? { displayName: a.nickname } : {}), ...(!integration ? { home: a.home, nickname: a.nickname ?? null, credentialStore: a.credentialStore ?? "file" } : {}), provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: a.helper ? "unverified" : "manual" }));
   }
   prepare(integration: Integration, body: Record<string, unknown>): object {
     const id = field(body, "id", UUID), accountId = field(body, "accountId"), model = field(body, "model"), tokenHash = field(body, "tokenHash", HASH);
@@ -421,7 +421,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     void (async () => {
       if (req.headers.origin || req.headers.host !== "localhost") reject(403, "invalid control origin");
       const path = req.url;
-      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "admission-refresh-v1", "session-selection-v1"], supportedPolicies: POOL_POLICIES });
+      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "admission-refresh-v1"], supportedPolicies: POOL_POLICIES });
       const isOwner = path?.startsWith("/v1/owner/");
       if (isOwner) owner.authenticate(req.headers.authorization);
       let integration = path === "/v1/pair" || isOwner ? undefined : registry.authenticate(req.headers.authorization);

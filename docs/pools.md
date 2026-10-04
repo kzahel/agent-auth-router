@@ -7,8 +7,7 @@ and requests allocation; it cannot administer router-owned pools.
 
 ## Unified session discovery and thinking (2026-10-04)
 
-The [unified selection plan](unified-session-selection.md) adds
-`session-selection-v1`. Authenticated POST `/v1/selection` with `provider` reads
+The [unified selection plan](unified-session-selection.md) extends the unshipped router feature without a new compatibility gate. Authenticated POST `/v1/selection` with `provider` reads
 current granted metadata and refreshes missing/stale catalogs for that provider.
 It performs no quota reads or inference. Discovery is bounded to 256 visible
 accounts, four catalog requests globally, a 12-second caller deadline and

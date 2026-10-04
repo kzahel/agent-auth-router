@@ -51,12 +51,12 @@ normal successful paths need no explanatory paragraphs or refresh buttons.
 
 ## Compatibility and ownership
 
-Add AAR `session-selection-v1` and a separately registered optional YA capability
-for discovery/effort-aware admission. Existing capabilities keep their meaning.
-New clients retain the existing router UI against older YA; new YA refuses the
-new discovery operation against older AAR with update guidance. Direct sessions
-remain available and unchanged. Inspect the optional stable-release corpus and
-record the exact gate/fallback in YA's owning capability/topic docs.
+The maintainer clarified on 2026-10-04 that this integration is unshipped and
+both repositories update together. Use YA's existing overall router capability;
+do not add another capability or a parallel legacy launch UI. Existing released
+servers without the overall feature still receive no router requests. This
+explicit decision supersedes the initially proposed per-slice compatibility
+review and gate for this work.
 
 Only granted pool/account metadata crosses control. The browser talks to YA,
 never AAR. AAR owns credential reads, provider discovery and allocation; YA owns
@@ -71,7 +71,7 @@ transport remain outside this change; existing refusal boundaries stay intact.
 2. Implement YA discovery/projection and account-scoped adapter effort handling;
    preserve explicit settings across launch, first send, continuation and resume.
 3. Replace the ordinary launch router panel with compatible pool selection and
-   reuse the existing model/thinking controls. Retain the gated legacy fallback.
+   reuse the existing model/thinking controls. Use the existing overall feature gate.
 4. Verify unit/API behavior, rapid source/provider changes, external grants,
    failures and old-server fallback; exercise desktop/phone layouts and actual
    sequential typing under concurrent metadata updates.
@@ -94,7 +94,7 @@ SHA-pinned cross-repository tests passed, including newly asserted explicit High
 effort at the native Claude/Codex boundary and after restart/resume. Those tests
 exercise YA's existing API capability, not the proposed unified UI.
 
-YA implementation and the final pin update remain pending. Its compatibility
-rules require explicit review of the new discovery endpoint/capability and
-older-server fallback; that review was presented to the maintainer during this
-work. No live app replacement or YA restart has been performed for this change.
+YA implementation and the final pin update are in progress. The maintainer
+approved coordinated changes under the existing overall feature capability,
+without a separate compatibility layer. No live app replacement or YA restart
+has been performed for this change yet.
