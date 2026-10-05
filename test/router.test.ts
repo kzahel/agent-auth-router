@@ -26,7 +26,7 @@ interface Harness {
 
 async function harness(
   upstream: MockUpstream,
-  options: { limits?: Partial<Limits>; claudeHelper?: RenewalHelper } = {},
+  options: { limits?: Partial<Limits>; claudeHelper?: RenewalHelper; onProviderResponse?: Parameters<typeof createRouter>[0]["onProviderResponse"] } = {},
 ): Promise<Harness> {
   const claude: AccountConfig = { id: "claude-a", provider: "claude", home: tempDir() };
   const codex: AccountConfig = { id: "codex-a", provider: "codex", home: tempDir() };
@@ -60,6 +60,7 @@ async function harness(
     },
     clients: () => clients,
     coordinators,
+    ...(options.onProviderResponse ? { onProviderResponse: options.onProviderResponse } : {}),
   });
   const origin = await listen(router.server);
   return { origin, token, clients, claude, codex, coordinators, helperRuns: () => runs, active: router.activeRequests };
@@ -88,6 +89,21 @@ describe("router authentication and routing", () => {
     assert.equal(revoked.status, 401);
     assert.equal(JSON.parse(revoked.text).error.type, "authentication_error");
     assert.equal(upstream.requests.length, 0);
+  });
+
+  test("upstream response headers reach the provider-response hook before the body is relayed", async () => {
+    captureLogs();
+    const upstream = await mockUpstream((_req, res) => {
+      res.setHeader("anthropic-ratelimit-unified-5h-utilization", "0.02");
+      res.setHeader("anthropic-ratelimit-unified-5h-reset", "1791214800");
+      res.end("{}");
+    });
+    const seen: { accountId: string; status: number; retryAfter: string | undefined; utilization: string | undefined }[] = [];
+    const h = await harness(upstream, { onProviderResponse: (accountId, status, retryAfter, headers) =>
+      seen.push({ accountId, status, retryAfter, utilization: headers?.["anthropic-ratelimit-unified-5h-utilization"] as string | undefined }) });
+    const response = await post(`${h.origin}/claude/v1/messages`, { authorization: `Bearer ${h.token}` });
+    assert.equal(response.status, 200);
+    assert.deepEqual(seen, [{ accountId: "claude-a", status: 200, retryAfter: undefined, utilization: "0.02" }]);
   });
 
   test("a client cannot use a provider it was not granted", async () => {

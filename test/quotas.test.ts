@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fetchAccountQuotas, normalizeClaudeQuotas, normalizeCodexQuotas } from "../src/quotas.ts";
+import { fetchAccountQuotas, normalizeClaudeQuotas, normalizeCodexQuotas, normalizeResponseHeaderQuotas } from "../src/quotas.ts";
 import type { AccountConfig } from "../src/types.ts";
 import { FIXTURES, tempDir, writeClaudeCredentials } from "./support.ts";
 
@@ -144,5 +144,29 @@ test("Disabled and signed-out profiles never start a quota process", async () =>
 test("unknown Claude quota windows retain evidence instead of disappearing", () => {
   assert.deepEqual(normalizeClaudeQuotas({ new_model_window: { utilization: 100, resets_at: "2026-10-10T00:00:00Z" } }), [
     { bucket: "new_model_window", windowMinutes: null, usedPercent: 100, remainingPercent: 0, resetsAt: "2026-10-10T00:00:00.000Z" },
+  ]);
+});
+
+test("response headers yield shared windows: Claude fractions and epoch resets, Codex percentages and relative resets", () => {
+  const now = Date.parse("2026-10-05T13:47:34Z");
+  assert.deepEqual(normalizeResponseHeaderQuotas("claude", {
+    "anthropic-ratelimit-unified-5h-utilization": "0.02", "anthropic-ratelimit-unified-5h-reset": "1791214800",
+    "anthropic-ratelimit-unified-7d-utilization": ["0.0", "1.0"], "anthropic-ratelimit-unified-7d-reset": "not-a-time",
+    "anthropic-ratelimit-unified-status": "allowed", "anthropic-ratelimit-unified-overage-utilization": "0.9", "set-cookie": "SECRET",
+  }, now), [
+    { bucket: "five_hour", windowMinutes: 300, usedPercent: 2, remainingPercent: 98, resetsAt: "2026-10-05T15:40:00.000Z" },
+    { bucket: "seven_day", windowMinutes: 10080, usedPercent: 100, remainingPercent: 0, resetsAt: null },
+  ]);
+  // Absent, oversized, control-character and non-numeric values report nothing rather than a guess.
+  assert.deepEqual(normalizeResponseHeaderQuotas("claude", { "anthropic-ratelimit-unified-5h-utilization": "0.5\r\nx: y" }, now), []);
+  assert.deepEqual(normalizeResponseHeaderQuotas("claude", { "anthropic-ratelimit-unified-5h-utilization": "1e3" }, now), []);
+  assert.deepEqual(normalizeResponseHeaderQuotas("claude", { "x-codex-primary-used-percent": "40" }, now), []);
+  assert.deepEqual(normalizeResponseHeaderQuotas("codex", {
+    "x-codex-primary-used-percent": "40", "x-codex-primary-window-minutes": "300", "x-codex-primary-reset-after-seconds": "90",
+    "x-codex-secondary-used-percent": "12.5", "x-codex-secondary-reset-at": "1791579600",
+    "x-codex-additional-bengalfox-primary-used-percent": "99",
+  }, now), [
+    { bucket: "codex:primary", windowMinutes: 300, usedPercent: 40, remainingPercent: 60, resetsAt: "2026-10-05T13:49:04.000Z" },
+    { bucket: "codex:secondary", windowMinutes: null, usedPercent: 12.5, remainingPercent: 87.5, resetsAt: "2026-10-09T21:00:00.000Z" },
   ]);
 });

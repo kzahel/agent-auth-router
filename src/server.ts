@@ -12,7 +12,8 @@ export interface RouterDeps {
   config: RouterConfig;
   clients: () => readonly GatewayClientRecord[];
   coordinators: ReadonlyMap<string, CredentialCoordinator>;
-  onProviderResponse?: (accountId: string, status: number, retryAfter?: string) => void;
+  /** Fires once upstream headers arrive, before the body is relayed. */
+  onProviderResponse?: (accountId: string, status: number, retryAfter?: string, headers?: http.IncomingHttpHeaders) => void;
 }
 
 export interface RouterServer {
@@ -239,7 +240,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
         clearTimeout(headerTimer);
         upstream.setTimeout(limits.streamIdleTimeoutMs, () => upstream.destroy(new Error("upstream stream idle timeout")));
         const status = upstreamRes.statusCode ?? 502;
-        if (typeof meta.account === "string") deps.onProviderResponse?.(meta.account, status, typeof upstreamRes.headers["retry-after"] === "string" ? upstreamRes.headers["retry-after"] : undefined);
+        if (typeof meta.account === "string") deps.onProviderResponse?.(meta.account, status, typeof upstreamRes.headers["retry-after"] === "string" ? upstreamRes.headers["retry-after"] : undefined, upstreamRes.headers);
 
         if (status === 401) {
           collectBounded(upstreamRes, MAX_RELAYED_ERROR_BYTES).then(

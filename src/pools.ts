@@ -1,6 +1,6 @@
 // Pool observations are metadata only. Reading an overview never runs a provider.
 import type { CatalogModel } from "./control.ts";
-import type { QuotaSnapshot, QuotaWindow } from "./quotas.ts";
+import { normalizeResponseHeaderQuotas, type QuotaSnapshot, type QuotaWindow, type ResponseHeaders } from "./quotas.ts";
 import type { Provider } from "./types.ts";
 
 export const POOL_POLICIES = ["manual", "round-robin", "most-remaining"] as const;
@@ -19,6 +19,7 @@ export interface Pool {
   deleted?: boolean; cursor?: string;
 }
 export const QUOTA_FRESH_MS = 120_000;
+const QUOTA_REFRESH_UNAVAILABLE = "Quota refresh unavailable";
 export const CATALOG_FRESH_MS = 60_000;
 export type EligibilityReason = "eligible" | "disabled" | "model-required" | "catalog-unknown" | "catalog-stale" | "model-unavailable" | "quota-unknown" | "quota-stale" | "scope-unknown" | "exhausted" | "reset-unverified" | "cooldown" | "auth-unavailable";
 export interface Observation {
@@ -97,6 +98,23 @@ export class PoolEvidence {
     this.values.set(id, { ...this.get(id), blocked: status === 429 ? "cooldown" : "auth-unavailable", cooldownUntil: new Date(Date.now() + seconds * 1000).toISOString() });
   }
   get(id: string): Observation { return this.values.get(id) ?? emptyObservation(); }
+  /**
+   * Record the quota windows a successful proxied response carried. Buckets
+   * the headers do not report keep their last probed values, so Claude's
+   * model-family weeklies survive; a 2xx also clears an earlier rejection and
+   * a failed quota probe, since the credential has just worked. Catalog
+   * failures are untouched: a response proves nothing about the catalog.
+   */
+  observe(id: string, provider: Provider, headers: ResponseHeaders, now = Date.now()): boolean {
+    const windows = normalizeResponseHeaderQuotas(provider, headers, now);
+    if (!windows.length) return false;
+    const { blocked: _blocked, cooldownUntil: _cooldownUntil, ...previous } = this.get(id);
+    const carried = previous.quota?.windows.filter(w => !windows.some(n => n.bucket === w.bucket)) ?? [];
+    this.values.set(id, { ...previous,
+      quota: { accountId: id, provider, observedAt: new Date(now).toISOString(), status: "ok", windows: [...windows, ...carried], source: "inference" },
+      error: previous.error === QUOTA_REFRESH_UNAVAILABLE ? null : previous.error });
+    return true;
+  }
   setCatalog(id: string, models: CatalogModel[]): void {
     this.values.set(id, { ...this.get(id), models, catalogAt: new Date(Date.now()).toISOString() });
   }
@@ -175,9 +193,9 @@ export class PoolEvidence {
       if (generation !== this.generations.get(id)) return this.get(id);
       const previous = this.get(id), attemptedAt = new Date(Date.now()).toISOString();
       const snapshot = quota.status === "fulfilled" && quota.value.status === "ok" ? quota.value : null;
-      const error = catalog.status === "rejected" ? "Account catalog unavailable" : !snapshot ? "Quota refresh unavailable" : null;
+      const error = catalog.status === "rejected" ? "Account catalog unavailable" : !snapshot ? QUOTA_REFRESH_UNAVAILABLE : null;
       const result: Observation = {
-        quota: snapshot ?? previous.quota,
+        quota: snapshot ? { ...snapshot, source: "probe" } : previous.quota,
         models: catalog.status === "fulfilled" ? catalog.value : previous.models,
         catalogAt: catalog.status === "fulfilled" ? attemptedAt : null,
         attemptedAt, error,

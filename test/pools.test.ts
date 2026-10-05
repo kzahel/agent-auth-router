@@ -328,3 +328,31 @@ test("commit rechecks requested thinking without changing a prepared pin", async
   assert.equal(f.registry.binding(f.integration, body.id).accountId, "a");
   assert.equal(f.registry.clients().length, 0);
 });
+
+test("a proxied response records inference quota, keeps probed buckets, clears rejection and reads as fresh", async () => {
+  const f = fixture();
+  const probed = { bucket: "seven_day_opus", windowMinutes: 10080, usedPercent: 40, remainingPercent: 60, resetsAt: new Date(Date.now() + 86_400_000).toISOString() };
+  const evidence = new PoolEvidence(async () => [{ id: "claude-sonnet-fixture", name: "Fixture" }], async accountId => ({ accountId, provider: "claude", observedAt: new Date(Date.now()).toISOString(), status: "ok", windows: [
+    { bucket: "five_hour", windowMinutes: 300, usedPercent: 90, remainingPercent: 10, resetsAt: new Date(Date.now() + 60_000).toISOString() }, probed] }));
+  await evidence.refresh("a");
+  assert.equal(evidence.get("a").quota?.source, "probe");
+  evidence.reject("a", 429, "60");
+  const headers = { "anthropic-ratelimit-unified-5h-utilization": "0.25", "anthropic-ratelimit-unified-5h-reset": String(Math.floor(Date.now() / 1000) + 3600),
+    "anthropic-ratelimit-unified-7d-utilization": "0.5", "anthropic-ratelimit-unified-7d-reset": String(Math.floor(Date.now() / 1000) + 86_400) };
+  assert.equal(evidence.observe("a", "claude", headers), true);
+  const after = evidence.get("a");
+  assert.equal(after.blocked, undefined, "a successful turn ends the cooldown");
+  assert.equal(after.quota?.source, "inference");
+  assert.deepEqual(after.quota?.windows.map(w => [w.bucket, w.remainingPercent]), [["five_hour", 75], ["seven_day", 50], ["seven_day_opus", 60]]);
+  assert.deepEqual(after.models.map(m => m.id), ["claude-sonnet-fixture"], "catalog is untouched");
+  assert.equal(evidence.needsRefresh("claude", "claude-sonnet-fixture", "a"), false, "fresh inference evidence admits without a probe");
+  const account = (f.registry.overview(f.integration, evidence) as { accounts: { id: string; freshness: string; quota: { source?: string } }[] }).accounts.find(a => a.id === "a")!;
+  assert.equal(account.freshness, "fresh"); assert.equal(account.quota.source, "inference");
+  // Headers without quota signals change nothing; a failed quota probe is forgiven by a later turn, a catalog failure is not.
+  assert.equal(evidence.observe("a", "claude", { "content-type": "application/json" }), false);
+  const failing = new PoolEvidence(async () => [{ id: "m", name: "m" }], async () => { throw new Error("secret"); });
+  await failing.refresh("b"); assert.equal(failing.get("b").error, "Quota refresh unavailable");
+  failing.observe("b", "claude", headers); assert.equal(failing.get("b").error, null);
+  const noCatalog = new PoolEvidence(async () => { throw new Error("secret"); }, async accountId => ({ accountId, provider: "claude", observedAt: new Date(Date.now()).toISOString(), status: "ok", windows: [] }));
+  await noCatalog.refresh("c"); noCatalog.observe("c", "claude", headers); assert.equal(noCatalog.get("c").error, "Account catalog unavailable");
+});

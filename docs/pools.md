@@ -51,10 +51,11 @@ prevents a late pin; shared in-flight reads finish within their provider deadlin
 Grants, pool revision, enabled state and eligibility are rechecked before admission.
 Existing committed pins bypass selection and quota refresh on resume/restart.
 
-`/v1/info` advertises `most-remaining-v1`, `admission-refresh-v1` and
-`supportedPolicies`. Overview adds `supportedPolicies`, `admissionRefresh` and
-per-candidate `evidence` (headroom, limiting bucket IDs, reservation count, catalog
-and quota timestamps). Reads stay passive. Bindings persist `policyVersion`,
+`/v1/info` advertises `most-remaining-v1`, `admission-refresh-v1`,
+`quota-inference-headers-v1` and `supportedPolicies`. Overview adds
+`supportedPolicies`, `admissionRefresh`, an optional `quota.source` of `probe`
+or `inference` per account, and per-candidate `evidence` (headroom, limiting
+bucket IDs, reservation count, catalog and quota timestamps). Reads stay passive. Bindings persist `policyVersion`,
 `selectionEvidence` and a human-readable reason before reply. Most remaining
 prepare requires a `supportedPolicies` array containing `most-remaining`, even
 when it is the pool default. An old client receives upgrade guidance before
@@ -78,7 +79,20 @@ binding counts. Deleted pool IDs cannot be reused.
 Overview reads perform no provider I/O. Explicit account refresh coalesces quota
 and catalog reads, retains the last successful windows after a failed attempt,
 and exposes the failure and observation time. Evidence expires after 60 seconds
-(catalog) / 120 seconds (quota). Restart starts with unknown evidence. A reset
+(catalog) / 120 seconds (quota). Restart starts with unknown evidence.
+
+Since 2026-10-05 every successful proxied inference response is also quota
+evidence (`quota-inference-headers-v1`). The listener hands the upstream
+headers to the evidence store, which records Claude's unified five-hour and
+seven-day windows (utilization fraction and epoch reset) and Codex's primary
+and secondary windows, stamps the snapshot `source: "inference"` at the
+response time, and keeps any probed bucket the headers do not carry, such as
+Claude's Opus and Sonnet weeklies. A 2xx also clears an earlier rejection
+cooldown and a failed quota probe, because the credential has just worked;
+catalog failures stay. Probe results carry `source: "probe"`. Non-2xx responses
+only feed the existing rejection path. This makes a recently used account
+fresh for automatic admission without a probe; an idle account still needs
+one. Codex header names come from source inspection and are unverified live. A reset
 passing never fabricates restored capacity. Refresh concurrency is bounded.
 Unknown model scope blocks automatic admission; it is never inferred from a
 quota percentage. Claude's explicit Opus/Sonnet windows apply to their model

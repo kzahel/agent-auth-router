@@ -18,8 +18,54 @@ export interface QuotaSnapshot {
   observedAt: string;
   status: "ok" | "unavailable";
   windows: QuotaWindow[];
+  /** "probe" is an explicit or admission read; "inference" is passively
+   * observed from a proxied response's rate-limit headers. Absent means probe. */
+  source?: "probe" | "inference";
   error?: string;
   retryAfterSeconds?: number;
+}
+
+/** Lower-cased single header values; repeated headers keep the last value. */
+export type ResponseHeaders = Record<string, string | string[] | undefined>;
+function header(headers: ResponseHeaders, name: string): string | undefined {
+  const value = headers[name];
+  const last = Array.isArray(value) ? value[value.length - 1] : value;
+  return typeof last === "string" && last.length <= 512 && !/[\x00-\x1f\x7f]/.test(last) ? last.trim() : undefined;
+}
+const finite = (value: string | undefined): number | undefined => {
+  if (value === undefined || !/^-?\d+(\.\d+)?$/.test(value)) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+/**
+ * Quota windows carried by a proxied inference response, or [] when the
+ * response reports none. Anthropic's unified headers report utilization as a
+ * fraction and resets as epoch seconds; Codex reports used percentages and a
+ * relative or absolute reset. Only the shared windows travel this way, so a
+ * probe remains the source for Claude's model-family weeklies.
+ */
+export function normalizeResponseHeaderQuotas(provider: Provider, headers: ResponseHeaders, now = Date.now()): QuotaWindow[] {
+  const windows: QuotaWindow[] = [];
+  if (provider === "claude") {
+    for (const [bucket, prefix, minutes] of [["five_hour", "anthropic-ratelimit-unified-5h", 300], ["seven_day", "anthropic-ratelimit-unified-7d", 10080]] as const) {
+      const fraction = finite(header(headers, `${prefix}-utilization`));
+      if (fraction === undefined) continue;
+      const reset = finite(header(headers, `${prefix}-reset`));
+      windows.push(window(bucket, minutes, Math.min(100, fraction * 100), reset === undefined ? null : iso(reset, true)));
+    }
+    return windows;
+  }
+  for (const kind of ["primary", "secondary"] as const) {
+    const used = finite(header(headers, `x-codex-${kind}-used-percent`));
+    if (used === undefined) continue;
+    const after = finite(header(headers, `x-codex-${kind}-reset-after-seconds`));
+    const at = header(headers, `x-codex-${kind}-reset-at`);
+    const resetsAt = after !== undefined && after >= 0 ? new Date(now + after * 1000).toISOString()
+      : at !== undefined ? (iso(finite(at), true) ?? iso(at)) : null;
+    windows.push(window(`codex:${kind}`, finite(header(headers, `x-codex-${kind}-window-minutes`)) ?? null, Math.min(100, used), resetsAt));
+  }
+  return windows;
 }
 
 /** Dependency overrides for synthetic tests; not exposed in account config. */

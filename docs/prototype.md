@@ -499,3 +499,31 @@ credentials. Further synthetic tests can cover slow readers, TLS failure,
 repeated 429s, shutdown during streaming and helper ownership across restart
 without consuming subscription usage. Real automatic renewal when due and
 multi-turn client behavior remain separate experiments.
+
+## Passive rate-limit header observation
+
+On 2026-10-05, three authorized one-token Haiku requests through the running
+listener (two enrolled Claude profiles, routed by committed pool bindings)
+returned these headers on `200` responses, relayed unchanged:
+
+- `anthropic-ratelimit-unified-5h-utilization` and `-7d-utilization`, a
+  fraction (`0.0` on both idle accounts; precision above zero was not
+  observed), `-5h-reset` and `-7d-reset` in epoch seconds, and
+  `anthropic-ratelimit-unified-reset`.
+- `anthropic-ratelimit-unified-status`, `-5h-status` and `-7d-status`
+  (`allowed`), `-representative-claim` (`five_hour`), `-fallback-percentage`
+  (`0.5`), and overage status headers, which the router ignores.
+- `anthropic-organization-id` and `anthropic-workspace-id`, which the relay
+  passes to clients today.
+
+The same account read through `aar account quotas` immediately afterwards
+reported the same windows and resets (0% used, five-hour reset 15:40Z,
+seven-day reset 2026-10-09 21:00Z) in about 2.3 seconds, so the headers are
+the probe's data at no cost. The installed Claude Code 2.1.280 binary also
+names `allowed_warning`, `7d_oi`, `surpassed-threshold`, `grace`, `slow` and
+`overage` variants that were not observed. No Codex account was enrolled, so
+Codex's `x-codex-<primary|secondary>-used-percent`, `-window-minutes`,
+`-reset-after-seconds` and `-reset-at` names rest on CLIProxyAPI's quota
+signal collector (`sdk/cliproxy/auth/quota_signals.go` at `a4acc9f`), not on
+a live response. Observed values are recorded by `PoolEvidence.observe`; see
+[pools](pools.md).

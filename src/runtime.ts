@@ -60,7 +60,13 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
     })();
   };
   let control: Awaited<ReturnType<typeof startControl>> | undefined;
-  const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, onProviderResponse: (accountId, status, retryAfter) => control?.evidence.reject(accountId, status, retryAfter) });
+  const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, onProviderResponse: (accountId, status, retryAfter, headers) => {
+    if (!control) return;
+    control.evidence.reject(accountId, status, retryAfter);
+    // Every successful proxied turn is quota evidence; rejections keep their cooldown path.
+    const provider = coordinators.get(accountId)?.account.provider;
+    if (provider && headers && status >= 200 && status < 300) control.evidence.observe(accountId, provider, headers);
+  } });
 
   await new Promise<void>((resolve, reject) => {
     router.server.once("error", reject);
