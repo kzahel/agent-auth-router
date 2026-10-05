@@ -83,6 +83,10 @@ passing never fabricates restored capacity. Refresh concurrency is bounded.
 Unknown model scope blocks automatic admission; it is never inferred from a
 quota percentage. Claude's explicit Opus/Sonnet windows apply to their model
 families; unknown Codex limit IDs remain unknown rather than model entitlements.
+Claude's `extra_usage` paid-overage credit meter is not recorded as a quota
+window. A window reporting 0% used with no reset time has not started; that is
+observed full headroom, while a used window without a reset time stays
+unverified.
 
 Round robin and Most remaining require an enabled, granted account, fresh catalog membership and
 fresh applicable quota evidence with headroom and future resets. Manual can

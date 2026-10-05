@@ -69,7 +69,11 @@ test("eligibility handles stale, unknown, model-scoped exhaustion and elapsed re
   assert.equal(decide({ ...o, quota: null }), "quota-unknown");
   assert.equal(decide({ ...o, quota: null }, false), "eligible");
   assert.equal(decide({ ...o, quota: { ...o.quota!, observedAt: new Date(now - QUOTA_FRESH_MS).toISOString() } }), "quota-stale");
-  o.quota!.windows[0]!.resetsAt = new Date(now - 1).toISOString(); assert.equal(decide(), "reset-unverified");
+  o.quota!.windows[0]!.resetsAt = null; assert.equal(decide(), "reset-unverified", "used window without a reset time");
+  o.quota!.windows[0] = { ...o.quota!.windows[0]!, usedPercent: 0, remainingPercent: 100 };
+  assert.equal(decide(), "eligible", "an unused window without a reset time has not started");
+  o.quota!.windows[0]!.resetsAt = new Date(now - 1).toISOString(); assert.equal(decide(), "reset-unverified", "elapsed reset is never a local refill");
+  o.quota!.windows[0] = { ...o.quota!.windows[0]!, usedPercent: 25, remainingPercent: 75 };
   o.quota!.windows[0]!.remainingPercent = 0; assert.equal(decide(o, false), "exhausted");
   o.quota!.windows[0]!.remainingPercent = null; assert.equal(decide(), "quota-unknown");
   o.quota!.windows[0] = { ...o.quota!.windows[0]!, remainingPercent: 20, bucket: "unknown" }; assert.equal(decide(), "scope-unknown");

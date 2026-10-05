@@ -81,7 +81,9 @@ export function normalizeClaudeQuotas(value: unknown): QuotaWindow[] {
     if (data) windows.push(window(bucket, bucket === "five_hour" ? 300 : 10080, data.utilization, iso(data.resets_at)));
   }
   for (const [bucket, value] of Object.entries(result).slice(0, 64)) {
-    if (windows.some(w => w.bucket === bucket) || !/^[a-zA-Z0-9_.:-]{1,80}$/.test(bucket)) continue;
+    // extra_usage meters paid overage credits, not a rate-limit window. The
+    // router never enables overage, so it is neither headroom nor a limit.
+    if (bucket === "extra_usage" || windows.some(w => w.bucket === bucket) || !/^[a-zA-Z0-9_.:-]{1,80}$/.test(bucket)) continue;
     const data = object(value);
     if (data && "utilization" in data) windows.push(window(bucket, null, data.utilization, iso(data.resets_at)));
   }

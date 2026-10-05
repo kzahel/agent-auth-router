@@ -74,7 +74,9 @@ export function eligibility(provider: Provider, enabled: boolean, model: string 
   if (!quota || observation.error || !windows.length || windows.some((w) => w.remainingPercent === null)) return "quota-unknown";
   if (now - Date.parse(quota.observedAt) >= QUOTA_FRESH_MS || now < Date.parse(quota.observedAt)) return "quota-stale";
   if (windows.some((w) => windowScope(provider, w.bucket) === "unknown" || (provider === "claude" && ["opus", "sonnet"].includes(windowScope(provider, w.bucket)) && !/^claude-(opus|sonnet|haiku)-/.test(model)))) return "scope-unknown";
-  if (windows.some((w) => !w.resetsAt || Date.parse(w.resetsAt) <= now)) return "reset-unverified";
+  // A window with no recorded use and no reset time has not started yet; its
+  // full headroom is observed, not inferred from a passed reset.
+  if (windows.some((w) => w.resetsAt ? Date.parse(w.resetsAt) <= now : w.usedPercent !== 0)) return "reset-unverified";
   return "eligible";
 }
 

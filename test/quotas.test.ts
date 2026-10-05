@@ -34,6 +34,15 @@ test("Claude usage percentages are not header fractions; absent buckets and inva
   assert.deepEqual(normalizeClaudeQuotas(null), []);
 });
 
+test("Claude paid overage credits are not a quota window, whether disabled or in use", () => {
+  const five = { utilization: 0, resets_at: null };
+  for (const extra of [{ is_enabled: false, monthly_limit: null, used_credits: null, utilization: null },
+    { is_enabled: true, monthly_limit: 5000, used_credits: 2500, utilization: 50 }])
+    assert.deepEqual(normalizeClaudeQuotas({ five_hour: five, extra_usage: extra }).map(w => w.bucket), ["five_hour"]);
+  assert.deepEqual(normalizeClaudeQuotas({ five_hour: five, seven_day_future: { utilization: null } }).map(w => w.bucket),
+    ["five_hour", "seven_day_future"], "other unrecognized buckets stay visible and block as unknown scope");
+});
+
 test("Codex quota reader uses isolated official protocol without forced refresh or inference", async () => {
   const account = profile("codex");
   const cwd = tempDir();
