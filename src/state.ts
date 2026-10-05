@@ -185,6 +185,9 @@ export function validateAccounts(accounts: AccountConfig[]): AccountConfig[] {
     if (account.helper?.kind === "codex-app-server" && account.provider !== "codex") {
       throw new Error(`account ${account.id}: codex-app-server helper requires a codex account`);
     }
+    if (account.helper?.kind === "claude-cli" && account.provider !== "claude") {
+      throw new Error(`account ${account.id}: claude-cli helper requires a Claude account`);
+    }
     seen.add(account.id);
     homes.add(home);
   }

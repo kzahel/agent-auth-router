@@ -12,7 +12,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { ControlError, type ControlRegistry } from "./control.ts";
 import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
-import { helperFor } from "./helpers.ts";
+import { accountHelper } from "./helpers.ts";
 import type { PoolEvidence } from "./pools.ts";
 import { accountEnv, helperEnv, startBounded, type BoundedProcess } from "./process.ts";
 import { ensurePrivateDir, type StateStore, validateAccounts } from "./state.ts";
@@ -148,7 +148,7 @@ export class OwnerService {
     return new CredentialCoordinator({
       account,
       read: credentialReaderFor(account.provider, account.home, account.credentialStore),
-      helper: account.helper ? helperFor(account.helper) : undefined,
+      helper: accountHelper(account),
       helperContext: { workDir: this.store.workDir, routerOrigin: this.origin },
     });
   }
@@ -289,13 +289,16 @@ export class OwnerService {
           throw new ControlError(400, "invalid credential store");
         account.credentialStore = body.credentialStore;
       }
-      if (body.helper !== undefined && body.helper !== "none" && body.helper !== "codex-app-server")
+      if (body.helper !== undefined && body.helper !== "none" && body.helper !== "codex-app-server" && body.helper !== "claude-cli")
         throw new ControlError(400, "invalid helper");
       if (
         body.helper === "codex-app-server" ||
         (body.helper === undefined && body.provider === "codex")
       )
         account.helper = { kind: "codex-app-server" };
+      else if (body.helper === "claude-cli") account.helper = { kind: "claude-cli" };
+      // Claude defaults to the CLI helper; record an explicit opt-out.
+      else if (body.helper === "none" && body.provider === "claude") account.helper = { kind: "none" };
       if (accounts.some(a => physicalHome(a.home) === physicalHome(account.home))) throw new ControlError(409, "profile is already enrolled");
       try {
         validateAccounts([...accounts, account]);
@@ -397,15 +400,12 @@ export class OwnerService {
     }
     if (operation === "accounts/login-status") {
       const account = this.account(body),
-        result = await credentialReaderFor(
-          account.provider,
-          account.home,
-          account.credentialStore,
-        )();
+        signIn = await (this.coordinators.get(account.id) ?? this.coordinator(account)).signIn();
       return {
         id: account.id,
-        credentialStatus: result.status === "ok" && result.credential.expiresAt !== undefined && result.credential.expiresAt <= Date.now() ? "expired" : result.status,
-        expiresAt: result.status === "ok" && result.credential.expiresAt !== undefined ? new Date(result.credential.expiresAt).toISOString() : null,
+        signIn: signIn.state,
+        detail: signIn.detail ?? null,
+        expiresAt: signIn.expiresAt !== undefined ? new Date(signIn.expiresAt).toISOString() : null,
         loginStatus: this.terminals.get(account.id)?.status ?? this.logins.get(account.id)?.status ?? "idle",
         canOpenLogin: this.logins.get(account.id)?.status === "running" && !!this.logins.get(account.id)?.url,
       };

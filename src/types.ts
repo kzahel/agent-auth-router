@@ -17,6 +17,8 @@ export interface UpstreamCredential {
   accountId: string | undefined;
   /** Opaque comparison value for detecting replacement. Never logged. */
   revision: string;
+  /** Whether the store also holds a refresh credential (never its value). */
+  refreshable?: boolean;
 }
 
 export type HelperConfig =
@@ -26,6 +28,21 @@ export type HelperConfig =
       command?: string;
       args?: string[];
       timeoutSeconds?: number;
+    }
+  | {
+      /**
+       * Claude Code stream-json control session: `initialize`, then
+       * `get_usage`, with no prompt. The CLI refreshes its own credential
+       * before the usage call. Default for Claude accounts.
+       */
+      kind: "claude-cli";
+      command?: string;
+      args?: string[];
+      timeoutSeconds?: number;
+    }
+  | {
+      /** Explicit opt-out of the provider's default helper. */
+      kind: "none";
     }
   | {
       /** An explicit argv to run against the profile, for experiments. */
@@ -49,7 +66,7 @@ export interface AccountConfig {
   enabled?: boolean;
   revision?: number;
   retired?: boolean;
-  /** Absent means the router can read but not renew this account. */
+  /** Absent selects the provider default (Claude: claude-cli; Codex: none). */
   helper?: HelperConfig;
   renewBeforeSeconds?: number;
 }

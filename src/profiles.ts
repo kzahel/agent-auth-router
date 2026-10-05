@@ -50,7 +50,9 @@ export async function inspectProfile(account: AccountConfig, read: CredentialRea
   return {
     home: account.home, credentialStore: account.credentialStore,
     canEnroll: result.status === "ok" || result.status === "missing",
-    credentialStatus: result.status === "ok" && result.credential.expiresAt !== undefined && result.credential.expiresAt <= Date.now() ? "expired" : result.status,
+    // An expired access token with a refresh token is renewed by the CLI on use.
+    credentialStatus: result.status === "ok" && result.credential.expiresAt !== undefined && result.credential.expiresAt <= Date.now()
+      ? result.credential.refreshable ? "renewable" : "expired" : result.status,
     expiresAt: result.status === "ok" && result.credential.expiresAt !== undefined ? new Date(result.credential.expiresAt).toISOString() : null,
     detail: result.status === "ok" ? "Stored credentials readable; provider access is not checked" : result.reason,
   };

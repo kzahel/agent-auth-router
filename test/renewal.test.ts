@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import { CredentialCoordinator, CredentialUnavailable } from "../src/coordinator.ts";
 import { credentialReaderFor } from "../src/credentials.ts";
-import { directProviderProblem, helperFor, type HelperOutcome, type RenewalHelper } from "../src/helpers.ts";
+import { accountHelper, CLAUDE_CLI_ARGS, directProviderProblem, helperFor, probeClaudeCli, type HelperOutcome, type RenewalHelper } from "../src/helpers.ts";
 import { helperEnv } from "../src/process.ts";
 import type { AccountConfig, HelperConfig } from "../src/types.ts";
 import { captureLogs, fakeJwt, FIXTURES, tempDir, writeClaudeCredentials, writeCodexAuth } from "./support.ts";
@@ -33,7 +33,7 @@ function coordinatorFor(account: AccountConfig, helper?: RenewalHelper, now?: ()
   return new CredentialCoordinator({
     account,
     read: credentialReaderFor(account.provider, account.home),
-    helper: helper ?? (account.helper ? helperFor(account.helper) : undefined),
+    helper: helper ?? accountHelper(account),
     helperContext: { workDir: tempDir("aar-cwd-") },
     ...(now ? { now } : {}),
   });
@@ -114,7 +114,7 @@ describe("credential coordinator", () => {
   });
 
   test("expired credential without a helper reports login required", async () => {
-    const account: AccountConfig = { id: "nohelper", provider: "claude", home: tempDir() };
+    const account: AccountConfig = { id: "nohelper", provider: "claude", home: tempDir(), helper: { kind: "none" } };
     writeClaudeCredentials(account.home, "old", Date.now() - 1000);
     const coordinator = coordinatorFor(account);
     await assert.rejects(coordinator.credential(), (error: unknown) => error instanceof CredentialUnavailable && error.state === "login_required");
@@ -181,7 +181,7 @@ describe("codex app-server helper", () => {
     const workDir = tempDir("aar-cwd-");
     process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:1/claude";
     try {
-      const outcome = await helperFor(account.helper!)({ account, workDir });
+      const outcome = await helperFor(account.helper!)!({ account, workDir });
       assert.equal(outcome.outcome, "completed");
     } finally {
       delete process.env.ANTHROPIC_BASE_URL;
@@ -234,7 +234,7 @@ describe("codex app-server helper", () => {
     captureLogs();
     const account = codexAccount("codex-server-request", "server-request");
     writeCodexAuth(account.home, fakeJwt(nowSeconds() + 30, "old"));
-    const outcome = await helperFor(account.helper!)({ account, workDir: tempDir() });
+    const outcome = await helperFor(account.helper!)!({ account, workDir: tempDir() });
     assert.equal(outcome.outcome, "completed");
     assert.ok(rpcLog(account.home).some((entry) => entry.id === 900 && entry.error === true));
   });
@@ -243,7 +243,7 @@ describe("codex app-server helper", () => {
     const account = codexAccount("codex-hang", "hang", { timeoutSeconds: 1 });
     writeCodexAuth(account.home, fakeJwt(nowSeconds() + 30, "old"));
     const started = Date.now();
-    const outcome = await helperFor(account.helper!)({ account, workDir: tempDir() });
+    const outcome = await helperFor(account.helper!)!({ account, workDir: tempDir() });
     assert.equal(outcome.outcome, "failed");
     assert.ok(Date.now() - started < 5000);
   });
@@ -251,7 +251,7 @@ describe("codex app-server helper", () => {
   test("profile config that overrides the provider endpoint refuses to run the helper", async () => {
     const account = codexAccount("codex-override", "renew");
     writeFileSync(join(account.home, "config.toml"), 'model_provider = "aar"\n[model_providers.aar]\nbase_url = "http://127.0.0.1:8417/codex"\n');
-    const outcome = await helperFor(account.helper!)({ account, workDir: tempDir() });
+    const outcome = await helperFor(account.helper!)!({ account, workDir: tempDir() });
     assert.equal(outcome.outcome, "failed");
     assert.ok(!existsSync(join(account.home, "rpc-log.jsonl")), "helper never started");
   });
@@ -298,12 +298,172 @@ describe("command helper", () => {
     const account = claudeAccount("claude-hang", "hang-with-child", 1);
     writeClaudeCredentials(account.home, "old", Date.now() - 1000);
     const started = Date.now();
-    const outcome = await helperFor(account.helper!)({ account, workDir: tempDir() });
+    const outcome = await helperFor(account.helper!)!({ account, workDir: tempDir() });
     assert.equal(outcome.outcome, "failed");
     assert.match((outcome as { detail: string }).detail, /timed out/);
     assert.ok(Date.now() - started < 5000);
     const childPid = Number(readFileSync(join(account.home, "child.pid"), "utf8"));
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.throws(() => process.kill(childPid, 0), "descendant process was terminated");
+  });
+});
+
+function claudeCliAccount(id: string, mode: string, timeoutSeconds = 10): AccountConfig {
+  return {
+    id,
+    provider: "claude",
+    home: tempDir(),
+    helper: { kind: "claude-cli", command: process.execPath, args: [join(FIXTURES, "fake-claude-cli.ts"), mode, ...CLAUDE_CLI_ARGS], timeoutSeconds },
+  };
+}
+
+function cliLog(home: string): Array<Record<string, unknown>> {
+  return readFileSync(join(home, "cli-log.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+}
+
+function writeClaudeWithoutRefresh(home: string, accessToken: string, expiresAt: number): void {
+  writeFileSync(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken, expiresAt } }));
+}
+
+describe("claude-cli helper", () => {
+  test("Claude accounts default to the CLI helper; explicit none opts out", () => {
+    assert.ok(accountHelper({ id: "c", provider: "claude", home: "/p" }));
+    assert.equal(accountHelper({ id: "c", provider: "claude", home: "/p", helper: { kind: "none" } }), undefined);
+    assert.equal(accountHelper({ id: "x", provider: "codex", home: "/p" }), undefined);
+  });
+
+  test("an expired access token is renewed by an isolated no-prompt CLI session and verified by reread", async () => {
+    captureLogs();
+    const account = claudeCliAccount("cli-renew", "renew");
+    writeClaudeCredentials(account.home, "old", Date.now() - 1000);
+    const workDir = tempDir("aar-cwd-");
+    process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:1/claude";
+    process.env.ANTHROPIC_AUTH_TOKEN = "aar_gateway";
+    let credential;
+    try {
+      credential = await new CredentialCoordinator({
+        account, read: credentialReaderFor("claude", account.home), helper: accountHelper(account), helperContext: { workDir },
+      }).credential();
+    } finally {
+      delete process.env.ANTHROPIC_BASE_URL;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+    }
+    assert.match(credential.accessToken, /^renewed-/);
+    const [start] = cliLog(account.home) as [{ argv: string[]; cwd: string; env: string[] }];
+    assert.deepEqual(start.argv, [...CLAUDE_CLI_ARGS]);
+    for (const flag of ["--input-format", "--no-session-persistence", "--strict-mcp-config", "--setting-sources=", "--tools"]) assert.ok(CLAUDE_CLI_ARGS.includes(flag), flag);
+    assert.ok(start.env.includes("CLAUDE_CONFIG_DIR"));
+    assert.ok(!start.env.includes("ANTHROPIC_BASE_URL") && !start.env.includes("ANTHROPIC_AUTH_TOKEN"));
+    assert.ok(start.cwd.endsWith(workDir.split("/").pop()!));
+    const sent = cliLog(account.home).filter((entry) => entry.event === "message").map((entry) => entry.subtype);
+    assert.deepEqual(sent, ["initialize", "get_usage"], "control requests only; no user message");
+  });
+
+  test("a profile without a saved login maps to login_required without reading usage", async () => {
+    captureLogs();
+    const account = claudeCliAccount("cli-logged-out", "logged-out");
+    writeClaudeCredentials(account.home, "old", Date.now() - 1000);
+    const coordinator = coordinatorFor(account);
+    await assert.rejects(coordinator.credential(), (error: unknown) => error instanceof CredentialUnavailable && error.state === "login_required");
+    assert.equal((await coordinator.signIn()).state, "login_required");
+    const sent = cliLog(account.home).filter((entry) => entry.event === "message").map((entry) => entry.subtype);
+    assert.deepEqual(sent, ["initialize"]);
+  });
+
+  test("missing usage, rejected usage, non-subscription logins, oversized output and hangs fail without leaking", async () => {
+    captureLogs();
+    for (const mode of ["no-usage", "reject-usage", "api-key", "oversized", "hang"]) {
+      const account = claudeCliAccount(`cli-${mode}`, mode, mode === "hang" ? 1 : 10);
+      writeClaudeCredentials(account.home, "old", Date.now() - 1000);
+      const started = Date.now();
+      const outcome = await helperFor(account.helper!)!({ account, workDir: tempDir() });
+      assert.equal(outcome.outcome, "failed", mode);
+      assert.doesNotMatch(JSON.stringify(outcome), /SECRET/, mode);
+      assert.ok(Date.now() - started < 8000, mode);
+    }
+  });
+
+  test("CLI callback requests are declined instead of hanging", async () => {
+    const account = claudeCliAccount("cli-callback", "callback");
+    writeClaudeCredentials(account.home, "old", Date.now() + 3600_000);
+    const probe = await probeClaudeCli({ account, workDir: tempDir() }, { command: process.execPath, args: [join(FIXTURES, "fake-claude-cli.ts"), "callback"] });
+    assert.equal(probe.outcome, "completed");
+  });
+
+  test("concurrent probes of one profile share a single CLI process", async () => {
+    const account = claudeCliAccount("cli-shared", "slow");
+    writeClaudeCredentials(account.home, "old", Date.now() - 1000);
+    const options = { command: process.execPath, args: [join(FIXTURES, "fake-claude-cli.ts"), "slow"] };
+    const results = await Promise.all(Array.from({ length: 5 }, () => probeClaudeCli({ account, workDir: tempDir() }, options)));
+    assert.ok(results.every((result) => result.outcome === "completed"));
+    assert.equal(cliLog(account.home).filter((entry) => entry.event === "start").length, 1);
+  });
+
+  test("an early unchanged result never defers renewal past the credential's expiry", async () => {
+    captureLogs();
+    let clock = Date.now();
+    let runs = 0;
+    const account = codexAccount("early-unchanged", "unused");
+    writeCodexAuth(account.home, fakeJwt(Math.floor(clock / 1000) + 10, "due"));
+    const coordinator = coordinatorFor(account, async () => (runs++, { outcome: "completed" }), () => clock);
+    assert.ok((await coordinator.credential()).accessToken, "due credential stays usable");
+    assert.equal(runs, 1);
+    clock += 5_000;
+    await coordinator.credential();
+    assert.equal(runs, 1, "backs off while the credential is still valid");
+    clock += 6_000;
+    await assert.rejects(coordinator.credential());
+    assert.equal(runs, 2, "an expired credential gets a renewal attempt despite the 30s backoff");
+  });
+});
+
+describe("sign-in state", () => {
+  test("an expired access token with a refresh token and helper is idle, not signed out", async () => {
+    const account = claudeCliAccount("state-idle", "renew");
+    writeClaudeCredentials(account.home, "old", Date.now() - 1000);
+    const coordinator = coordinatorFor(account);
+    assert.equal((await coordinator.signIn()).state, "idle");
+    assert.ok(!existsSync(join(account.home, "cli-log.jsonl")), "classification itself never runs the CLI");
+    captureLogs();
+    await coordinator.credential();
+    assert.equal((await coordinator.signIn()).state, "ready");
+  });
+
+  test("expiry without a refresh token or a helper requires sign-in; missing credentials are signed out", async () => {
+    const noRefresh = claudeCliAccount("state-no-refresh", "renew");
+    writeClaudeWithoutRefresh(noRefresh.home, "old", Date.now() - 1000);
+    assert.equal((await coordinatorFor(noRefresh).signIn()).state, "login_required");
+    const noHelper: AccountConfig = { id: "state-no-helper", provider: "claude", home: tempDir(), helper: { kind: "none" } };
+    writeClaudeCredentials(noHelper.home, "old", Date.now() - 1000);
+    assert.equal((await coordinatorFor(noHelper).signIn()).state, "login_required");
+    const fresh = claudeCliAccount("state-ready", "renew");
+    writeClaudeCredentials(fresh.home, "current", Date.now() + 3600_000);
+    assert.equal((await coordinatorFor(fresh).signIn()).state, "ready");
+    const codex = codexAccount("state-signed-out", "renew");
+    assert.equal((await coordinatorFor(codex).signIn()).state, "signed_out");
+  });
+
+  test("a failed renewal applies only to the credential it was attempted with", async () => {
+    captureLogs();
+    const account = claudeCliAccount("state-failed", "no-usage");
+    writeClaudeCredentials(account.home, "old", Date.now() - 1000);
+    const coordinator = coordinatorFor(account);
+    await assert.rejects(coordinator.credential());
+    const failed = await coordinator.signIn();
+    assert.equal(failed.state, "renewal_failed");
+    assert.match(failed.detail ?? "", /no subscription usage/);
+    writeClaudeCredentials(account.home, "signed-in-again", Date.now() + 3600_000);
+    assert.equal((await coordinator.signIn()).state, "ready");
+  });
+
+  test("an upstream rejection of the current credential requires sign-in until it changes", async () => {
+    captureLogs();
+    const account = claudeCliAccount("state-rejected", "renew");
+    writeClaudeCredentials(account.home, "rejected", Date.now() + 3600_000);
+    const coordinator = coordinatorFor(account);
+    coordinator.markRejected("synthetic rejection", await coordinator.credential());
+    assert.equal((await coordinator.signIn()).state, "login_required");
+    writeClaudeCredentials(account.home, "replacement", Date.now() + 3600_000);
+    assert.equal((await coordinator.signIn()).state, "ready");
   });
 });

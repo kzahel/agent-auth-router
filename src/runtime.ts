@@ -4,7 +4,7 @@ import { startControl } from "./control.ts";
 import type { AddressInfo } from "node:net";
 import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
-import { helperFor } from "./helpers.ts";
+import { accountHelper } from "./helpers.ts";
 import { log } from "./log.ts";
 import { createRouter, type RouterServer } from "./server.ts";
 import { LiveClients, type StateStore } from "./state.ts";
@@ -22,7 +22,7 @@ export function buildCoordinators(
       new CredentialCoordinator({
         account,
         read: credentialReaderFor(account.provider, account.home, account.credentialStore),
-        helper: account.helper ? helperFor(account.helper) : undefined,
+        helper: accountHelper(account),
         helperContext: routerOrigin ? { workDir, routerOrigin } : { workDir },
       }),
     );

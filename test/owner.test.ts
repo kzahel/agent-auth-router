@@ -393,7 +393,9 @@ test("owner profile metadata, optional nicknames and expiry preserve identity an
   assert.match(added.id, /^[a-z0-9-]+$/);
   const original = store.loadAccounts()[0]!;
   writeClaudeCredentials(original.home, "expired-fixture", Date.now() - 1000);
-  assert.equal((await ownerRequest(store, "accounts/login-status", { id: added.id })).credentialStatus, "expired");
+  const status = await ownerRequest(store, "accounts/login-status", { id: added.id });
+  assert.equal(status.signIn, "idle", "an expired access token with a refresh token renews on next use");
+  assert.doesNotMatch(JSON.stringify(status), /expired-fixture|SECRET-REFRESH/);
   const overview = await ownerRequest(store, "overview");
   assert.equal(overview.accounts[0].home, original.home);
   assert.equal(overview.accounts[0].nickname, "Work");

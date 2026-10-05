@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fetchAccountQuotas, normalizeClaudeQuotas, normalizeCodexQuotas } from "../src/quotas.ts";
 import type { AccountConfig } from "../src/types.ts";
-import { FIXTURES, mockUpstream, tempDir, writeClaudeCredentials } from "./support.ts";
+import { FIXTURES, tempDir, writeClaudeCredentials } from "./support.ts";
 
 function profile(provider: "claude" | "codex"): AccountConfig {
   return { id: `synthetic-${provider}`, provider, home: tempDir() };
@@ -82,70 +82,62 @@ test("Codex quota reader refuses endpoint overrides before spawning", async () =
   assert.throws(() => readFileSync(join(account.home, "process.json")));
 });
 
-test("Claude usage reads only the selected profile's current access token and quota path", async () => {
-  const account = profile("claude");
-  writeClaudeCredentials(account.home, "SECRET-access-1", Date.now() + 100000);
-  const upstream = await mockUpstream((_req, res) => res.end(JSON.stringify({ five_hour: { utilization: 20, resets_at: null },
-    seven_day: { utilization: 45, resets_at: "2026-10-10T00:00:00Z" }, token: "SECRET-body", email: "SECRET-email" })));
-  for (const token of ["SECRET-access-1", "SECRET-access-2"]) {
-    writeClaudeCredentials(account.home, token, Date.now() + 100000);
-    const snapshot = await fetchAccountQuotas(account, tempDir(), { claudeOrigin: upstream.origin });
-    assert.equal(snapshot.status, "ok");
-    assert.equal(snapshot.windows[0]!.remainingPercent, 80);
-    assert.doesNotMatch(JSON.stringify(snapshot), /SECRET/);
-    const request = upstream.requests.at(-1)!;
-    assert.equal(request.method, "GET");
-    assert.equal(request.url, "/api/oauth/usage");
-    assert.equal(request.headers.authorization, `Bearer ${token}`);
-    assert.equal(request.headers["anthropic-beta"], "oauth-2025-04-20");
-    assert.equal(request.body, "");
-  }
-});
+const fakeClaude = (mode = "ok", timeoutMs = 5000) => ({ claudeCommand: process.execPath,
+  claudeArgs: [join(FIXTURES, "fake-claude-cli.ts"), mode], timeoutMs });
+const cliStarts = (home: string) => {
+  try { return readFileSync(join(home, "cli-log.jsonl"), "utf8").trim().split("\n").filter(line => JSON.parse(line).event === "start").length; }
+  catch { return 0; }
+};
 
-test("Claude quota reader refuses redirects and never forwards credentials to redirect targets", async () => {
-  const target = await mockUpstream((_req, res) => res.end("SECRET-target"));
-  const upstream = await mockUpstream((_req, res) => { res.writeHead(302, { location: target.origin }); res.end("SECRET-body"); });
+test("Claude usage comes from an isolated official CLI session without a prompt", async () => {
   const account = profile("claude");
   writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
-  const snapshot = await fetchAccountQuotas(account, tempDir(), { claudeOrigin: upstream.origin });
-  assert.equal(snapshot.status, "unavailable");
-  assert.equal(target.requests.length, 0);
+  const snapshot = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude(), env: { ...process.env,
+    ANTHROPIC_BASE_URL: "SECRET-base", ANTHROPIC_AUTH_TOKEN: "SECRET-token" } });
+  assert.equal(snapshot.status, "ok");
+  assert.deepEqual(snapshot.windows.map(w => [w.bucket, w.remainingPercent]), [["five_hour", 80], ["seven_day", 55]],
+    "null buckets and paid overage are not windows");
+  assert.ok(Date.parse(snapshot.windows[0]!.resetsAt!) > Date.now(), "offset reset times normalize to ISO");
   assert.doesNotMatch(JSON.stringify(snapshot), /SECRET/);
+  const log = readFileSync(join(account.home, "cli-log.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.ok(!log[0].env.includes("ANTHROPIC_BASE_URL") && !log[0].env.includes("ANTHROPIC_AUTH_TOKEN"));
+  assert.deepEqual(log.filter(entry => entry.event === "message").map(entry => entry.subtype), ["initialize", "get_usage"]);
 });
 
-test("Claude auth failures and repeated throttles are sanitized and never retried", async () => {
+test("an expired Claude access token is renewed by the CLI while reading usage", async () => {
   const account = profile("claude");
-  writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
-  for (const code of [401, 403, 429, 429]) {
-    const upstream = await mockUpstream((_req, res) => { res.writeHead(code, { "retry-after": "42" }); res.end("SECRET-provider-body"); });
-    const snapshot = await fetchAccountQuotas(account, tempDir(), { claudeOrigin: upstream.origin });
-    assert.equal(snapshot.status, "unavailable");
-    assert.equal(snapshot.retryAfterSeconds, 42);
-    assert.equal(upstream.requests.length, 1);
-    assert.doesNotMatch(JSON.stringify(snapshot), /SECRET/);
-  }
+  writeClaudeCredentials(account.home, "SECRET-expired", Date.now() - 1000);
+  const snapshot = await fetchAccountQuotas(account, tempDir(), fakeClaude("renew"));
+  assert.equal(snapshot.status, "ok");
+  assert.match(readFileSync(join(account.home, ".credentials.json"), "utf8"), /renewed-/);
 });
 
-test("Claude quota reader bounds stalled, oversized, malformed and unrecognized responses", async () => {
-  const account = profile("claude");
-  writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
-  for (const mode of ["hang", "oversized", "malformed", "unknown"]) {
-    const upstream = await mockUpstream((_req, res) => {
-      if (mode === "hang") { res.writeHead(200); res.write("{"); return; }
-      res.end(mode === "oversized" ? "x".repeat(300 * 1024) : mode === "malformed" ? "SECRET-invalid" : '{"secret":"SECRET"}');
-    });
-    const snapshot = await fetchAccountQuotas(account, tempDir(), { claudeOrigin: upstream.origin, timeoutMs: 150 });
+test("Claude CLI usage failures are bounded and sanitized", async () => {
+  for (const mode of ["logged-out", "no-usage", "reject-usage", "oversized", "hang"]) {
+    const account = profile("claude");
+    writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
+    const snapshot = await fetchAccountQuotas(account, tempDir(), fakeClaude(mode, mode === "hang" ? 500 : 5000));
     assert.equal(snapshot.status, "unavailable", mode);
+    assert.deepEqual(snapshot.windows, [], mode);
     assert.doesNotMatch(JSON.stringify(snapshot), /SECRET/, mode);
   }
 });
 
-test("Disabled and unsigned-in profiles make no quota requests", async () => {
-  const upstream = await mockUpstream((_req, res) => res.end("SECRET"));
+test("Claude quota reader refuses endpoint overrides before spawning", async () => {
   const account = profile("claude");
-  assert.equal((await fetchAccountQuotas(account, tempDir(), { claudeOrigin: upstream.origin })).status, "unavailable");
-  assert.equal((await fetchAccountQuotas({ ...account, enabled: false }, tempDir(), { claudeOrigin: upstream.origin })).error, "account disabled");
-  assert.equal(upstream.requests.length, 0);
+  writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
+  writeFileSync(join(account.home, "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:1" } }));
+  const snapshot = await fetchAccountQuotas(account, tempDir(), fakeClaude());
+  assert.match(snapshot.error ?? "", /ANTHROPIC_BASE_URL/);
+  assert.equal(cliStarts(account.home), 0);
+});
+
+test("Disabled and signed-out profiles never start a quota process", async () => {
+  const account = profile("claude");
+  assert.equal((await fetchAccountQuotas(account, tempDir(), fakeClaude())).status, "unavailable");
+  writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
+  assert.equal((await fetchAccountQuotas({ ...account, enabled: false }, tempDir(), fakeClaude())).error, "account disabled");
+  assert.equal(cliStarts(account.home), 0);
 });
 
 

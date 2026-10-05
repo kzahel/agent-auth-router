@@ -51,7 +51,9 @@ Inactive accounts should not cause indefinite background helper activity.
 
 The current coordinator checks expiry on demand, with a configurable renewal
 window defaulting to five minutes. There is no background keep-warm loop. A
-failed due renewal can leave an unexpired credential usable with backoff;
+failed due renewal can leave an unexpired credential usable with backoff. When
+the helper completed but the CLI left an unexpired credential unchanged, the
+retry is never deferred past that credential's expiry;
 forced 401 recovery requires a different readable credential. An expired
 credential without a helper requires official CLI login. These paths are
 fixture-tested, not proof of real provider renewal.
@@ -85,11 +87,22 @@ A small ordinary run is a fallback experiment, but it may consume subscription
 usage and must be deliberately authorized for testing. It is not necessary to
 run a full agent for every proxied request.
 
-Claude's exact invocation remains unresolved. A recent upstream issue reports
-short-lived commands initiating rotation and exiting before persistence. Treat
-that as a reported failure mode to test, not as a reproduced finding here.
-Allow successful refresh to finish rather than terminating based on a short
-fixed sleep.
+The implemented Claude helper, `claude-cli`, starts Claude Code with
+stream-json input and output and speaks the control protocol the Agent SDK
+uses, without the SDK: `initialize`, then `get_usage`, then closes stdin. No
+prompt is sent. Settings sources, MCP servers, tools and session persistence
+are disabled. Yep Anywhere's usage probe sends the same request through the
+SDK. The CLI reads usage with its own OAuth client, which is expected to
+refresh an expired access token first and persist it; the coordinator rereads
+the store to verify. That refresh-on-`get_usage` behavior is assumed, not yet
+observed: the live probes so far ran with unexpired tokens. One authorized
+`claude -p` request did refresh an access token that had expired about seven
+hours earlier. See [the Claude probe observations](prototype.md#claude-cli-control-probe).
+A recent upstream issue reports short-lived commands initiating rotation and
+exiting before persistence; the probe lets the CLI exit on its own after
+closing stdin, with a bounded grace period, rather than a short fixed sleep.
+Concurrent usage reads and renewal for one profile share a single probe, so
+two CLIs never refresh the same login at once.
 
 If a helper invokes inference, run it in a neutral working directory with
 provider-supported restrictions on tools, MCP, plugins and project discovery.
@@ -121,6 +134,22 @@ Accounts should distinguish: not enrolled, ready, renewing, temporarily
 unavailable and login required. Show sanitized errors and last successful
 renewal. A healthy status must reflect a usable credential, not merely a file
 timestamp or a successful helper launch.
+
+The owner `accounts/login-status` operation reports a sign-in state from the
+stored credential and the coordinator, without running a helper:
+
+- `ready`: the access token is unexpired.
+- `idle`: the access token expired, a refresh token is stored and a helper is
+  configured; the official CLI renews it on next use.
+- `renewing`: a helper or official login is running.
+- `renewal_failed`: a helper failed for the credential still stored.
+- `login_required`: the stored credential was rejected or its renewal reported
+  no login, or it expired with no refresh token or no helper.
+- `signed_out` or `unusable`: no credential, or an unreadable store.
+
+A recorded failure applies only while the same credential is stored, so a new
+sign-in clears it immediately. Expiry of the short-lived access token alone
+never means the account is signed out.
 
 The current coordinator's `ready` state means a locally usable credential,
 not a fresh provider health check. Its renewal/error/backoff metadata is

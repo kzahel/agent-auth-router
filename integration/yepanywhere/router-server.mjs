@@ -4,7 +4,8 @@ import { startRouter } from "../../src/runtime.ts";
 import { StateStore } from "../../src/state.ts";
 const store = new StateStore(process.env.AAR_STATE_DIR);
 const router = await startRouter(store, {
-  claudeOrigin: store.loadConfig().upstreams?.claude,
+  claudeCommand: process.execPath,
+  claudeArgs: [fileURLToPath(new URL("./fake-claude-usage.mjs", import.meta.url)), store.loadConfig().upstreams?.claude],
   codexCommand: process.execPath,
   codexArgs: [fileURLToPath(new URL("./fake-quotas.mjs", import.meta.url))],
 });

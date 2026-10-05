@@ -24,10 +24,16 @@ export interface HelperContext {
 
 export type RenewalHelper = (context: HelperContext) => Promise<HelperOutcome>;
 
-export function helperFor(config: HelperConfig): RenewalHelper {
-  return config.kind === "codex-app-server"
-    ? (context) => runCodexAppServer(config, context)
-    : (context) => runCommand(config, context);
+export function helperFor(config: HelperConfig): RenewalHelper | undefined {
+  if (config.kind === "none") return undefined;
+  if (config.kind === "codex-app-server") return (context) => runCodexAppServer(config, context);
+  if (config.kind === "claude-cli") return (context) => runClaudeCli(config, context);
+  return (context) => runCommand(config, context);
+}
+
+/** Explicit helper configuration, else the provider default. */
+export function accountHelper(account: AccountConfig): RenewalHelper | undefined {
+  return helperFor(account.helper ?? (account.provider === "claude" ? { kind: "claude-cli" } : { kind: "none" }));
 }
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
@@ -218,4 +224,149 @@ async function runCodexAppServer(
 function rpcError(message: Record<string, unknown>): string {
   const error = message.error as { message?: unknown; code?: unknown } | undefined;
   return `app-server error ${String(error?.code ?? "")}: ${String(error?.message ?? "unknown")}`.slice(0, 200);
+}
+
+/**
+ * Claude Code's SDK control protocol over stdio, without the SDK: the CLI
+ * started with stream-json input/output accepts `control_request` lines and
+ * answers with `control_response` lines (Claude Code 2.1.280 observation).
+ * No prompt is sent, so no model session or inference runs. Settings, MCP
+ * servers, tools and session persistence are disabled for isolation.
+ */
+export const CLAUDE_CLI_ARGS: readonly string[] = [
+  "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+  "--no-session-persistence", "--strict-mcp-config", "--setting-sources=", "--tools", "",
+];
+
+export type ClaudeProbe =
+  | { outcome: "completed"; rateLimits: Record<string, unknown> }
+  | Exclude<HelperOutcome, { outcome: "completed" }>;
+
+export interface ClaudeProbeOptions {
+  command?: string | undefined;
+  args?: readonly string[] | undefined;
+  timeoutMs?: number | undefined;
+}
+
+const claudeProbes = new Map<string, Promise<ClaudeProbe>>();
+
+/**
+ * `initialize`, then `get_usage`. The CLI refreshes an expired access token
+ * itself before reading usage, so this is both the Claude usage reader and
+ * its renewal helper. One probe per profile at a time: concurrent usage reads
+ * and renewal share it, so two CLIs never refresh the same login at once.
+ */
+export function probeClaudeCli(context: HelperContext, options: ClaudeProbeOptions = {}): Promise<ClaudeProbe> {
+  const key = context.account.home;
+  let probe = claudeProbes.get(key);
+  if (!probe) {
+    probe = runClaudeProbe(context, options).finally(() => claudeProbes.delete(key));
+    claudeProbes.set(key, probe);
+  }
+  return probe;
+}
+
+async function runClaudeCli(config: Extract<HelperConfig, { kind: "claude-cli" }>, context: HelperContext): Promise<HelperOutcome> {
+  const probe = await probeClaudeCli(context, {
+    command: config.command,
+    args: config.args,
+    timeoutMs: (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+  });
+  return probe.outcome === "completed" ? { outcome: "completed" } : probe;
+}
+
+const object = (value: unknown): Record<string, unknown> | undefined =>
+  value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+
+async function runClaudeProbe(context: HelperContext, options: ClaudeProbeOptions): Promise<ClaudeProbe> {
+  const problem = await directProviderProblem(context);
+  if (problem) return { outcome: "failed", detail: problem };
+
+  const proc = startBounded({
+    command: options.command ?? providerExecutable("claude"),
+    args: options.args ?? CLAUDE_CLI_ARGS,
+    env: accountEnv(context.account, context.env),
+    cwd: context.workDir,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_SECONDS * 1000,
+    maxStderrBytes: 0,
+  });
+  const { child } = proc;
+  const send = (message: Record<string, unknown>) => {
+    if (child.stdin?.writable) child.stdin.write(JSON.stringify(message) + "\n");
+  };
+  child.stdin?.on("error", () => {});
+
+  const pending = new Map<string, (response: Record<string, unknown>) => void>();
+  let buffer = "";
+  let protocolError: string | undefined;
+  child.stdout?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    if (protocolError) return;
+    buffer += chunk;
+    if (buffer.length > MAX_LINE_BYTES) {
+      protocolError = "Claude CLI line exceeded size bound";
+      proc.terminate();
+      return;
+    }
+    let newline: number;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      let message: Record<string, unknown> | undefined;
+      try {
+        message = object(JSON.parse(line));
+      } catch {
+        continue;
+      }
+      if (message?.type === "control_request" && typeof message.request_id === "string") {
+        // Permission and hook callbacks are unexpected without a prompt.
+        // Decline rather than hang.
+        send({ type: "control_response", response: { subtype: "error", request_id: message.request_id, error: "not supported by agent-auth-router probe" } });
+      } else if (message?.type === "control_response") {
+        const response = object(message.response);
+        if (typeof response?.request_id === "string") {
+          pending.get(response.request_id)?.(response);
+          pending.delete(response.request_id);
+        }
+      }
+    }
+  });
+
+  const request = (id: string, subtype: string) =>
+    new Promise<Record<string, unknown> | undefined>((resolve) => {
+      pending.set(id, resolve);
+      proc.done.then(() => resolve(undefined));
+      send({ type: "control_request", request_id: id, request: { subtype } });
+    });
+
+  const finish = async (outcome: ClaudeProbe): Promise<ClaudeProbe> => {
+    child.stdin?.end();
+    const grace = setTimeout(() => proc.terminate(), EXIT_GRACE_MS);
+    grace.unref();
+    await proc.done;
+    clearTimeout(grace);
+    return outcome;
+  };
+  // Provider error text is never retained; only fixed descriptions leave here.
+  const failed = async (response: Record<string, unknown> | undefined, step: string): Promise<ClaudeProbe> =>
+    finish({ outcome: "failed", detail: protocolError ?? (response ? `Claude CLI rejected ${step}` : `${describeExit(await proc.done)} before ${step} completed`) });
+
+  const init = await request("aar-initialize", "initialize");
+  if (init?.subtype !== "success") return failed(init, "initialize");
+  const account = object(object(init.response)?.account);
+  if (!account || account.tokenSource === "none") {
+    return finish({ outcome: "login_required", detail: "Claude CLI reports no saved login for this profile" });
+  }
+  if (account.apiProvider !== undefined && account.apiProvider !== "firstParty") {
+    return finish({ outcome: "failed", detail: "profile does not use a Claude subscription login" });
+  }
+
+  const usage = await request("aar-usage", "get_usage");
+  if (usage?.subtype !== "success") return failed(usage, "get_usage");
+  const value = object(usage.response), rateLimits = object(value?.rate_limits);
+  if (value?.rate_limits_available !== true || !rateLimits) {
+    return finish({ outcome: "failed", detail: "Claude CLI returned no subscription usage; the saved login may need renewal" });
+  }
+  return finish({ outcome: "completed", rateLimits });
 }

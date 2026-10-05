@@ -1,8 +1,6 @@
 // On-demand, metadata-only quota reads. OAuth remains owned by official CLIs.
-import http from "node:http";
-import https from "node:https";
 import { credentialReaderFor } from "./credentials.ts";
-import { directProviderProblem } from "./helpers.ts";
+import { directProviderProblem, probeClaudeCli } from "./helpers.ts";
 import { helperEnv, startBounded } from "./process.ts";
 import type { AccountConfig, Provider } from "./types.ts";
 
@@ -29,7 +27,8 @@ export interface QuotaReadOptions {
   timeoutMs?: number;
   codexCommand?: string;
   codexArgs?: string[];
-  claudeOrigin?: string;
+  claudeCommand?: string;
+  claudeArgs?: string[];
   env?: NodeJS.ProcessEnv;
 }
 
@@ -70,8 +69,9 @@ export function normalizeCodexQuotas(value: unknown): QuotaWindow[] {
   return windows;
 }
 
-// The OAuth usage JSON uses percentages (0..100), unlike inference response
-// headers whose utilization is a fraction (0..1). Never interchange them.
+// The CLI's `get_usage` rate_limits (the OAuth usage JSON) use percentages
+// (0..100), unlike inference response headers whose utilization is a
+// fraction (0..1). Never interchange them.
 export function normalizeClaudeQuotas(value: unknown): QuotaWindow[] {
   const result = object(value);
   if (!result) return [];
@@ -91,63 +91,6 @@ export function normalizeClaudeQuotas(value: unknown): QuotaWindow[] {
 }
 
 type ReadResponse = { value: unknown } | { error: string; retryAfterSeconds?: number };
-
-function claudeUsage(origin: string, token: string, timeoutMs: number): Promise<ReadResponse> {
-  let url: URL;
-  try {
-    url = new URL(origin);
-    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash ||
-      !(url.protocol === "https:" || (url.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)))) {
-      return Promise.resolve({ error: "invalid usage endpoint" });
-    }
-  } catch { return Promise.resolve({ error: "invalid usage endpoint" }); }
-  url.pathname = "/api/oauth/usage";
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (result: ReadResponse) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      resolve(result);
-    };
-    const request = (url.protocol === "https:" ? https : http).request(url, {
-      method: "GET",
-      headers: { authorization: `Bearer ${token}`, accept: "application/json",
-        "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01" },
-    }, (response) => {
-      const code = response.statusCode ?? 0;
-      if (code !== 200) {
-        const retry = response.headers["retry-after"];
-        const seconds = typeof retry === "string" && /^\d{1,9}$/.test(retry) ? Number(retry) : undefined;
-        finish({ error: code === 401 || code === 403 ? "usage access denied; check official CLI login"
-          : code === 429 ? "usage endpoint rate limited" : `usage endpoint returned HTTP ${code}`,
-          ...(seconds !== undefined ? { retryAfterSeconds: seconds } : {}) });
-        response.destroy(); // No redirects, retries, or retained error bodies.
-        return;
-      }
-      const chunks: Buffer[] = [];
-      let bytes = 0;
-      response.on("data", (chunk: Buffer) => {
-        bytes += chunk.length;
-        if (bytes > MAX_BYTES) {
-          finish({ error: "usage response exceeded size bound" });
-          request.destroy();
-        } else chunks.push(chunk);
-      });
-      response.on("error", () => finish({ error: "usage response interrupted" }));
-      response.on("end", () => {
-        try { finish({ value: JSON.parse(Buffer.concat(chunks).toString("utf8")) }); }
-        catch { finish({ error: "usage response is not valid JSON" }); }
-      });
-    });
-    const deadline = setTimeout(() => {
-      finish({ error: "usage request timed out" });
-      request.destroy();
-    }, timeoutMs);
-    request.on("error", () => finish({ error: "usage request failed" }));
-    request.end();
-  });
-}
 
 async function codexUsage(account: AccountConfig, workDir: string, options: QuotaReadOptions): Promise<ReadResponse> {
   if (await directProviderProblem({ account, workDir })) return { error: "profile overrides the provider endpoint" };
@@ -219,9 +162,14 @@ export async function fetchAccountQuotas(account: AccountConfig, workDir: string
     let response: ReadResponse;
     if (account.provider === "codex") response = await codexUsage(account, workDir, options);
     else {
+      // A signed-out profile never starts the CLI. An expired access token
+      // with a refresh token is fine: the CLI renews it before reading usage.
       const credential = await credentialReaderFor("claude", account.home, account.credentialStore)();
       if (credential.status !== "ok") return unavailable("credential unavailable; check official CLI login");
-      response = await claudeUsage(options.claudeOrigin ?? "https://api.anthropic.com", credential.credential.accessToken, options.timeoutMs ?? 10_000);
+      const helper = account.helper?.kind === "claude-cli" ? account.helper : undefined;
+      const probe = await probeClaudeCli({ account, workDir, ...(options.env ? { env: options.env } : {}) }, {
+        command: options.claudeCommand ?? helper?.command, args: options.claudeArgs ?? helper?.args, timeoutMs: options.timeoutMs ?? 30_000 });
+      response = probe.outcome === "completed" ? { value: probe.rateLimits } : { error: probe.detail };
     }
     if ("error" in response) return unavailable(response.error, response.retryAfterSeconds);
     const windows = account.provider === "codex" ? normalizeCodexQuotas(response.value) : normalizeClaudeQuotas(response.value);

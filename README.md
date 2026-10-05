@@ -51,8 +51,10 @@ Credential storage defaults to files. On macOS, Claude enrollment needs
 `--credential-store claude-keychain` to read only that profile's Keychain entry.
 There is no fallback to the user's normal Claude account. Codex enrollment
 seeds file storage; that mode was verified for the tested dedicated login.
-Claude defaults to no renewal helper. See
-[credential lifecycle](docs/auth-lifecycle.md).
+Claude defaults to the `claude-cli` helper, a no-prompt Claude Code control
+session that reads usage and lets the CLI refresh its own credential. An
+expired access token with a stored refresh token is therefore idle, not signed
+out. See [credential lifecycle](docs/auth-lifecycle.md).
 
 `aar client add <name> --claude <account-id> --codex <account-id>` issues a
 gateway credential and prints native-client configuration; grant either or

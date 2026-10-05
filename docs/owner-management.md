@@ -24,6 +24,9 @@ operations include `overview`, `providers`,
 `accounts/login-status`, `accounts/open-login`, `accounts/cancel-login`,
 `accounts/refresh`, `accounts/renew`, `pools/save`, `pools/remove`,
 `grants/save`, `integrations/revoke`, `clients/add`, `clients/revoke`, and `stop`.
+`accounts/login-status` returns a sign-in state (`ready`, `idle`, `renewing`,
+`renewal_failed`, `login_required`, `signed_out` or `unusable`) and access-token
+expiry; see [observable states](auth-lifecycle.md#intended-observable-states).
 Owner account metadata includes the absolute profile folder, optional nickname and
 credential storage kind. Integration metadata does not expose these local details.
 Account IDs are stable and generated when omitted; nickname edits use the account

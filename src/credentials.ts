@@ -9,7 +9,7 @@
 //   profile-specific entry (Claude Code 2.1.280 observation).
 //
 // Readers never write, repair or truncate the store, and never return
-// refresh tokens.
+// refresh tokens; they report only whether one is present.
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -95,7 +95,8 @@ export async function readCodexFile(home: string): Promise<ReadResult> {
   const accountId = typeof tokens.account_id === "string" && tokens.account_id ? tokens.account_id : undefined;
   return {
     status: "ok",
-    credential: { accessToken, expiresAt: jwtExpiryMs(accessToken), accountId, revision: revisionOf(accessToken) },
+    credential: { accessToken, expiresAt: jwtExpiryMs(accessToken), accountId, revision: revisionOf(accessToken),
+      refreshable: typeof tokens.refresh_token === "string" && tokens.refresh_token.length > 0 },
   };
 }
 
@@ -130,7 +131,8 @@ function claudeCredential(value: unknown): ReadResult {
   const expiresAt = typeof oauth.expiresAt === "number" && Number.isFinite(oauth.expiresAt) && oauth.expiresAt > 0 ? oauth.expiresAt : undefined;
   return {
     status: "ok",
-    credential: { accessToken, expiresAt, accountId: undefined, revision: revisionOf(accessToken) },
+    credential: { accessToken, expiresAt, accountId: undefined, revision: revisionOf(accessToken),
+      refreshable: typeof oauth.refreshToken === "string" && oauth.refreshToken.length > 0 },
   };
 }
 

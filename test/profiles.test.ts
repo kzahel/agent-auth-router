@@ -34,7 +34,7 @@ test("existing enrollment preserves files and permissions, rejects aliases, and 
   writeCodexAuth(home, fakeJwt(2_000_000_001, "replacement"), "synthetic-account");
   const second = await coordinator.credential();
   assert.notEqual(first.revision, second.revision);
-  assert.equal((await ownerRequest(store, "accounts/login-status", { id: account.id })).credentialStatus, "ok");
+  assert.equal((await ownerRequest(store, "accounts/login-status", { id: account.id })).signIn, "ready");
 });
 
 test("existing profile checks reject unsupported stores, provider overrides and missing folders without changes", async t => {
@@ -87,4 +87,6 @@ test("normal Claude Keychain selection is explicit and preserves the CLI's defau
   const existing = tempDir();
   const preview = await inspectProfile({ ...account, home: existing }, async () => ({ status: "ok", credential: { accessToken: "never-emit", revision: "never-emit", accountId: "never-emit", expiresAt: 1 } }));
   assert.equal(preview.credentialStatus, "expired"); assert.doesNotMatch(JSON.stringify(preview), /never-emit/);
+  const renewable = await inspectProfile({ ...account, home: existing }, async () => ({ status: "ok", credential: { accessToken: "never-emit", revision: "never-emit", accountId: "never-emit", expiresAt: 1, refreshable: true } }));
+  assert.equal(renewable.credentialStatus, "renewable");
 });

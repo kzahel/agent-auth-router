@@ -147,7 +147,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
         attempt = await forward(adapter, route, origins.get(provider)!, credential, req, body, res, meta);
       }
       if (attempt.kind === "unauthorized") {
-        coordinator.markRejected("upstream rejected the account credential");
+        coordinator.markRejected("upstream rejected the account credential", credential);
         meta.upstreamStatus = 401;
         const headers = relayableResponseHeaders(attempt.headers);
         delete headers["content-length"];

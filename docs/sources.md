@@ -98,6 +98,18 @@ Quota interfaces used by the prototype:
   The authorized metadata read succeeded; this is not a documented public
   endpoint contract. Inference-header utilization is a fraction instead.
   See [quota observations and limits](prototype.md#authorized-quota-reads).
+  The router no longer calls this endpoint directly.
+- Claude usage now goes through the CLI's control protocol. Yep Anywhere
+  `26727241ee2449095b729a369a82e811e47abcad` reads Claude usage with
+  `@anthropic-ai/claude-agent-sdk` 0.3.283's
+  `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` on a no-prompt
+  session (`packages/server/src/sdk/providers/claude.ts`). That SDK starts the
+  CLI with `--output-format stream-json --verbose --input-format stream-json`
+  and writes `{"type":"control_request","request_id":…,"request":{"subtype":"get_usage"}}`
+  after `initialize`. It maps `persistSession: false` to
+  `--no-session-persistence`. The router speaks this protocol directly, without
+  the SDK. The SDK labels the usage request experimental; it is not a stable
+  public contract. See [the probe observations](prototype.md#claude-cli-control-probe).
 
 ## Existing desktop and agent projects
 

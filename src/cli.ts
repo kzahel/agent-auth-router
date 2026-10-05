@@ -20,7 +20,7 @@ import { isProvider, PROVIDERS, type AccountConfig, type GatewayClientRecord, ty
 const USAGE = `usage: aar [--state DIR] <command>
 
   init                                   create the private state directory
-  account add <id> --provider P [--home DIR] [--helper codex-app-server|none]
+  account add <id> --provider P [--home DIR] [--helper codex-app-server|claude-cli|none]
                   [--credential-store file|claude-keychain]
   account list                           show enrollment and expiry metadata
   owner <operation>                      administer via the router; JSON on stdin
@@ -134,7 +134,7 @@ async function main(argv: string[]): Promise<void> {
             result.status === "ok"
               ? `expires ${result.credential.expiresAt ? new Date(result.credential.expiresAt).toISOString() : "unknown"}`
               : result.reason;
-          process.stdout.write(`${account.id}\t${account.provider}\t${result.status}\t${detail}\thelper=${account.helper?.kind ?? "none"}\n`);
+          process.stdout.write(`${account.id}\t${account.provider}\t${result.status}\t${detail}\thelper=${account.helper?.kind ?? (account.provider === "claude" ? "claude-cli" : "none")}\n`);
         }
         return;
       }

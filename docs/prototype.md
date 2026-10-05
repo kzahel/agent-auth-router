@@ -16,8 +16,8 @@ dependencies. Node runs the `.ts` sources directly; `npm run build` emits `dist/
 | `gateway-auth.ts` | `aar_` tokens (32 random bytes), SHA-256 hashes at rest, Bearer or `x-api-key` presentation, one granted account per provider |
 | `credentials.ts` | Read-only file readers and an opt-in, profile-specific Claude macOS Keychain reader; refresh tokens are never returned |
 | `process.ts` | Shell-free spawn with an allowlisted environment, hard deadline, process-group termination and bounded stderr |
-| `helpers.ts` | `codex-app-server` and generic `command` renewal helpers; refuses profiles whose config overrides the provider endpoint |
-| `quotas.ts` | On-demand, metadata-only Codex app-server and Claude OAuth usage reads; normalizes percentages and reset times |
+| `helpers.ts` | `codex-app-server`, `claude-cli` (default for Claude) and generic `command` renewal helpers; refuses profiles whose config overrides the provider endpoint |
+| `quotas.ts` | On-demand, metadata-only Codex app-server and Claude CLI control-session usage reads; normalizes percentages and reset times |
 | `coordinator.ts` | Per-account single-flight renewal, reread verification, backoff, observable states, one forced recovery after 401 |
 | `providers.ts` | Route allowlists, fixed upstream origins, request-header allowlists and response-header denylist |
 | `server.ts` | Loopback HTTP listener: authenticate, select, substitute credential, stream, cancel, bound, log metadata |
@@ -64,8 +64,10 @@ version inventory.
   `auth.json`.
 - Claude Code 2.1.285. `claude auth` exposes `login`, `logout` and `status`;
   `claude setup-token` creates a long-lived token. No auth-only refresh
-  operation is visible. Claude accounts default to no helper, so an expired
-  Claude credential reports `login_required`. The generic `command` helper
+  operation is visible. At that time Claude accounts defaulted to no helper,
+  so an expired Claude credential reported `login_required`. They now default
+  to the `claude-cli` control-session helper; see
+  [the Claude probe](#claude-cli-control-probe). The generic `command` helper
   exists to test candidate invocations.
 - On macOS Claude Code normally stores credentials in the Keychain. The
   reader at that point only handled `.credentials.json` and reported
@@ -320,7 +322,8 @@ or current quota values here.
   `GET https://api.anthropic.com/api/oauth/usage` using the current access
   token. This is an internal endpoint observed in the installed CLI, not a
   documented public API contract. It returned five-hour and seven-day
-  windows. Embedded CLI rendering treats usage JSON `utilization` as a
+  windows. Since 2026-10-05 Claude usage is read through the CLI control
+  session instead; see [the Claude probe](#claude-cli-control-probe). Embedded CLI rendering treats usage JSON `utilization` as a
   percentage; inference response-header utilization instead uses a fraction.
 - Output contains the local enrollment id, provider, observation timestamp,
   named quota windows, used/remaining percentages and ISO reset timestamps.
@@ -339,9 +342,45 @@ model-scoped `limits[]` rows, spend balances and routing decisions remain
 future work. Quota reads are local administration, not an inference-listener
 route.
 
+## Claude CLI control probe
+
+On 2026-10-05, with Claude Code 2.1.280 on macOS, authorized checks of
+enrolled Claude profiles found the following. No token values or emails were
+recorded here.
+
+- One authorized `claude -p` request with Haiku completed for a dedicated
+  profile about 15 hours after sign-in, when its access token had been
+  expired for about seven hours. The stored access-token expiry moved from
+  the past to about eight hours ahead.
+  Expiry timestamps from the router were about eight hours after each sign-in.
+  `claude auth status` reported `loggedIn: true` for the expired profile but
+  did not change the stored credential.
+- A hand-written stream-json control session (`initialize`, then
+  `get_usage`, no prompt) on a profile with an unexpired token returned
+  account metadata, a model list and `rate_limits` with `five_hour` and
+  `seven_day` utilization. The usage response reported zero session cost. With
+  the isolation flags now in `CLAUDE_CLI_ARGS` the process exited 0 in about
+  1.3 seconds.
+- The same session against an empty `CLAUDE_CONFIG_DIR` reported
+  `tokenSource: "none"` and `rate_limits_available: false`; the probe maps a
+  `none` token source to `login_required`.
+- `initialize` returns model aliases (`default`, `opus` and so on), not the
+  `/v1/models` catalog IDs that pools and bindings use. The catalog therefore
+  stays an HTTP read, through the coordinator, which first renews an expired
+  token with the probe.
+- `aar account quotas` through the new reader succeeded for a profile-specific
+  Keychain enrollment and the normal `~/.claude` Keychain enrollment, each in
+  about 1.4 seconds, with no prompt.
+
+Not yet observed: `get_usage` refreshing an expired access token, which the
+implementation assumes. Also unobserved are the CLI's own refresh threshold
+relative to the router's five-minute window, refresh-token lifetime, and the
+probe's response when the refresh token has been revoked. That case currently
+maps to `renewal_failed` unless the CLI reports no saved login.
+
 ## Verified by tests
 
-`npm run check` passed typecheck and 65 `node:test` cases (about 6 s) on the
+`npm run check` passed typecheck and 133 `node:test` cases (about 22 s) on the
 current host after installing development dependencies from the lockfile.
 All automated cases use fixtures:
 
@@ -368,6 +407,13 @@ All automated cases use fixtures:
   out; an unexpired credential stays usable. Server-initiated requests are
   declined. A hung helper, and a helper's descendants, are terminated at the
   deadline.
+- The `claude-cli` helper sends only `initialize` and `get_usage`, declines
+  CLI callback requests, and maps no saved login to `login_required` without
+  reading usage. Missing usage, non-subscription logins, oversized output and
+  hangs fail without leaking secrets. Concurrent probes of one profile share
+  one process. An early unchanged result never defers renewal past expiry.
+  Sign-in states distinguish an idle expired token from a lost login; a
+  recorded failure clears when the stored credential changes.
 - Helper environments omit `ANTHROPIC_*`, `OPENAI_*`, the caller's
   `CODEX_HOME` and gateway tokens. Profiles whose config overrides the
   provider endpoint do not start a helper.
@@ -383,10 +429,12 @@ All automated cases use fixtures:
 - Quota fixtures cover Codex multi-bucket and legacy responses, exact RPC
   methods, profile/environment isolation, rejected server token requests,
   endpoint override refusal, deadlines, output bounds and malformed protocol.
-  Claude fixtures cover selected-profile token replacement, fixed usage path,
-  percentage units, unknown/null values, redirect refusal, authentication
-  failures, repeated 429s without retries, bounded stalled/oversized/malformed
-  responses and missing/disabled profiles. CLI tests cover account selection,
+  Claude fixtures use a fake CLI speaking the stream-json control protocol.
+  They cover the exact control requests with no user message, environment
+  isolation, renewal of an expired token during a usage read, percentage
+  units, unknown/null values, no-login, rejected or missing usage, bounded
+  hangs and oversized output, endpoint override refusal and missing/disabled
+  profiles that never start the CLI. CLI tests cover account selection,
   sanitized unavailable output and exit status. No automated quota test reads
   real credentials or contacts a provider.
 
@@ -407,10 +455,12 @@ All automated cases use fixtures:
   quota reader's stalled-response and repeated-429 cases are fixture-tested;
   those do not cover inference streaming containment.
 - File credential stores and an explicitly enrolled, profile-specific Claude
-  macOS Keychain entry are supported. Claude renewal is not implemented or
-  verified; an expired Claude credential requires official CLI login unless
-  a verified helper is enrolled. There is no dashboard, no HTTP administration
-  and no automatic multi-account routing. Multiple enrolled accounts can be
+  macOS Keychain entry are supported. Claude renewal through the `claude-cli`
+  control-session helper is implemented and fixture-tested. Its refresh of an
+  expired token has not been observed live; an explicit `none` helper
+  restores the old behavior, in which an expired credential requires official
+  CLI login. There is no dashboard, no HTTP administration and no automatic
+  multi-account routing. Multiple enrolled accounts can be
   assigned to different gateway clients, each with fixed provider assignments.
 - The agreed YA tactical 143 plans local socket pairing/control, scoped grants,
   account pools/policies and durable per-session bindings across both

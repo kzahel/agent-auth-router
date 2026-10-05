@@ -11,6 +11,17 @@ const element = (tag, text, className) => {
   if (className) el.className = className;
   return el;
 };
+// An expired access token is not a lost login; only a failed renewal or a
+// missing refresh token needs the user to sign in again.
+const signInLabels = {
+  ready: "Signed in",
+  idle: "Signed in · access token renews on next use",
+  renewing: "Renewing through the official CLI",
+  renewal_failed: "Renewal failed — refresh usage to retry, or sign in again",
+  login_required: "Sign in again",
+  signed_out: "Not signed in",
+  unusable: "Stored credentials unreadable",
+};
 function error(value) {
   $("error").textContent = value ? String(value) : "";
   $("error").hidden = !value;
@@ -206,7 +217,7 @@ async function reload(observe = false) {
       button("Check sign-in", async () => {
         const s = await api("accounts/login-status", { id: a.id });
         card.append(
-          element("p", `${s.credentialStatus === "expired" ? "Session expired — sign in again" : s.credentialStatus === "ok" ? "Stored credentials readable" : `Credentials: ${s.credentialStatus}`} · sign-in ${s.loginStatus}`, "hint"),
+          element("p", `${signInLabels[s.signIn] ?? `Sign-in: ${s.signIn}`} · sign-in ${s.loginStatus}`, "hint"),
         );
         if (s.canOpenLogin)
           card.append(button("Open sign-in page", () => api("accounts/open-login", { id: a.id })));

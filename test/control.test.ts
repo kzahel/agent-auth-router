@@ -9,8 +9,9 @@ import { ControlRegistry, startControl } from "../src/control.ts";
 import { authorize, generateGatewayToken, hashGatewayToken } from "../src/gateway-auth.ts";
 import { startRouter } from "../src/runtime.ts";
 import { StateStore, writePrivateJson } from "../src/state.ts";
-import { mockUpstream, tempDir, writeClaudeCredentials } from "./support.ts";
+import { FIXTURES, mockUpstream, tempDir, writeClaudeCredentials } from "./support.ts";
 
+const fakeClaude = { claudeCommand: process.execPath, claudeArgs: [join(FIXTURES, "fake-claude-cli.ts"), "ok"] };
 const ctlToken = () => "aar_ctl_" + randomBytes(32).toString("base64url");
 function request(socketPath: string, path: string, token?: string, body?: object): Promise<{ status: number; value: any }> {
   return new Promise((resolve, reject) => {
@@ -124,10 +125,10 @@ test("pool HTTP overview is cached metadata and shares eligibility with native a
   const store = storeFixture();
   const upstream = await mockUpstream((_req, res, recorded) => {
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(recorded.url === "/v1/models" ? { data: [{ id: "claude-sonnet-fixture" }] } : recorded.url === "/api/oauth/usage" ? { five_hour: { utilization: 20, resets_at: new Date(Date.now() + 3600000).toISOString() } } : { ok: true }));
+    res.end(JSON.stringify(recorded.url === "/v1/models" ? { data: [{ id: "claude-sonnet-fixture" }] } : { ok: true }));
   });
   writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
-  const router = await startRouter(store, { claudeOrigin: upstream.origin }); t.after(() => router.close());
+  const router = await startRouter(store, fakeClaude); t.after(() => router.close());
   const token = ctlToken(), socket = router.controlSocket!;
   const integrationId = randomUUID();
   await request(socket, "/v1/pair", undefined, { id: integrationId, name: "YA", tokenHash: hashGatewayToken(token) });
@@ -155,13 +156,10 @@ test("HTTP automatic admission refreshes cold evidence and refuses unsupported c
   const store = storeFixture();
   const upstream = await mockUpstream((_req, res, recorded) => {
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(recorded.url === "/v1/models" ? { data: [{ id: "synthetic-model" }] } : {
-      five_hour: { utilization: 25, resets_at: new Date(Date.now() + 3600_000).toISOString() },
-      seven_day: { utilization: 60, resets_at: new Date(Date.now() + 86400_000).toISOString() },
-    }));
+    res.end(JSON.stringify(recorded.url === "/v1/models" ? { data: [{ id: "synthetic-model" }] } : { ok: true }));
   });
   writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
-  const router = await startRouter(store, { claudeOrigin: upstream.origin }); t.after(() => router.close());
+  const router = await startRouter(store, fakeClaude); t.after(() => router.close());
   const socket = router.controlSocket!, token = ctlToken(), id = randomUUID(), poolId = randomUUID();
   await request(socket, "/v1/pair", undefined, { id, name: "Fixture", tokenHash: hashGatewayToken(token) });
   await ownerRequest(store, "pools/save", { id: poolId, name: "Work", revision: 0, provider: "claude", policy: "most-remaining", accountIds: ["fixture"] });
@@ -174,12 +172,12 @@ test("HTTP automatic admission refreshes cold evidence and refuses unsupported c
   assert.equal(upstream.requests.length, 0);
   const admitted = await request(socket, "/v1/pools/prepare", token, { ...body, supportedPolicies: ["most-remaining"] });
   assert.equal(admitted.status, 200);
-  assert.equal(admitted.value.selectionEvidence.headroomPercent, 40);
-  assert.equal(upstream.requests.length, 2);
+  assert.equal(admitted.value.selectionEvidence.headroomPercent, 55);
+  assert.equal(upstream.requests.length, 1, "catalog over HTTP; usage through the official CLI");
   assert.equal((await request(socket, "/v1/bindings/commit", token, { id: body.id })).status, 200);
   const repeat = await request(socket, "/v1/pools/prepare", token, { ...body, supportedPolicies: ["most-remaining"] });
   assert.equal(repeat.value.accountId, admitted.value.accountId);
-  assert.equal(upstream.requests.length, 2);
+  assert.equal(upstream.requests.length, 1);
 });
 
 test("session discovery reads only granted provider catalogs, coalesces and projects capabilities", { skip: process.platform === "win32" }, async () => {
