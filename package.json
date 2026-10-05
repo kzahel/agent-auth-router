@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "MIT",
-  "description": "Prototype gateway that routes Claude Code and Codex clients to subscription accounts whose credentials are renewed by the official CLIs",
+  "description": "Local gateway that pools Claude Code and Codex subscription accounts with quota-aware routing; the official CLIs handle sign-in and refresh",
   "type": "module",
   "engines": {
     "node": ">=24"
