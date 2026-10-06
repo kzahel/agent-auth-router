@@ -257,9 +257,13 @@ async function main(argv: string[]): Promise<void> {
       }
       let parentClosed = false;
       let router: Awaited<ReturnType<typeof startRouter>> | undefined;
+      let stopping = false;
       const shutdown = () => {
         parentClosed = true;
-        if (!router) return;
+        // Ctrl-C under npm arrives twice (from the terminal and forwarded by
+        // npm). Repeats must not interrupt cleanup and strand the sockets.
+        if (!router || stopping) return;
+        stopping = true;
         void router.close(true).then(() => process.exit(0));
         setTimeout(() => process.exit(1), 10_000).unref();
       };
@@ -268,9 +272,9 @@ async function main(argv: string[]): Promise<void> {
         process.stdin.on("end", shutdown);
         process.stdin.resume();
       }
-      process.once("SIGINT", shutdown);
-      process.once("SIGTERM", shutdown);
-      try { router = await startRouter(store, {}, { desktop, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(0), ...(dashboard ? { dashboard } : {}) }); }
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+      try { router = await startRouter(store, {}, { desktop, recoverStaleSocket: true, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(0), ...(dashboard ? { dashboard } : {}) }); }
       catch (error) {
         if (desktop) { process.stderr.write(`AAR_STARTUP_ERROR:${JSON.stringify({ message: desktopStartupError(error) })}\n`); process.exit(1); }
         throw error;

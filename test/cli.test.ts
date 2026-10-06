@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { tempDir } from "./support.ts";
+import { tempDir, waitFor } from "./support.ts";
 
 test("printed login commands preserve literal profile paths and Claude clears auth/storage overrides", { skip: process.platform === "win32" }, () => {
   const state = tempDir();
@@ -50,4 +50,36 @@ test("quota CLI selects an enrolled account, reports unavailable metadata and ex
   assert.equal(unknown.status, 1);
   assert.equal(unknown.stdout, "");
   assert.match(unknown.stderr, /unknown account/);
+});
+
+test("repeated Ctrl-C finishes cleanup, and serve sets aside a stale socket", { skip: process.platform === "win32" }, async () => {
+  const state = tempDir("acli-");
+  writeFileSync(join(state, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }), { mode: 0o600 });
+  const serve = () => {
+    const child = spawn(process.execPath, ["src/cli.ts", "--state", state, "serve"], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (c) => { out += c; });
+    return { child, ready: () => out.includes("Web dashboard:") };
+  };
+  const first = serve();
+  await waitFor(first.ready, 10_000);
+  // npm delivers Ctrl-C twice: once from the terminal, once forwarded.
+  first.child.kill("SIGINT");
+  first.child.kill("SIGINT");
+  const code = await new Promise((resolve) => first.child.on("exit", resolve));
+  assert.equal(code, 0);
+  assert.equal(existsSync(join(state, "control.sock")), false);
+  assert.equal(existsSync(join(state, "app.sock")), false);
+
+  // A crash leaves a socket nothing answers; serve recovers instead of refusing.
+  const crashed = spawn(process.execPath, ["-e", `require("net").createServer().listen(${JSON.stringify(join(state, "control.sock"))}, () => console.log("up"))`], { stdio: ["ignore", "pipe", "ignore"] });
+  await new Promise((resolve) => crashed.stdout.once("data", resolve));
+  crashed.kill("SIGKILL");
+  await new Promise((resolve) => crashed.on("exit", resolve));
+  chmodSync(join(state, "control.sock"), 0o600);
+  const second = serve();
+  await waitFor(second.ready, 10_000);
+  assert.equal(readdirSync(state).filter((n) => n.startsWith("control.sock.stale-")).length, 1);
+  second.child.kill("SIGTERM");
+  await new Promise((resolve) => second.child.on("exit", resolve));
 });

@@ -44,7 +44,7 @@ export interface RunningRouter extends RouterServer {
 
 export interface DashboardOptions { port: number; uiDir?: string; dev?: boolean }
 
-export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}, lifecycle: { desktop?: boolean; cancelProcesses?: () => Promise<void>; onClosed?: () => void; dashboard?: DashboardOptions } = {}): Promise<RunningRouter> {
+export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}, lifecycle: { desktop?: boolean; recoverStaleSocket?: boolean; cancelProcesses?: () => Promise<void>; onClosed?: () => void; dashboard?: DashboardOptions } = {}): Promise<RunningRouter> {
   store.init();
   const metrics = new Metrics({ path: join(store.dir, "metrics.json") });
   const config = store.loadConfig();
@@ -88,7 +88,9 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   const boundOrigin = `http://${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}`;
   if (process.platform !== "win32") {
     try {
-      if (lifecycle.desktop) await recoverDesktopSocket(store);
+      // A router killed before cleanup leaves a refusing socket; long-running
+      // serve modes set it aside after verifying nothing answers on it.
+      if (lifecycle.desktop || lifecycle.recoverStaleSocket) await recoverDesktopSocket(store);
       control = await startControl(store, boundOrigin, coordinators, quotaOptions, {
         active: router.activeRequests,
         stop: (force) => { router.server.close(); setImmediate(() => { void close(force); }); },
