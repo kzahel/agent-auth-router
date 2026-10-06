@@ -64,6 +64,13 @@ jobs:
         run: npm --prefix desktop run build -- --target ${{ matrix.target }}
       - name: Verify package composition
         run: node desktop/scripts/verify-package.mjs 'desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/Agent Auth Router.app'
+      - name: Reclaim compiler output before signing and DMG creation
+        run: |
+          df -h .
+          for profile in desktop/src-tauri/target/release desktop/src-tauri/target/${{ matrix.target }}/release; do
+            rm -rf "$profile/deps" "$profile/build" "$profile/incremental" "$profile/.fingerprint"
+          done
+          df -h .
       - name: Import candidate signing identity
         if: inputs.signed == true
         env:
