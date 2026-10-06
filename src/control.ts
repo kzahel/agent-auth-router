@@ -3,6 +3,8 @@
 import { modelCapabilities, supportsThinking, validThinking, type CatalogModel } from "./model-capabilities.ts";
 export type { CatalogModel } from "./model-capabilities.ts";
 import { OwnerService } from "./owner.ts";
+import { AppHub, startAppSocket } from "./app.ts";
+import { Metrics } from "./metrics.ts";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -66,6 +68,9 @@ export function assertPrivatePath(path: string, socket = false): void {
 }
 
 export class ControlRegistry {
+  /** Called after each persisted change, so live UIs can refresh. */
+  onChange?: () => void;
+  private clientCache: Map<string, { name: string; poolId?: string }> | undefined;
   private state: ControlState;
   private readonly path: string;
   private readonly store: StateStore;
@@ -268,6 +273,16 @@ export class ControlRegistry {
     edit(next);
     persist(this.path, next);
     this.state = next;
+    this.clientCache = undefined;
+    this.onChange?.();
+  }
+  /** Display name and pool for traffic accounting; bindings show their integration. */
+  describeClient(client: GatewayClientRecord): { name: string; poolId?: string } {
+    if (!this.clientCache) {
+      const names = new Map(this.state.integrations.map(i => [i.id, i.name]));
+      this.clientCache = new Map(this.state.bindings.map(b => [b.id, { name: names.get(b.integrationId) ?? "integration", ...(b.poolId ? { poolId: b.poolId } : {}) }]));
+    }
+    return this.clientCache.get(client.id) ?? { name: client.name };
   }
   pair(body: Record<string, unknown>): object {
     const id = field(body, "id", UUID), name = field(body, "name"), tokenHash = field(body, "tokenHash", HASH);
@@ -379,7 +394,7 @@ export async function readCatalog(coordinator: CredentialCoordinator, origin?: s
   });
 }
 
-export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}, lifecycle: { active(): number; stop(force?: boolean): void } = { active: () => 0, stop: () => { throw new ControlError(409, "stop unavailable"); } }) {
+export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}, lifecycle: { active(): number; stop(force?: boolean): void } = { active: () => 0, stop: () => { throw new ControlError(409, "stop unavailable"); } }, metrics: Metrics = new Metrics()) {
   assertPrivatePath(store.dir);
   const socketPath = join(store.dir, "control.sock");
   if (Buffer.byteLength(socketPath) > 100) throw new Error("control socket path too long; choose a shorter state directory");
@@ -387,6 +402,8 @@ export async function startControl(store: StateStore, origin: string, coordinato
   if (existsSync(socketPath)) throw new Error("control socket exists; verify its owner before removing stale state");
   let registry: ControlRegistry;
   let owner: OwnerService;
+  let hub: AppHub | undefined;
+  let appSocket: Awaited<ReturnType<typeof startAppSocket>> | undefined;
   const generations = new Map<string, number>();
   const catalogJobs = new Map<string, Promise<CatalogModel[]>>();
   const quotaJobs = new Map<string, ReturnType<typeof fetchAccountQuotas>>();
@@ -411,6 +428,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     return job;
   };
   const evidence = new PoolEvidence(id => catalog(id, true), id => fetchAccountQuotas(store.loadAccounts().find(a => a.id === id)!, store.workDir, quotaOptions));
+  evidence.onQuota = (id, observation) => metrics.quota(id, observation.quota?.windows ?? []);
   let active = 0;
   let stopping = false;
   let closing: Promise<void> | undefined;
@@ -498,9 +516,20 @@ export async function startControl(store: StateStore, origin: string, coordinato
   await new Promise<void>((resolve, rejectPromise) => { server.once("error", rejectPromise); server.listen(socketPath, resolve); });
   chmodSync(socketPath, 0o600);
   const identity = lstatSync(socketPath);
-  try { registry = new ControlRegistry(store); owner = new OwnerService(store, registry, coordinators, evidence, id => { generations.set(id, (generations.get(id) ?? 0) + 1); catalogs.delete(id); evidence.invalidate(id); }, origin, { active: lifecycle.active, busy: () => catalogJobs.size + quotaJobs.size + evidence.active() + Math.max(0, active - 1), stop: lifecycle.stop }); } catch (error) { server.close(); throw error; }
-  return { registry, evidence, socketPath, close: () => closing ??= (async () => {
+  try {
+    registry = new ControlRegistry(store);
+    owner = new OwnerService(store, registry, coordinators, evidence, id => { generations.set(id, (generations.get(id) ?? 0) + 1); catalogs.delete(id); evidence.invalidate(id); hub?.notifyChange(); }, origin,
+      { active: lifecycle.active, busy: () => catalogJobs.size + quotaJobs.size + evidence.active() + Math.max(0, active + (hub?.inflight() ?? 0) - 1), stop: lifecycle.stop });
+    owner.extensions.metrics = metrics;
+    const liveHub = hub = new AppHub(owner, metrics, () => registry.routerId);
+    registry.onChange = () => liveHub.notifyChange();
+    store.onWrite = () => liveHub.notifyChange();
+    appSocket = await startAppSocket(join(store.dir, "app.sock"), liveHub);
+  } catch (error) { hub?.close(); server.close(); if (existsSync(socketPath) && lstatSync(socketPath).ino === identity.ino) unlinkSync(socketPath); throw error; }
+  return { registry, evidence, socketPath, hub, owner, metrics, close: () => closing ??= (async () => {
     stopping = true;
+    hub?.close();
+    await appSocket?.close();
     server.closeAllConnections();
     // Retain socket ownership while children exit, so a replacement cannot
     // start a second official login against the same profile during cleanup.

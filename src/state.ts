@@ -33,6 +33,8 @@ function readJsonFile<T>(path: string, fallback: T): T {
 
 export class StateStore {
   readonly dir: string;
+  /** Called after a registry write, so live UIs can refresh. */
+  onWrite?: () => void;
   constructor(dir: string) {
     this.dir = dir;
   }
@@ -88,6 +90,7 @@ export class StateStore {
     const removedIds = this.removedAccountIds();
     if (accounts.some(a => removedIds.includes(a.id))) throw new Error("account identity was removed; choose a new ID");
     writePrivateJson(this.accountsPath, { version: 3, accounts: validateAccounts(accounts), removedIds });
+    this.onWrite?.();
   }
 
   removedAccountIds(): string[] {
@@ -103,6 +106,7 @@ export class StateStore {
     // and legacy gateway tokens can never attach to a later enrollment.
     const removedIds = [...new Set([...this.removedAccountIds(), id])];
     writePrivateJson(this.accountsPath, { version: 3, accounts, removedIds });
+    this.onWrite?.();
   }
 
   loadClients(): GatewayClientRecord[] {
@@ -114,6 +118,7 @@ export class StateStore {
 
   saveClients(clients: GatewayClientRecord[]): void {
     writePrivateJson(this.clientsPath, { version: 3, clients });
+    this.onWrite?.();
   }
 }
 

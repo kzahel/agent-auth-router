@@ -17,13 +17,18 @@ credentials cannot administer. Neither token type can infer. This is an
 explicit API authority boundary, not a sandbox against the same OS user.
 
 The desktop's native bridge and CLI read the owner key; the web view receives
-metadata only in the management window. A separate embedded sign-in window can
+metadata only in the management window. The web dashboard uses its own
+browser sessions and never receives the owner key. A separate embedded sign-in window can
 receive ephemeral CLI output through its own native PTY bridge. Owner POST
 operations include `overview`, `providers`,
 `profiles/discover`, `profiles/inspect`, `accounts/add`, `accounts/set-nickname`, `accounts/set-enabled`, `accounts/retire` (legacy), `accounts/removal-preview`, `accounts/remove`, `accounts/login`,
 `accounts/login-status`, `accounts/open-login`, `accounts/cancel-login`,
 `accounts/refresh`, `accounts/renew`, `pools/save`, `pools/remove`,
-`grants/save`, `integrations/revoke`, `clients/add`, `clients/revoke`, and `stop`.
+`grants/save`, `integrations/revoke`, `clients/add`, `clients/revoke`, `stop` and
+`shutdown`, plus `accounts/login-command`, `metrics/snapshot`, `metrics/history`,
+`requests/recent` and the CLI-only `dashboard/code`, `dashboard/sessions` and
+`dashboard/revoke`. UIs reach a policy-limited subset through the
+[app protocol](dashboard.md#app-protocol) on the separate private `app.sock`.
 `accounts/login-status` returns a sign-in state (`ready`, `idle`, `renewing`,
 `renewal_failed`, `login_required`, `signed_out` or `unusable`) and access-token
 expiry; see [observable states](auth-lifecycle.md#intended-observable-states).
@@ -170,14 +175,15 @@ reference cleanup, restart and non-revival of old account access.
 ## Automatic desktop observation (0.1.7)
 
 Successful pairing or other external registry writes update an already-open
-management window without Reload. The native shell observes metadata for
-`control.json`, `accounts.json` and `clients.json` at 250 ms intervals, including
-atomic file replacements, then emits a payload-free event to the owner window.
-This does not read credential files, perform provider requests or add a public
-subscription endpoint. The UI coalesces updates and preserves open editors.
+management window without Reload. Since the app protocol (see
+[dashboard](dashboard.md#app-protocol)), the core emits a payload-free `change`
+event after each registry write, and the native shell relays it from the
+private `app.sock`. The earlier 250 ms registry-file watcher was removed. This
+does not read credential files or perform provider requests. The UI coalesces
+updates and preserves open editors.
 
-The native `observe` operation only reads the running owner's overview; unlike
-explicit Reload, it cannot start the core. The native WebView smoke pairs through
+Automatic reconnection only reattaches to a running owner; unlike explicit
+Reload, it cannot start the core. The native WebView smoke pairs through
 the real private control socket after the empty Connections view is rendered,
 then checks that the connection appears without a reload and that observation
 cannot revive an explicitly stopped core.

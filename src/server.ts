@@ -5,6 +5,8 @@ import { pipeline } from "node:stream";
 import { authorize } from "./gateway-auth.ts";
 import { CredentialUnavailable, type CredentialCoordinator } from "./coordinator.ts";
 import { errorText, log } from "./log.ts";
+import type { RequestHandle, RequestStart } from "./metrics.ts";
+import { tapsUsage, UsageTap } from "./usage.ts";
 import { ADAPTERS, parseUpstreamOrigin, relayableResponseHeaders, type ProviderAdapter, type Route } from "./providers.ts";
 import { DEFAULT_LIMITS, isProvider, type GatewayClientRecord, type Limits, type Provider, type RouterConfig, type UpstreamCredential } from "./types.ts";
 
@@ -14,6 +16,10 @@ export interface RouterDeps {
   coordinators: ReadonlyMap<string, CredentialCoordinator>;
   /** Fires once upstream headers arrive, before the body is relayed. */
   onProviderResponse?: (accountId: string, status: number, retryAfter?: string, headers?: http.IncomingHttpHeaders) => void;
+  /** Passive traffic accounting; never sees request or response content. */
+  observer?: { begin(start: RequestStart): RequestHandle };
+  /** Display name and pool attribution for an authenticated gateway client. */
+  describeClient?: (client: GatewayClientRecord) => { name: string; poolId?: string | undefined };
 }
 
 export interface RouterServer {
@@ -55,6 +61,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
     const requestId = randomUUID();
     const started = Date.now();
     const meta: Record<string, string | number | undefined> = { requestId, method: req.method };
+    const tracking: { handle?: RequestHandle } = {};
 
     const fail = (error: unknown) => {
       const provider = isProvider(meta.provider) ? meta.provider : undefined;
@@ -85,6 +92,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
       meta.status ??= res.statusCode;
       if (!res.writableFinished) meta.outcome = "client_closed";
       log("request", meta);
+      tracking.handle?.end(Number(meta.status), typeof meta.outcome === "string" ? meta.outcome : undefined);
     });
 
     if (active > limits.maxActiveRequests) {
@@ -92,7 +100,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
       return;
     }
 
-    handle(req, res, meta).catch(fail);
+    handle(req, res, meta, tracking).catch(fail);
   });
 
   server.headersTimeout = Math.min(limits.clientRequestTimeoutMs, 60_000);
@@ -103,7 +111,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
     socket.end("HTTP/1.1 501 Not Implemented\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
   });
 
-  async function handle(req: IncomingMessage, res: ServerResponse, meta: Record<string, string | number | undefined>) {
+  async function handle(req: IncomingMessage, res: ServerResponse, meta: Record<string, string | number | undefined>, tracking: { handle?: RequestHandle }) {
     const rawUrl = req.url ?? "";
     if (!rawUrl.startsWith("/")) throw new HttpError(400, "only origin-form request targets are accepted");
     const url = new URL(rawUrl, "http://router.invalid");
@@ -136,16 +144,24 @@ export function createRouter(deps: RouterDeps): RouterServer {
       clientClosed = !res.writableFinished;
     });
     const clientGone = () => clientClosed;
+    if (deps.observer) {
+      const described = deps.describeClient?.(decision.client) ?? { name: decision.client.name };
+      try {
+        tracking.handle = deps.observer.begin({ provider, route: route.path, accountId: decision.accountId, client: described.name, poolId: described.poolId, tapped: tapsUsage(provider, route.path) });
+        tracking.handle.bytesUp(body.length);
+      } catch (error) { log("metrics.error", { error: errorText(error) }); }
+    }
+    const observed = tracking.handle;
 
     let credential = await coordinator.credential();
-    let attempt = await forward(adapter, route, origins.get(provider)!, credential, req, body, res, meta);
+    let attempt = await forward(adapter, route, origins.get(provider)!, credential, req, body, res, meta, observed);
     if (attempt.kind === "unauthorized") {
       // Rejected before generation: one coordinated recovery, one retry.
       const recovered = clientGone() ? undefined : await coordinator.recoverFromUnauthorized(credential);
       if (recovered) {
         meta.retried = 1;
         credential = recovered;
-        attempt = await forward(adapter, route, origins.get(provider)!, credential, req, body, res, meta);
+        attempt = await forward(adapter, route, origins.get(provider)!, credential, req, body, res, meta, observed);
       }
       if (attempt.kind === "unauthorized") {
         coordinator.markRejected("upstream rejected the account credential", credential);
@@ -153,6 +169,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
         const headers = relayableResponseHeaders(attempt.headers);
         delete headers["content-length"];
         res.writeHead(401, headers);
+        observed?.bytesDown(attempt.body.length);
         res.end(attempt.body);
       }
     }
@@ -198,6 +215,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
     body: Buffer,
     res: ServerResponse,
     meta: Record<string, string | number | undefined>,
+    observed?: RequestHandle,
   ): Promise<Attempt> {
     const headers: OutgoingHttpHeaders = {};
     for (const [name, value] of Object.entries(req.headers)) {
@@ -265,6 +283,9 @@ export function createRouter(deps: RouterDeps): RouterServer {
           pipeline(upstreamRes, res, (error) => {
             if (error && !res.destroyed) res.destroy();
           });
+          // Attached after pipeline in the same tick: a passive copy that
+          // neither drops chunks nor resumes a stream paused by backpressure.
+          if (observed) observe(upstreamRes, observed, adapter.provider, route.path, status);
           resolve({ kind: "relayed" });
         });
       });
@@ -273,6 +294,23 @@ export function createRouter(deps: RouterDeps): RouterServer {
   }
 
   return { server, activeRequests: () => active };
+}
+
+function observe(upstreamRes: IncomingMessage, observed: RequestHandle, provider: Provider, route: string, status: number): void {
+  const header = upstreamRes.headers["content-type"];
+  let tap: UsageTap | undefined;
+  if (status >= 200 && status < 300 && tapsUsage(provider, route)) {
+    const created: UsageTap = new UsageTap(provider, typeof header === "string" ? header : undefined, {
+      model: (model) => observed.model(model),
+      delta: (change) => observed.usage(change, created.accumulator.estimated, created.accumulator.final),
+    });
+    tap = created;
+  }
+  const safely = (fn: () => void) => {
+    try { fn(); } catch (error) { tap = undefined; log("metrics.error", { error: errorText(error) }); }
+  };
+  upstreamRes.on("data", (chunk: Buffer) => safely(() => { observed.bytesDown(chunk.length); tap?.push(chunk); }));
+  upstreamRes.on("end", () => safely(() => tap?.end()));
 }
 
 function collectBounded(stream: IncomingMessage, max: number): Promise<Buffer> {

@@ -1,6 +1,17 @@
+import { AppClient, tauriPort, webSocketPort } from "./app-client.js";
+import { createDashboard } from "./dashboard.js";
+
 const $ = (id) => document.getElementById(id);
-const invoke = (...args) => window.__TAURI__.core.invoke(...args);
-const api = (operation, body = {}) => invoke("router", { operation, body });
+// One UI for both shells: the desktop relays the core's private socket, the
+// browser uses the web dashboard's WebSocket. Only `shell` features differ.
+const desktop = !!window.__TAURI__;
+const port = desktop ? await tauriPort() : webSocketPort();
+const client = new AppClient(port);
+const shell = client.shell;
+document.body.dataset.shell = desktop ? "desktop" : "web";
+const api = (operation, body = {}) => client.call(operation, body);
+const text = (value) => value instanceof Error ? value.message : String(value);
+let stoppedByOwner = false;
 let snapshot,
   update,
   updateJob,
@@ -23,7 +34,7 @@ const signInLabels = {
   unusable: "Stored credentials unreadable",
 };
 function error(value) {
-  $("error").textContent = value ? String(value) : "";
+  $("error").textContent = value ? text(value) : "";
   $("error").hidden = !value;
 }
 async function run(action, button) {
@@ -147,7 +158,7 @@ $("remove-form").onsubmit = async event => {
     if ($("nickname-form").elements.id.value === removal.id) $("nickname-form").hidden = true;
     await reload();
   } catch (failure) {
-    $("remove-error").textContent = String(failure);
+    $("remove-error").textContent = text(failure);
     $("remove-error").hidden = false;
   } finally {
     removing = false;
@@ -155,13 +166,22 @@ $("remove-form").onsubmit = async event => {
     $("delete-profile").disabled = !removal.canDeleteProfile;
   }
 };
-async function reload(observe = false) {
+/** `start` (Reload and first load) may start a stopped desktop core; change events never do. */
+async function reload(start = false) {
   const generation = ++observationGeneration;
   let next;
-  try { next = await api(observe ? "observe" : "overview"); }
+  try {
+    if (!client.connected) {
+      if (!start) throw new Error("Router unavailable");
+      stoppedByOwner = false;
+      await client.start(desktop);
+    }
+    next = await api("overview");
+  }
   catch (failure) { if (generation === observationGeneration) $("status").textContent = "Router unavailable"; throw failure; }
   if (generation !== observationGeneration) return;
   snapshot = next;
+  dashboard.refresh();
   $("version").textContent = next.build?.version ?? "development";
   $("status").textContent =
     `Router running · ${next.activeRequests} active request${next.activeRequests === 1 ? "" : "s"}`;
@@ -211,8 +231,19 @@ async function reload(observe = false) {
     const actions = element("div", undefined, "actions");
     actions.append(
       button("Sign in", async () => {
-        await api("accounts/terminal-login", { id: a.id, presentation: $("terminal-presentation").value });
-        await reload();
+        if (shell.native) {
+          await shell.terminalLogin(a.id, $("terminal-presentation").value);
+          await reload();
+          return;
+        }
+        // A browser cannot open a terminal on the router's machine: show the official command.
+        const { command } = await api("accounts/login-command", { id: a.id });
+        card.querySelector(".login-command")?.remove();
+        const box = element("div", undefined, "login-command");
+        const code = element("pre", command);
+        const copy = button("Copy command", () => navigator.clipboard.writeText(command));
+        box.append(element("p", "Run this in a terminal on the router's machine, then choose Check sign-in:", "hint"), code, copy);
+        card.insertBefore(box, actions);
       }),
       button("Check sign-in", async () => {
         const s = await api("accounts/login-status", { id: a.id });
@@ -356,7 +387,7 @@ $("providers").onclick = () =>
       )
       .join(" · ");
   }, $("providers"));
-$("reload").onclick = () => run(reload, $("reload"));
+$("reload").onclick = () => run(() => reload(true), $("reload"));
 $("new-pool").onclick = () => {
   if (snapshot) editPool();
 };
@@ -485,7 +516,7 @@ $("startup").onchange = () =>
     const el = $("startup"),
       desired = el.checked;
     try {
-      el.checked = await invoke("startup", { enabled: desired });
+      el.checked = await shell.startup(desired);
     } catch (e) {
       el.checked = !desired;
       throw e;
@@ -493,7 +524,7 @@ $("startup").onchange = () =>
   });
 async function checkUpdate() {
   return (updateJob ??= (async () => {
-    const result = await invoke("check_update");
+    const result = await shell.checkUpdate();
     if (result.version) {
       update = result;
       $("update-status").textContent =
@@ -509,17 +540,19 @@ async function checkUpdate() {
   }));
 }
 $("check-update").onclick = () => run(checkUpdate, $("check-update"));
-setTimeout(() => {
-  void checkUpdate().catch(() => {
-    $("update-status").textContent = "Update check unavailable. You can try again manually.";
-  });
-}, 5000);
-setInterval(
-  () => {
-    void checkUpdate().catch(() => {});
-  },
-  24 * 60 * 60 * 1000,
-);
+if (shell.native) {
+  setTimeout(() => {
+    void checkUpdate().catch(() => {
+      $("update-status").textContent = "Update check unavailable. You can try again manually.";
+    });
+  }, 5000);
+  setInterval(
+    () => {
+      void checkUpdate().catch(() => {});
+    },
+    24 * 60 * 60 * 1000,
+  );
+}
 
 $("install-update").onclick = () =>
   run(async () => {
@@ -528,7 +561,7 @@ $("install-update").onclick = () =>
     if (!await askConfirmation(`Install ${version} and relaunch? The router must be idle.`, "Install & relaunch")) return;
     $("update-status").textContent = `Downloading and installing ${version}… The app will relaunch when finished.`;
     try {
-      await invoke("install_update", { version });
+      await shell.installUpdate(version);
     } catch (e) {
       $("update-status").textContent = `Update failed: ${String(e)}`;
       throw e;
@@ -543,10 +576,12 @@ $("stop").onclick = () =>
       ))
     )
       return;
-    await api("stop", { routerId: snapshot.routerId });
-    $("status").textContent = "Router stopped. Reload to start it again.";
+    stoppedByOwner = true;
+    try { await api("stop", { routerId: snapshot.routerId }); }
+    catch (failure) { stoppedByOwner = false; throw failure; }
+    $("status").textContent = desktop ? "Router stopped. Reload to start it again." : "Router stopped. Start it again with aar serve.";
   }, $("stop"));
-void invoke("startup", { enabled: null })
+if (shell.native) void shell.startup(null)
   .then((enabled) => {
     $("startup").checked = enabled;
   })
@@ -560,6 +595,7 @@ function selectTab(tab) {
     item.tabIndex = selected ? 0 : -1;
     $(item.getAttribute("aria-controls")).hidden = !selected;
   }
+  dashboard.show(tab.id === "tab-dashboard");
 }
 for (const tab of tabs) {
   tab.onclick = () => selectTab(tab);
@@ -579,10 +615,10 @@ for (const tab of tabs) {
 $("terminal-presentation").value = localStorage.getItem("terminal-presentation") === "embedded" ? "embedded" : "external";
 $("terminal-presentation").onchange = () => localStorage.setItem("terminal-presentation", $("terminal-presentation").value);
 
-void window.__TAURI__.event?.listen("router-lifecycle-error", ({ payload }) => { error(payload); $("status").textContent = "Router could not stop"; });
+if (shell.native) void shell.onLifecycleError((payload) => { error(payload); $("status").textContent = "Router could not stop"; });
 
-// External pairing and CLI edits arrive through the native registry watcher.
-// Coalesce bursts; observation preserves editors and never starts a stopped core.
+// Registry changes (pairing, CLI edits, sign-in progress) arrive as change
+// events. Coalesce bursts; observation preserves editors and never starts a stopped core.
 let observationDirty = false, observationJob;
 function stateChanged() {
   observationDirty = true;
@@ -590,9 +626,31 @@ function stateChanged() {
   observationJob = (async () => {
     while (observationDirty) {
       observationDirty = false;
-      try { await reload(true); } catch { /* The status conveys unavailability. */ }
+      try { await reload(); } catch { /* The status conveys unavailability. */ }
     }
   })().finally(() => { observationJob = undefined; });
 }
-void Promise.resolve(window.__TAURI__.event?.listen("router-state-changed", stateChanged))
-  .then(() => run(reload)).catch(error);
+const dashboard = createDashboard({ client, overview: () => snapshot });
+client.onChange(stateChanged);
+client.onStatus((state) => {
+  if (state === "connected") { stateChanged(); return; }
+  if (stoppedByOwner) { client.pause(); return; }
+  $("status").textContent = desktop ? "Router unavailable · reconnecting" : "Router unavailable · reconnecting. Restart it with aar serve if it stopped.";
+});
+selectTab(tabs.find(t => t.getAttribute("aria-selected") === "true") ?? tabs[0]);
+
+if (!desktop) {
+  $("logout").onclick = () => run(async () => {
+    await shell.logout();
+    location.reload();
+  }, $("logout"));
+  const session = await port.authenticate();
+  if (!session.authenticated) {
+    $("app-shell").hidden = true;
+    $("reload").hidden = $("logout").hidden = true;
+    $("signed-out").hidden = false;
+    $("signed-out-detail").textContent = session.error ?? "This browser is not signed in.";
+    $("status").textContent = "Signed out";
+  }
+  if (session.authenticated) void run(() => reload(true));
+} else void run(() => reload(true));

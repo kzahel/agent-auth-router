@@ -8,17 +8,22 @@ pools, grants and sessions live in the same default state directory as `aar`.
 
 ## Use
 
-The compact window has Accounts, Pools, Connections and App tabs. Appearance
+The compact window has Dashboard, Accounts, Pools, Connections and App tabs.
+**Dashboard** shows live traffic and history; see
+[the dashboard design](../docs/dashboard.md). The same UI also runs in a browser
+as `aar serve`'s web dashboard. Appearance
 follows the system's light/dark theme, including changes while the app is open.
 Accounts keep Sign in and Refresh usage visible; **More** holds sign-in checks,
 nickname editing and disable/remove actions. CLI setup help is under **Account
 setup**, and launch/update/stop controls are on **App**.
 
-Pairing from YA and external account/pool/grant edits refresh this window
-automatically. The native shell checks only registry file metadata every 250 ms
-and emits a local change notification; it does not poll provider quotas or read
-profile credentials. Refreshes coalesce and leave open editors unchanged.
-Background observation never starts a router stopped with **Stop router**.
+The window talks to the core over a private `app.sock` in the state directory.
+The native shell authenticates with the owner credential and relays messages;
+the WebView never receives it. Pairing from YA and external account/pool/grant
+edits arrive as change events and refresh this window automatically. Nothing
+polls provider quotas or reads profile credentials for this. Refreshes coalesce
+and leave open editors unchanged. Automatic reconnection never starts a router
+stopped with **Stop router**.
 
 1. Open the app. It attaches to an available local router or starts its core.
 2. Choose **Check installed CLIs**, then **Add account**. Choose **Create dedicated

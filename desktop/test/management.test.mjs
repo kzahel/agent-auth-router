@@ -10,6 +10,9 @@ test("management UI preserves typing while observations update, and offers owner
     const files = {
       "/": ["index.html", "text/html"],
       "/app.js": ["app.js", "text/javascript"],
+      "/app-client.js": ["app-client.js", "text/javascript"],
+      "/dashboard.js": ["dashboard.js", "text/javascript"],
+      "/graph.js": ["graph.js", "text/javascript"],
       "/style.css": ["style.css", "text/css"],
     };
     const file = files[req.url];
@@ -74,43 +77,66 @@ test("management UI preserves typing while observations update, and offers owner
     };
     window.fixtureState = state;
     window.operations = [];
+    window.connects = [];
     window.routerEvents = {};
+    // The core's handlers, reached through the emulated desktop pipe.
+    async function handle(operation, body) {
+      window.operations.push({ operation, body });
+      if (operation === "overview") {
+        await new Promise((r) => setTimeout(r, 150));
+        return structuredClone(state);
+      }
+      if (operation === "profiles/discover") return { profiles: [{ home: "/Users/example/.codex", enrolled: false }] };
+      if (operation === "profiles/inspect") return { credentialStore: "file", credentialStatus: "ok", canEnroll: true, detail: "Stored credentials readable; provider access is not checked" };
+      if (operation === "accounts/removal-preview") {
+        const a = state.accounts.find(a => a.id === body.id);
+        return { id: a.id, revision: a.revision, home: a.home, canDeleteProfile: !a.imported,
+          deleteIdentity: a.imported ? null : "1:fixture", reason: a.imported ? "Imported profiles are kept." : "Permanently deletes this folder and everything inside it. Keychain credentials are not deleted." };
+      }
+      if (operation === "accounts/remove") {
+        if (window.removalFailure) throw Error("Router busy; finish sign-ins before removing it.");
+        state.accounts = state.accounts.filter(a => a.id !== body.id);
+        for (const p of state.pools) p.accountIds = p.accountIds.filter(id => id !== body.id);
+      }
+      if (operation === "accounts/add") {
+        await new Promise(r => setTimeout(r, 100));
+        if (window.enrollmentFailure) throw Error("Existing profile folder is missing or unreadable");
+      }
+      if (operation === "accounts/set-nickname") {
+        Object.assign(state.accounts.find(a => a.id === body.id), { nickname: body.nickname, revision: body.revision + 1 });
+      }
+      if (operation === "pools/save") {
+        state.pools = [{ ...body, revision: body.revision + 1, bindings: [] }];
+      }
+      if (operation === "grants/save") Object.assign(state.integrations[0], body);
+      return {};
+    }
+    const snapshots = {
+      live: () => ({ at: Date.now(), epoch: "e", scopes: {}, quota: {}, activeRequests: [] }),
+      history: (body) => ({ range: body.range, scope: body.scope, bucketMs: 1000, count: 120, epoch: "e", start: 0, completeThrough: -1, series: {} }),
+      requests: () => ({ requests: [] }),
+    };
+    window.emitApp = (payload) => setTimeout(() => window.routerEvents["app-message"]?.({ payload }), 0);
     window.__TAURI__ = {
       event: { listen: async (name, callback) => { window.routerEvents[name] = callback; return () => { delete window.routerEvents[name]; }; } },
       core: {
         invoke: async (command, args) => {
-          window.operations.push({ command, ...args });
           if (command === "startup") return false;
           if (command === "check_update") return { current: true };
-          if (args.operation === "observe" && window.coreStopped) throw Error("Router unavailable");
-          if (args.operation === "overview" || args.operation === "observe") {
-            await new Promise((r) => setTimeout(r, 150));
-            return structuredClone(state);
+          if (command === "app_connect") {
+            window.connects.push(args.start);
+            if (window.coreStopped && !args.start) throw Error("Router unavailable (ENOENT)");
+            return { protocol: 1, routerId: "fixture", kind: "desktop" };
           }
-          if (args.operation === "profiles/discover") return { profiles: [{ home: "/Users/example/.codex", enrolled: false }] };
-          if (args.operation === "profiles/inspect") return { credentialStore: "file", credentialStatus: "ok", canEnroll: true, detail: "Stored credentials readable; provider access is not checked" };
-          if (args.operation === "accounts/removal-preview") {
-            const a = state.accounts.find(a => a.id === args.body.id);
-            return { id: a.id, revision: a.revision, home: a.home, canDeleteProfile: !a.imported,
-              deleteIdentity: a.imported ? null : "1:fixture", reason: a.imported ? "Imported profiles are kept." : "Permanently deletes this folder and everything inside it. Keychain credentials are not deleted." };
+          if (command === "terminal_login") { window.operations.push({ operation: "accounts/terminal-login", body: { id: args.id, presentation: args.presentation } }); return {}; }
+          if (command === "app_send") {
+            const m = args.message;
+            if (m.subscribe) window.emitApp({ id: m.id, result: snapshots[m.subscribe](m.body ?? {}) });
+            else if (m.unsubscribe !== undefined) window.emitApp({ id: m.id, result: {} });
+            else if (m.call) handle(m.call, m.body).then(result => window.emitApp({ id: m.id, result }), (e) => window.emitApp({ id: m.id, error: { status: 409, message: e.message } }));
+            return;
           }
-          if (args.operation === "accounts/remove") {
-            if (window.removalFailure) throw Error("Router busy; finish sign-ins before removing it.");
-            state.accounts = state.accounts.filter(a => a.id !== args.body.id);
-            for (const p of state.pools) p.accountIds = p.accountIds.filter(id => id !== args.body.id);
-          }
-          if (args.operation === "accounts/add") {
-            await new Promise(r => setTimeout(r, 100));
-            if (window.enrollmentFailure) throw Error("Existing profile folder is missing or unreadable");
-          }
-          if (args.operation === "accounts/set-nickname") {
-            Object.assign(state.accounts.find(a => a.id === args.body.id), { nickname: args.body.nickname, revision: args.body.revision + 1 });
-          }
-          if (args.operation === "pools/save") {
-            state.pools = [{ ...args.body, revision: args.body.revision + 1, bindings: [] }];
-          }
-          if (args.operation === "grants/save") Object.assign(state.integrations[0], args.body);
-          return {};
+          throw Error(`unexpected command ${command}`);
         },
       },
     };
@@ -154,12 +180,13 @@ test("management UI preserves typing while observations update, and offers owner
   await page.locator("#grant-pools input").check();
   await page.evaluate(() => {
     window.fixtureState.integrations.push({ id: "new-pairing", name: "New pairing", revision: 1, revoked: false, poolIds: [], accountIds: [] });
-    for (let i = 0; i < 8; i++) window.routerEvents["router-state-changed"]({});
+    window.overviewsBefore = window.operations.filter(o => o.operation === "overview").length;
+    for (let i = 0; i < 8; i++) window.emitApp({ event: "change", data: { revision: i + 1 } });
   });
   await page.getByRole("heading", { name: "New pairing", exact: true }).waitFor();
   assert.equal(await page.locator("#grant-pools input").isChecked(), true, "automatic pairing refresh preserves unsaved access choices");
-  const observes = (await page.evaluate(() => window.operations)).filter(o => o.operation === "observe");
-  assert.ok(observes.length > 0 && observes.length <= 2, "external change bursts are coalesced");
+  const observes = await page.evaluate(() => window.operations.filter(o => o.operation === "overview").length - window.overviewsBefore);
+  assert.ok(observes > 0 && observes <= 2, "external change bursts are coalesced");
 
   await page.getByRole("button", { name: "Save access", exact: true }).click();
   assert.ok(
@@ -238,7 +265,8 @@ test("management UI preserves typing while observations update, and offers owner
   await page.keyboard.press("ArrowRight");
   assert.equal(await page.getByRole("tab", { name: "Pools", exact: true }).getAttribute("aria-selected"), "true");
   await page.keyboard.press("Home");
-  assert.equal(await page.getByRole("tab", { name: "Accounts", exact: true }).getAttribute("aria-selected"), "true");
+  assert.equal(await page.getByRole("tab", { name: "Dashboard", exact: true }).getAttribute("aria-selected"), "true");
+  await page.getByRole("tab", { name: "Accounts", exact: true }).click();
   const captures = process.env.AAR_UI_CAPTURE_DIR;
   if (captures) await mkdir(captures, { recursive: true });
   const colors = [];
@@ -340,10 +368,11 @@ test("management UI preserves typing while observations update, and offers owner
   assert.equal(await install.isDisabled(), false);
   await install.click();
   await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
-  const startsBeforeObservation = (await page.evaluate(() => window.operations)).filter(o => o.operation === "overview").length;
-  await page.evaluate(() => { window.coreStopped = true; window.routerEvents["router-state-changed"]({}); });
-  await page.getByText("Router unavailable", { exact: true }).waitFor();
-  assert.equal((await page.evaluate(() => window.operations)).filter(o => o.operation === "overview").length, startsBeforeObservation, "background refresh never calls the auto-starting overview operation");
+  const connectsBeforeClose = await page.evaluate(() => window.connects.length);
+  await page.evaluate(() => { window.coreStopped = true; window.routerEvents["app-closed"](); });
+  await page.getByText("Router unavailable · reconnecting", { exact: true }).waitFor();
+  await page.waitForFunction((before) => window.connects.length > before, connectsBeforeClose);
+  assert.ok((await page.evaluate(() => window.connects)).slice(connectsBeforeClose).every(start => start === false), "automatic reconnection never starts a stopped core");
   assert.deepEqual(errors, []);
   t.diagnostic(
     `${samples.length} sequential keystrokes; maximum ${Math.max(...samples.map((s) => s.elapsed)).toFixed(1)} ms`,

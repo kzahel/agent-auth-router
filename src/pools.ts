@@ -83,6 +83,8 @@ export function eligibility(provider: Provider, enabled: boolean, model: string 
 
 /** Bounded, demand-owned observations; no timers, persistence or background work. */
 export class PoolEvidence {
+  /** Called when an account's quota observation changes. */
+  onQuota?: (id: string, observation: Observation) => void;
   private readonly generations = new Map<string, number>();
   invalidate(id: string): void { this.generations.set(id, (this.generations.get(id) ?? 0) + 1); this.values.delete(id); this.retryAt.delete(id); }
   private readonly values = new Map<string, Observation>();
@@ -113,6 +115,7 @@ export class PoolEvidence {
     this.values.set(id, { ...previous,
       quota: { accountId: id, provider, observedAt: new Date(now).toISOString(), status: "ok", windows: [...windows, ...carried], source: "inference" },
       error: previous.error === QUOTA_REFRESH_UNAVAILABLE ? null : previous.error });
+    this.onQuota?.(id, this.get(id));
     return true;
   }
   setCatalog(id: string, models: CatalogModel[]): void {
@@ -202,6 +205,7 @@ export class PoolEvidence {
         ...(previous.blocked && (previous !== before || error || Date.parse(previous.cooldownUntil!) > Date.now()) ? { blocked: previous.blocked, cooldownUntil: previous.cooldownUntil } : {}),
       };
       this.values.set(id, result);
+      if (snapshot) this.onQuota?.(id, result);
       const retry = quota.status === "fulfilled" ? quota.value.retryAfterSeconds : undefined;
       this.retryAt.set(id, Date.now() + (error ? Math.max(5, Math.min(retry ?? 5, 3600)) * 1000 : 1000));
       return result;

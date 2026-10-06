@@ -22,6 +22,9 @@ dependencies. Node runs the `.ts` sources directly; `npm run build` emits `dist/
 | `providers.ts` | Route allowlists, fixed upstream origins, request-header allowlists and response-header denylist |
 | `server.ts` | Loopback HTTP listener: authenticate, select, substitute credential, stream, cancel, bound, log metadata |
 | `state.ts`, `cli.ts` | Private state directory and the `aar` command |
+| `usage.ts` | Passive usage tap on relayed responses: SSE/JSON parsing, bounded events, live output estimate replaced by provider figures |
+| `metrics.ts` | Traffic counters, rstorrent-style tiered history (2 min to 30 days), persisted long tiers, recent requests |
+| `app.ts`, `websocket.ts`, `dashboard.ts` | UI message protocol on `app.sock`, minimal WebSocket server, loopback web dashboard with single-use sign-in links |
 
 Renewal is demand-driven: a request that finds its credential inside the
 renewal window (default five minutes) triggers the helper. There are no
@@ -459,8 +462,9 @@ All automated cases use fixtures:
   control-session helper is implemented and fixture-tested. Its refresh of an
   expired token has not been observed live; an explicit `none` helper
   restores the old behavior, in which an expired credential requires official
-  CLI login. There is no dashboard, no HTTP administration and no automatic
-  multi-account routing. Multiple enrolled accounts can be
+  CLI login. The [dashboard](dashboard.md) and its loopback web listener exist
+  with synthetic tests; there is no remote administration and no automatic
+  multi-account failover. Multiple enrolled accounts can be
   assigned to different gateway clients, each with fixed provider assignments.
 - The agreed YA tactical 143 plans local socket pairing/control, scoped grants,
   account pools/policies and durable per-session bindings across both

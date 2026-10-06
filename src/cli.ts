@@ -4,18 +4,18 @@
 import { desktopStartupError } from "./desktop-lifecycle.ts";
 import { stopManagedProcesses } from "./process.ts";
 import { terminalLogin } from "./terminal-login.ts";
-import { ownerRequest } from "./owner.ts";
+import { loginCommand, ownerRequest } from "./owner.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { userInfo } from "node:os";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { credentialReaderFor } from "./credentials.ts";
 import { generateGatewayToken, hashGatewayToken } from "./gateway-auth.ts";
+import { DEFAULT_DASHBOARD_PORT } from "./dashboard.ts";
 import { fetchAccountQuotas } from "./quotas.ts";
 import { startRouter } from "./runtime.ts";
 import { defaultStateDir, StateStore } from "./state.ts";
-import { isProvider, PROVIDERS, type AccountConfig, type GatewayClientRecord, type Provider } from "./types.ts";
+import { isProvider, PROVIDERS, type GatewayClientRecord, type Provider } from "./types.ts";
 
 const USAGE = `usage: aar [--state DIR] <command>
 
@@ -30,23 +30,19 @@ const USAGE = `usage: aar [--state DIR] <command>
   client add <name> [--claude ACCT] [--codex ACCT]
   client list
   client revoke <id-or-name>
-  serve                                  run the router on the configured loopback port
+  serve [--dashboard-port N] [--no-dashboard]
+                                         run the router on the configured loopback port,
+                                         with the web dashboard on 127.0.0.1:${DEFAULT_DASHBOARD_PORT}
+  dashboard url                          print a new single-use dashboard access link
+  dashboard sessions                     list signed-in dashboard browsers
+  dashboard revoke <session-id>|--all    sign out dashboard browsers
 
-State defaults to $AAR_STATE_DIR or ~/.agent-auth-router.`;
+State defaults to $AAR_STATE_DIR or ~/.agent-auth-router. The dashboard port can
+also be set with $AAR_DASHBOARD_PORT.`;
 
 function fail(message: string): never {
   process.stderr.write(`aar: ${message}\n`);
   process.exit(1);
-}
-
-function loginCommand(account: AccountConfig): string {
-  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-  const home = quote(account.home);
-  if (account.provider === "codex") {
-    return `env -u OPENAI_BASE_URL -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME=${home} codex login`;
-  }
-  if (account.credentialStore === "claude-keychain-default") return `env -i PATH="$PATH" HOME=${quote(dirname(account.home))} USER=${quote(userInfo().username)} claude auth login --claudeai`;
-  return `env -i PATH="$PATH" HOME="$HOME" USER=${quote(userInfo().username)} CLAUDE_CONFIG_DIR=${home} claude auth login --claudeai`;
 }
 
 function clientSnippets(origin: string, token: string, accounts: Partial<Record<Provider, string>>): string {
@@ -84,6 +80,9 @@ async function main(argv: string[]): Promise<void> {
       "credential-store": { type: "string" },
       claude: { type: "string" },
       codex: { type: "string" },
+      "dashboard-port": { type: "string" },
+      "no-dashboard": { type: "boolean" },
+      all: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -222,9 +221,38 @@ async function main(argv: string[]): Promise<void> {
       }
       fail("client requires add, list or revoke");
     }
+    case "dashboard": {
+      if (!existsSync(join(store.dir, "control.sock"))) fail("the router is not running; start it with aar serve");
+      if (sub === "url") {
+        const { url, expiresAt } = await ownerRequest(store, "dashboard/code", {});
+        process.stdout.write(`${url}\n(single use; expires ${expiresAt})\n`);
+        return;
+      }
+      if (sub === "sessions") {
+        const { sessions } = await ownerRequest(store, "dashboard/sessions", {});
+        for (const s of sessions) process.stdout.write(`${s.id}\tcreated ${s.createdAt}\tlast used ${s.lastUsedAt}\t${s.userAgent ?? ""}\n`);
+        if (!sessions.length) process.stdout.write("no dashboard sessions\n");
+        return;
+      }
+      if (sub === "revoke") {
+        if (!arg && !values.all) fail("dashboard revoke requires a session id or --all");
+        const { revoked } = await ownerRequest(store, "dashboard/revoke", values.all ? {} : { id: arg });
+        process.stdout.write(`revoked ${revoked} session${revoked === 1 ? "" : "s"}\n`);
+        return;
+      }
+      fail("dashboard requires url, sessions or revoke");
+    }
     case "serve":
     case "desktop-serve": {
       const desktop = command === "desktop-serve";
+      // The desktop app uses its private socket; only the CLI opens the web dashboard.
+      let dashboard: { port: number } | undefined;
+      if (!desktop && !values["no-dashboard"]) {
+        const raw = values["dashboard-port"] ?? process.env.AAR_DASHBOARD_PORT;
+        if (raw !== undefined && (!/^\d{1,5}$/.test(raw) || Number(raw) > 65535)) fail("dashboard port must be a number from 0 to 65535");
+        // A test configuration with an ephemeral inference port gets an ephemeral dashboard too.
+        dashboard = { port: raw !== undefined ? Number(raw) : store.loadConfig().listen.port === 0 ? 0 : DEFAULT_DASHBOARD_PORT };
+      }
       let parentClosed = false;
       let router: Awaited<ReturnType<typeof startRouter>> | undefined;
       const shutdown = () => {
@@ -240,10 +268,13 @@ async function main(argv: string[]): Promise<void> {
       }
       process.once("SIGINT", shutdown);
       process.once("SIGTERM", shutdown);
-      try { router = await startRouter(store, {}, { desktop, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(0) }); }
+      try { router = await startRouter(store, {}, { desktop, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(0), ...(dashboard ? { dashboard } : {}) }); }
       catch (error) {
         if (desktop) { process.stderr.write(`AAR_STARTUP_ERROR:${JSON.stringify({ message: desktopStartupError(error) })}\n`); process.exit(1); }
         throw error;
+      }
+      if (router.dashboard) {
+        process.stdout.write(`Web dashboard: ${router.dashboard.mintCode().url}\n  This link signs in one browser. Run \`aar dashboard url\` for another.\n`);
       }
       if (parentClosed) shutdown();
       return;

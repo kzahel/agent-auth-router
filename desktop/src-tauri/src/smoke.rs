@@ -83,10 +83,11 @@ pub fn loaded(webview: &tauri::Webview, payload: &tauri::webview::PageLoadPayloa
             await invoke('smoke_ready');
             // The runner pairs externally after our initial view is rendered.
             await wait(()=>document.querySelector('#integrations')?.textContent.includes('Synthetic YA'));
-            const status=await invoke('router',{operation:'observe',body:{}});
-            await invoke('router',{operation:'stop',body:{routerId:status.routerId}});
+            const status=await invoke('app_call',{operation:'overview',body:{}});
+            await invoke('app_call',{operation:'stop',body:{routerId:status.routerId}});
             await new Promise(r=>setTimeout(r,300));
-            let refused=false;try{await invoke('router',{operation:'observe',body:{}});}catch{refused=true;}
+            // Reconnection never restarts a router the owner stopped.
+            let refused=false;try{await invoke('app_connect',{start:false});}catch{refused=true;}
             if(!refused)throw Error();
             await invoke('smoke_result',{ok:true});
           } catch { await invoke('smoke_result',{ok:false}); }
@@ -95,12 +96,12 @@ pub fn loaded(webview: &tauri::Webview, payload: &tauri::webview::PageLoadPayloa
         r#"(async()=>{
           const invoke=window.__TAURI__.core.invoke;
           try {
-            const first=await invoke('router',{operation:'overview',body:{}});
+            const first=await invoke('app_connect',{start:true});
             await invoke('smoke_window',{close:true});
             let hidden=false;
             for(let i=0;i<50;i++){await new Promise(r=>setTimeout(r,50));if(!await invoke('smoke_window',{close:false})){hidden=true;break;}}
             if(!hidden) throw Error();
-            const second=await invoke('router',{operation:'overview',body:{}});
+            const second=await invoke('app_connect',{start:true});
             if(first.routerId!==second.routerId) throw Error();
             await invoke('smoke_result',{ok:true});
           } catch { await invoke('smoke_result',{ok:false}); }
@@ -109,11 +110,11 @@ pub fn loaded(webview: &tauri::Webview, payload: &tauri::webview::PageLoadPayloa
         r#"(async()=>{
           const invoke=window.__TAURI__.core.invoke;
           try {
-            await invoke('router',{operation:'overview',body:{}});
+            await invoke('app_connect',{start:true});
             let denied=false; try { await invoke('terminal',{action:'read'}); } catch { denied=true; }
             if(!denied) throw Error();
-            await invoke('router',{operation:'accounts/add',body:{id:'smoke-codex',provider:'codex'}});
-            await invoke('router',{operation:'accounts/terminal-login',body:{id:'smoke-codex',presentation:'embedded'}});
+            await invoke('app_call',{operation:'accounts/add',body:{id:'smoke-codex',provider:'codex'}});
+            await invoke('terminal_login',{id:'smoke-codex',presentation:'embedded'});
           } catch { await invoke('smoke_result',{ok:false}); }
         })()"#
     } else {
@@ -122,7 +123,9 @@ pub fn loaded(webview: &tauri::Webview, payload: &tauri::webview::PageLoadPayloa
           const wait=async(check)=>{for(let i=0;i<200;i++){if(check())return;await new Promise(r=>setTimeout(r,50));}throw Error();};
           try {
             await wait(()=>document.querySelector('.xterm-rows')?.textContent.includes('Choose [1/2]'));
-            let denied=false; try { await invoke('router',{operation:'overview',body:{}}); } catch { denied=true; }
+            let denied=false; try { await invoke('app_call',{operation:'overview',body:{}}); } catch { denied=true; }
+            if(!denied) throw Error();
+            denied=false; try { await invoke('app_send',{message:{id:1,call:'overview'}}); } catch { denied=true; }
             if(!denied) throw Error();
             await invoke('terminal',{action:'write',data:'2\r'});
             await wait(()=>document.querySelector('.xterm-rows')?.textContent.includes('SYNTHETIC_CONFIRM'));

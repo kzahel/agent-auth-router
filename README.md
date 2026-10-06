@@ -32,7 +32,9 @@ app is signed and notarized, and updates itself after you confirm.
    Account and pool changes take effect live, with no restart or re-pairing.
 
 Closing the window keeps the router running in the tray; **Quit** stops it.
-See the [desktop guide](desktop/README.md) for details.
+The **Dashboard** tab shows live traffic per account and pool: active streams,
+tokens sent and generated, cache hits and recent requests, with history from
+2 minutes to 30 days. See the [desktop guide](desktop/README.md) for details.
 
 ## How it works
 
@@ -61,6 +63,9 @@ Official CLI helpers -- login / refresh --> isolated credential stores
   on demand from each provider's usage endpoint, and recorded from the
   rate-limit headers of every proxied response. Nothing polls in the
   background.
+- Token usage is read passively from each relayed response (numbers and the
+  model name only), so the dashboard can graph traffic without changing the
+  stream.
 - The router listens on loopback only. It forwards an allowlisted set of
   routes and headers to fixed upstream origins. Administration goes through an
   owner-only Unix control socket.
@@ -77,7 +82,8 @@ npm run aar -- init
 npm run aar -- account add work --provider claude --credential-store claude-keychain
 npm run aar -- account login-command work       # run the printed official login
 npm run aar -- client add laptop --claude work  # prints client configuration
-npm run aar -- serve
+npm run aar -- serve                            # prints a web dashboard sign-in link
+npm run aar -- dashboard url                    # a new single-use dashboard link
 npm run aar -- account quotas                   # quota percentages and resets (JSON)
 npm run aar -- --help
 ```
@@ -86,6 +92,12 @@ Clients point at `http://127.0.0.1:8417/claude` or
 `http://127.0.0.1:8417/codex`. State defaults to `~/.agent-auth-router`
 (override with `--state` or `AAR_STATE_DIR`) and is shared with the desktop
 app.
+
+`aar serve` also serves the desktop app's UI as a web dashboard on
+`http://127.0.0.1:8418` (`--dashboard-port`, `AAR_DASHBOARD_PORT`,
+`--no-dashboard`). Open the printed link once to sign that browser in; the
+session lasts until you log out or run `aar dashboard revoke`. It is
+loopback-only. See [the dashboard design](docs/dashboard.md).
 
 ## Limitations
 
@@ -104,6 +116,7 @@ app.
 - [Router ownership and live administration](docs/owner-management.md)
 - [Pools and quota](docs/pools.md) and [routing policies](docs/routing-policies.md)
 - [Local integration protocol](docs/control.md)
+- [Live dashboard and headless web UI](docs/dashboard.md)
 - [Architecture and security boundaries](docs/architecture.md)
 - [Credential lifecycle](docs/auth-lifecycle.md)
 - [Prototype history and observations](docs/prototype.md)

@@ -113,7 +113,8 @@ Serve embedded assets. Show account readiness, renewal state, client policy,
 active requests, cooldowns and actual provider-reported usage. Implement
 authenticated browser administration with Host/Origin and CSRF enforcement.
 Offer a terminal login command; add a platform terminal launcher only where
-supported.
+supported. [Live dashboard and headless web UI](dashboard.md) details the
+usage capture, traffic history, Dashboard tab and browser administration.
 
 Acceptance:
 

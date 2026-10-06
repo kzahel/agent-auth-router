@@ -1,8 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod app_pipe;
 mod lifecycle;
 #[cfg(debug_assertions)]
 mod smoke;
-mod state_watch;
 mod terminal;
 use serde_json::{json, Value};
 use std::{
@@ -104,7 +104,18 @@ fn command(app: &tauri::AppHandle) -> Result<Command, String> {
     command.env_remove("NODE_OPTIONS").env_remove("NODE_PATH");
     Ok(command)
 }
+/// Owner operations for lifecycle work go over the core's private app socket.
 fn request(app: &tauri::AppHandle, operation: &str, body: Value) -> Result<Value, String> {
+    let state = state_dir(app)?;
+    match app_pipe::call(&state, operation, body.clone()) {
+        // A router started by an earlier release has only its control socket.
+        Err(error) if error.contains("ENOENT") && state.join("control.sock").exists() => {
+            cli_request(app, operation, body)
+        }
+        result => result,
+    }
+}
+fn cli_request(app: &tauri::AppHandle, operation: &str, body: Value) -> Result<Value, String> {
     let mut child = command(app)?
         .arg("owner-request")
         .arg(operation)
@@ -180,19 +191,6 @@ fn ensure_core(app: &tauri::AppHandle, core: &mut Core) -> Result<Value, String>
     }
     Err("Router did not become ready".into())
 }
-fn enrollment_body(operation: &str, mut body: Value) -> Value {
-    // Official Claude Code uses the profile-scoped Keychain on macOS.
-    // Keep the headless API's explicit/file defaults unchanged.
-    if cfg!(target_os = "macos")
-        && operation == "accounts/add"
-        && body["provider"] == "claude"
-        && body["enrollment"] != "existing"
-        && body.get("credentialStore").is_none()
-    {
-        body["credentialStore"] = json!("claude-keychain");
-    }
-    body
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,24 +206,6 @@ mod tests {
             .unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8(output.stdout).unwrap(), path);
-    }
-    #[test]
-    fn mac_enrollment_selects_profile_keychain_only_for_claude() {
-        let claude = enrollment_body("accounts/add", json!({"provider": "claude"}));
-        if cfg!(target_os = "macos") {
-            assert_eq!(claude["credentialStore"], "claude-keychain");
-        }
-        assert!(
-            enrollment_body("accounts/add", json!({"provider": "codex"}))["credentialStore"]
-                .is_null()
-        );
-        assert_eq!(
-            enrollment_body(
-                "accounts/add",
-                json!({"provider": "claude", "credentialStore": "file"})
-            )["credentialStore"],
-            "file"
-        );
     }
 }
 fn shell_quote(value: &str) -> String {
@@ -310,8 +290,73 @@ fn open_terminal(app: &tauri::AppHandle, id: &str) -> Result<Value, String> {
 fn open_terminal(_app: &tauri::AppHandle, _id: &str) -> Result<Value, String> {
     Err("Terminal sign-in is currently supported on macOS".into())
 }
+fn lifecycle_ready(runtime: &Runtime) -> Result<(), String> {
+    if runtime.2.load(Ordering::Acquire) != 0 {
+        return Err("Router is shutting down".into());
+    }
+    if runtime.1.load(Ordering::Acquire) {
+        return Err("Update installation is in progress".into());
+    }
+    Ok(())
+}
+/// Opens the webview's connection to the core. `start` also starts a stopped
+/// core; automatic reconnection never does, so Stop router stays stopped.
 #[tauri::command]
-async fn router(
+async fn app_connect(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    start: bool,
+) -> Result<Value, String> {
+    if window.label() != "main" {
+        return Err("Owner window required".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime = app.state::<Runtime>();
+        lifecycle_ready(&runtime)?;
+        if start {
+            let mut core = runtime
+                .0
+                .lock()
+                .map_err(|_| "Router lifecycle unavailable")?;
+            lifecycle_ready(&runtime)?;
+            ensure_core(&app, &mut core)?;
+        }
+        let emitter = app.clone();
+        app.state::<app_pipe::Pipe>()
+            .open(&state_dir(&app)?, move |message| {
+                let _ = match message {
+                    Some(message) => emitter.emit_to("main", "app-message", message),
+                    None => emitter.emit_to("main", "app-closed", ()),
+                };
+            })
+            .map_err(|error| {
+                if error.contains("ENOENT")
+                    && state_dir(&app).is_ok_and(|s| s.join("control.sock").exists())
+                {
+                    "This router was started by an earlier version. Stop it, then Reload.".into()
+                } else {
+                    error
+                }
+            })
+    })
+    .await
+    .map_err(|_| "Router task failed")?
+}
+#[tauri::command]
+async fn app_send(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    message: Value,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Owner window required".into());
+    }
+    app.state::<app_pipe::Pipe>().send(&message)
+}
+/// Synthetic smoke helper: one owner call from the main window.
+#[cfg(debug_assertions)]
+#[tauri::command]
+async fn app_call(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     operation: String,
@@ -320,60 +365,32 @@ async fn router(
     if window.label() != "main" {
         return Err("Owner window required".into());
     }
-    const OPERATIONS: &[&str] = &[
-        "overview",
-        "observe",
-        "providers",
-        "accounts/add",
-        "profiles/discover",
-        "profiles/inspect",
-        "accounts/set-nickname",
-        "accounts/terminal-login",
-        "accounts/set-enabled",
-        "accounts/removal-preview",
-        "accounts/remove",
-        "accounts/refresh",
-        "accounts/login",
-        "accounts/login-status",
-        "accounts/open-login",
-        "accounts/cancel-login",
-        "pools/save",
-        "pools/remove",
-        "grants/save",
-        "integrations/revoke",
-        "stop",
-    ];
-    if !OPERATIONS.contains(&operation.as_str()) {
-        return Err("Unknown desktop operation".into());
+    tauri::async_runtime::spawn_blocking(move || request(&app, &operation, body))
+        .await
+        .map_err(|_| "Router task failed")?
+}
+#[tauri::command]
+async fn terminal_login(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    id: String,
+    presentation: String,
+) -> Result<Value, String> {
+    if window.label() != "main" {
+        return Err("Owner window required".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
         let runtime = app.state::<Runtime>();
-        let mut core = runtime
+        let _core = runtime
             .0
             .lock()
             .map_err(|_| "Router lifecycle unavailable")?;
-        if runtime.2.load(Ordering::Acquire) != 0 {
-            return Err("Router is shutting down".into());
+        lifecycle_ready(&runtime)?;
+        match presentation.as_str() {
+            "external" => open_terminal(&app, &id),
+            "embedded" => terminal::open(&app, &id),
+            _ => Err("Unsupported terminal presentation".into()),
         }
-        if runtime.1.load(Ordering::Acquire) {
-            return Err("Update installation is in progress".into());
-        }
-        if operation == "overview" {
-            return ensure_core(&app, &mut core);
-        }
-        if operation == "observe" {
-            // Background observation must not start a core stopped by the owner.
-            return request(&app, "overview", json!({}));
-        }
-        if operation == "accounts/terminal-login" {
-            let id = body["id"].as_str().ok_or("Missing account")?;
-            return match body["presentation"].as_str().unwrap_or("external") {
-                "external" => open_terminal(&app, id),
-                "embedded" => terminal::open(&app, id),
-                _ => Err("Unsupported terminal presentation".into()),
-            };
-        }
-        request(&app, &operation, enrollment_body(&operation, body))
     })
     .await
     .map_err(|_| "Router task failed")?
@@ -565,11 +582,15 @@ fn main() {
             AtomicBool::new(false),
             AtomicU8::new(0),
         ))
-        .manage(terminal::Terminals::default());
+        .manage(terminal::Terminals::default())
+        .manage(app_pipe::Pipe::default());
     #[cfg(debug_assertions)]
     let builder = builder
         .invoke_handler(tauri::generate_handler![
-            router,
+            app_connect,
+            app_send,
+            app_call,
+            terminal_login,
             startup,
             check_update,
             install_update,
@@ -581,7 +602,9 @@ fn main() {
         .on_page_load(smoke::loaded);
     #[cfg(not(debug_assertions))]
     let builder = builder.invoke_handler(tauri::generate_handler![
-        router,
+        app_connect,
+        app_send,
+        terminal_login,
         startup,
         check_update,
         install_update,
@@ -611,20 +634,6 @@ fn main() {
                     window.hide()?;
                 }
             }
-            let mut watch = state_watch::StateWatch::new(state_dir(app.handle())?);
-            let observer = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(Duration::from_millis(250));
-                let runtime = observer.state::<Runtime>();
-                match runtime.2.load(Ordering::Acquire) {
-                    2 => break,
-                    1 => continue,
-                    _ => {}
-                }
-                if watch.changed() {
-                    let _ = observer.emit_to("main", "router-state-changed", ());
-                }
-            });
             let handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
                 let runtime = handle.state::<Runtime>();
@@ -665,6 +674,7 @@ fn main() {
                 let handle = app.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     handle.state::<terminal::Terminals>().close_all();
+                    handle.state::<app_pipe::Pipe>().close();
                     match stop_for_quit(&handle) {
                         Ok(()) => {
                             // An in-flight open may have finished while shutdown

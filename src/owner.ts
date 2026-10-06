@@ -7,8 +7,9 @@ import { providerExecutable } from "./platform.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { COUNTERS, isMetric, isRange, isScope, type Metrics } from "./metrics.ts";
 import { ControlError, type ControlRegistry } from "./control.ts";
 import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
@@ -36,6 +37,25 @@ export function ownerToken(store: StateStore, create = false): string {
   const token = readFileSync(path, "utf8");
   if (!/^aar_owner_[A-Za-z0-9_-]{43}$/.test(token)) throw new Error("invalid owner credential");
   return token;
+}
+
+/** The official CLI login command for a profile, for copy-paste sign-in. */
+export function loginCommand(account: AccountConfig): string {
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const home = quote(account.home);
+  if (account.provider === "codex") {
+    return `env -u OPENAI_BASE_URL -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME=${home} codex login`;
+  }
+  if (account.credentialStore === "claude-keychain-default") return `env -i PATH="$PATH" HOME=${quote(dirname(account.home))} USER=${quote(userInfo().username)} claude auth login --claudeai`;
+  return `env -i PATH="$PATH" HOME="$HOME" USER=${quote(userInfo().username)} CLAUDE_CONFIG_DIR=${home} claude auth login --claudeai`;
+}
+
+/** The running web dashboard, when one is enabled. */
+export interface DashboardControl {
+  origin: string;
+  mintCode(): { url: string; expiresAt: string };
+  sessions(): object[];
+  revoke(id?: string): number;
 }
 
 export function ownerRequest(
@@ -91,6 +111,8 @@ export function ownerRequest(
 }
 
 export class OwnerService {
+  /** Optional services attached after construction by the runtime. */
+  extensions: { metrics?: Metrics; dashboard?: DashboardControl } = {};
   private readonly token: string;
   private readonly store: StateStore;
   private readonly registry: ControlRegistry;
@@ -139,6 +161,9 @@ export class OwnerService {
         throw new ControlError(404, "account not found");
       })()
     );
+  }
+  private metrics(): Metrics {
+    return this.extensions.metrics ?? (() => { throw new ControlError(409, "traffic metrics unavailable"); })();
   }
   private nickname(value: unknown): string {
     if (typeof value !== "string" || value.length > 80 || /[\x00-\x1f\x7f]/.test(value)) throw new ControlError(400, "nickname must be at most 80 characters without control characters");
@@ -221,6 +246,32 @@ export class OwnerService {
         integrations: this.registry.ownerIntegrations(),
         logins: [...this.logins, ...this.terminals].map(([id, login]) => ({ id, status: login.status })),
       };
+    if (operation === "metrics/snapshot") return this.metrics().snapshot();
+    if (operation === "metrics/history") {
+      const range = body.range ?? "10m", scope = body.scope ?? "all", metrics = body.metrics ?? [...COUNTERS], after = body.after;
+      if (!isRange(range)) throw new ControlError(400, "invalid range");
+      if (!isScope(scope)) throw new ControlError(400, "invalid scope");
+      if (!Array.isArray(metrics) || metrics.length > 16 || metrics.some(m => m !== "quota" && !isMetric(m))) throw new ControlError(400, "invalid metrics");
+      if (after !== undefined && !Number.isSafeInteger(after)) throw new ControlError(400, "invalid after");
+      return this.metrics().history(range, scope, metrics as string[], after as number | undefined);
+    }
+    if (operation === "requests/recent") {
+      if (body.after !== undefined && !Number.isSafeInteger(body.after)) throw new ControlError(400, "invalid after");
+      return { requests: this.metrics().recentRequests(body.after as number | undefined) };
+    }
+    if (operation === "accounts/login-command") {
+      const account = this.account(body);
+      return { id: account.id, command: loginCommand(account) };
+    }
+    if (operation.startsWith("dashboard/")) {
+      const dashboard = this.extensions.dashboard ?? (() => { throw new ControlError(409, "The web dashboard is not running; start aar serve without --no-dashboard"); })();
+      if (operation === "dashboard/code") return dashboard.mintCode();
+      if (operation === "dashboard/sessions") return { origin: dashboard.origin, sessions: dashboard.sessions() };
+      if (operation === "dashboard/revoke") {
+        if (body.id !== undefined && (typeof body.id !== "string" || !/^[a-f0-9-]{36}$/.test(body.id))) throw new ControlError(400, "invalid session");
+        return { revoked: dashboard.revoke(body.id as string | undefined) };
+      }
+    }
     if (operation === "pools/save") return this.registry.savePool(body);
     if (operation === "pools/remove") return this.registry.removePool(body);
     if (operation === "grants/save") return this.registry.grant(body);

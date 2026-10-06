@@ -1,9 +1,10 @@
 # Architecture and security boundaries
 
 Status: mixed implemented prototype and intended architecture, updated
-2026-10-03. [Prototype status](prototype.md) identifies the code, fixture
-coverage and limited live proofs. Control/pairing, durable session bindings,
-pools, balancing, dashboard and remote administration remain proposals.
+2026-10-06. [Prototype status](prototype.md) identifies the code, fixture
+coverage and limited live proofs. The [dashboard](dashboard.md) and its local
+web listener are implemented with synthetic tests; remote administration
+remains a proposal.
 
 ## Product boundary
 
@@ -28,7 +29,9 @@ not implemented; see [the cross-repository plan](plan.md#yep-anywhere-integratio
 
 No protocol translation between providers is planned. Token counting should
 use supported provider endpoints and usage should preserve provider-returned
-figures. Missing usage is unknown rather than a fabricated token estimate.
+figures. Missing usage is unknown in recorded totals. A dashboard may show a
+labeled coarse estimate for in-flight output, replaced by the provider figure
+when the response completes.
 Whether either CLI requires additional counting, model-list or other routes
 is a compatibility question for the first experiment.
 
@@ -48,9 +51,10 @@ is a compatibility question for the first experiment.
 - A separate local control surface owns account setup, client enrollment and
   status. Inference credentials do not grant administrative authority.
 
-Today that control surface is the filesystem-backed `aar` CLI. On-demand
-`account quotas` emits normalized usage metadata through the CLI, outside the
-inference listener. There is no control socket, HTTP administration or polling.
+Today that control surface is the router owner's private Unix control socket,
+used by the `aar` CLI and YA, plus the UI protocol on `app.sock` and the
+loopback web dashboard. None of it is served on the inference listener, and
+nothing polls providers in the background.
 
 ## Credential ownership
 
@@ -129,13 +133,15 @@ use YA's existing authenticated transport. Local socket permissions are the
 bootstrap boundary, not protection from a malicious process under the same
 OS user. Pairing/revocation/recovery semantics still need implementation.
 
-Keep inference on loopback HTTP for native clients. Control WebSockets are not
-required; metadata SSE, HTTPS remote control and Windows named-pipe parity are
-later capabilities. Control operations must not appear on the inference
+Keep inference on loopback HTTP for native clients. YA and the CLI do not need
+control WebSockets. UIs use a separate [message protocol](dashboard.md#app-protocol)
+over a private socket (desktop) or a loopback WebSocket (browser). HTTPS
+remote control and Windows named-pipe parity are later capabilities. Control operations must not appear on the inference
 listener. See [the cross-repository plan](plan.md#yep-anywhere-integration).
 
-An independent embedded web dashboard can later show accounts, auth health,
-client permissions, active request counts, cooldowns and observed usage.
+`aar serve` runs an embedded web dashboard on a separate loopback listener with
+the desktop's UI: accounts, pools, connections, live traffic and observed usage.
+It signs browsers in with single-use links and enforces exact Host and Origin.
 Initial account login can remain a documented terminal command while a native
 launcher is absent. Launching an OS terminal from a headless service is an
 optional platform adapter, not a core requirement.

@@ -4,6 +4,7 @@ import { readdir, mkdir, mkdtemp, readFile, rm, cp, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 const root = resolve(import.meta.dirname, "../..");
 const architecture = process.env.AAR_BUNDLE_ARCH ?? process.arch;
 const hashes = {
@@ -41,6 +42,10 @@ try {
   await cp(join(temp, name, "bin/node"), join(resources, "node"));
   await cp(join(temp, name, "LICENSE"), join(resources, "NODE-LICENSE"));
   await cp(join(root, "dist"), join(resources, "core"), { recursive: true });
+  // The bundled CLI's `aar serve` serves the same UI as its web dashboard.
+  const { ASSETS } = await import(pathToFileURL(join(root, "dist/dashboard.js")).href);
+  await mkdir(join(resources, "ui"));
+  for (const asset of Object.keys(ASSETS)) await cp(join(root, "desktop/ui", asset), join(resources, "ui", asset));
   await writeFile(join(resources, "core/package.json"), '{"type":"module"}\n');
   await cp(join(root, "LICENSE"), join(resources, "LICENSE"));
   await cp(join(root, "desktop/PORTABLE-PTY-LICENSE"), join(resources, "PORTABLE-PTY-LICENSE"));

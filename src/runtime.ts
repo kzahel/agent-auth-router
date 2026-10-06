@@ -1,6 +1,9 @@
 import { recoverDesktopSocket } from "./desktop-lifecycle.ts";
 import type { QuotaReadOptions } from "./quotas.ts";
 import { startControl } from "./control.ts";
+import { startDashboard, type Dashboard } from "./dashboard.ts";
+import { Metrics } from "./metrics.ts";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
@@ -34,11 +37,16 @@ export interface RunningRouter extends RouterServer {
   origin: string;
   coordinators: Map<string, CredentialCoordinator>;
   controlSocket?: string;
+  dashboard?: Dashboard;
+  metrics: Metrics;
   close(force?: boolean): Promise<void>;
 }
 
-export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}, lifecycle: { desktop?: boolean; cancelProcesses?: () => Promise<void>; onClosed?: () => void } = {}): Promise<RunningRouter> {
+export interface DashboardOptions { port: number; uiDir?: string }
+
+export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}, lifecycle: { desktop?: boolean; cancelProcesses?: () => Promise<void>; onClosed?: () => void; dashboard?: DashboardOptions } = {}): Promise<RunningRouter> {
   store.init();
+  const metrics = new Metrics({ path: join(store.dir, "metrics.json") });
   const config = store.loadConfig();
   const origin = `http://${config.listen.host.includes(":") ? `[${config.listen.host}]` : config.listen.host}:${config.listen.port}`;
   const coordinators = buildCoordinators(store.loadAccounts(), store.workDir, origin);
@@ -53,14 +61,18 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
     return closing ??= (async () => {
       // Stop admission synchronously before waiting for accepted streams.
       const stopped = new Promise<void>(resolve => { router.server.close(() => resolve()); router.server.closeIdleConnections(); });
+      await dashboard?.close();
       await control?.close();
       await stopped;
       await cancelling;
+      metrics.close();
       lifecycle.onClosed?.();
     })();
   };
   let control: Awaited<ReturnType<typeof startControl>> | undefined;
-  const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, onProviderResponse: (accountId, status, retryAfter, headers) => {
+  let dashboard: Dashboard | undefined;
+  const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, observer: metrics,
+    describeClient: client => control?.registry.describeClient(client) ?? { name: client.name }, onProviderResponse: (accountId, status, retryAfter, headers) => {
     if (!control) return;
     control.evidence.reject(accountId, status, retryAfter);
     // Every successful proxied turn is quota evidence; rejections keep their cooldown path.
@@ -80,9 +92,14 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
       control = await startControl(store, boundOrigin, coordinators, quotaOptions, {
         active: router.activeRequests,
         stop: (force) => { router.server.close(); setImmediate(() => { void close(force); }); },
-      });
+      }, metrics);
+      if (lifecycle.dashboard) {
+        const owner = control.owner;
+        dashboard = await startDashboard({ store, hub: control.hub, authenticateOwner: header => owner.authenticate(header), port: lifecycle.dashboard.port, ...(lifecycle.dashboard.uiDir ? { uiDir: lifecycle.dashboard.uiDir } : {}) });
+        owner.extensions.dashboard = dashboard;
+      }
     }
-    catch (error) { router.server.close(); throw error; }
+    catch (error) { router.server.close(); await control?.close(); metrics.close(); throw error; }
   }
   log("router.listening", { origin: boundOrigin, accounts: coordinators.size });
 
@@ -91,6 +108,8 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
     origin: boundOrigin,
     coordinators,
     ...(control ? { controlSocket: control.socketPath } : {}),
+    ...(dashboard ? { dashboard } : {}),
+    metrics,
     close,
   };
 }
