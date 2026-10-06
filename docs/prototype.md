@@ -24,6 +24,7 @@ dependencies. Node runs the `.ts` sources directly; `npm run build` emits `dist/
 | `state.ts`, `cli.ts` | Private state directory and the `aar` command |
 | `usage.ts` | Passive usage tap on relayed responses: SSE/JSON parsing, bounded events, live output estimate replaced by provider figures |
 | `metrics.ts` | Traffic counters, rstorrent-style tiered history (2 min to 30 days), persisted long tiers, recent requests |
+| `events.ts` | Append-only JSONL log of quota observations, rejections, completed requests and binding decisions for later analysis; client session id extraction |
 | `app.ts`, `websocket.ts`, `dashboard.ts` | UI message protocol on `app.sock`, minimal WebSocket server, loopback web dashboard with single-use sign-in links |
 
 Renewal is demand-driven: a request that finds its credential inside the

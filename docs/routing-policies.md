@@ -316,6 +316,18 @@ the desktop and YA can render it. Keep sensitive profile paths owner-only.
   Continue showing percentage **remaining**, with 100% representing a full bar.
   Show missing/stale data explicitly rather than an apparently empty/full meter.
 
+## Recorded evidence
+
+Implemented 2026-10-06: the [event log](events.md) records every quota
+observation with its reset timestamps, provider rejections, completed
+requests with their binding and client session id, and every pool decision
+with the full candidate list. It is the input for checking reset phase
+(for example whether an account's weekly window resets at a fixed weekday
+hour), per-session drain, and what a policy passed over. It records no
+derived reset events and no percent-per-token calibration; both are offline
+analyses over the raw lines. A simulator, if built, should take its window
+phases and session size distributions from this data rather than assumptions.
+
 ## Suggested implementation sequence and verification
 
 1. **Evidence and comparators:** factor shared applicable-window projection and

@@ -101,7 +101,10 @@ The 24-hour and 30-day tiers are saved to `metrics.json` (private, atomic) at
 most once a minute and on shutdown. Only covered, non-zero buckets are
 written. A corrupt or insecure file is logged and ignored. The last 200
 requests are kept in memory with metadata only: times, client name, account,
-pool, provider, route, model, status, outcome, bytes and token figures.
+pool, binding, the client's session id, provider, route, model, status,
+outcome, bytes and token figures. Completed entries, quota observations and
+binding decisions also go to the [event log](events.md), which keeps full
+resolution where these tiers keep sums and last samples.
 
 ## App protocol
 

@@ -121,6 +121,7 @@ hand after editing `src/`.
 - [Pools and quota](docs/pools.md) and [routing policies](docs/routing-policies.md)
 - [Local integration protocol](docs/control.md)
 - [Live dashboard and headless web UI](docs/dashboard.md)
+- [Event log for later analysis](docs/events.md)
 - [Architecture and security boundaries](docs/architecture.md)
 - [Credential lifecycle](docs/auth-lifecycle.md)
 - [Prototype history and observations](docs/prototype.md)

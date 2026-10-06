@@ -113,12 +113,18 @@ type Scope = Record<RangeName, Tier>;
 
 export interface RequestEntry {
   id: number;
+  /** The router's request id, as logged; stable across restarts unlike `id`. */
+  requestId: string;
   startedAt: number;
   endedAt: number | null;
   client: string;
   accountId: string;
   provider: Provider;
   poolId: string | null;
+  /** Session binding the credential belongs to, when allocated through control. */
+  bindingId: string | null;
+  /** The client's own session identifier, for joining to CLI rollouts. */
+  sessionId: string | null;
   route: string;
   model: string | null;
   status: number | null;
@@ -136,6 +142,9 @@ export interface RequestStart {
   accountId: string;
   client: string;
   poolId?: string | undefined;
+  requestId?: string | undefined;
+  bindingId?: string | undefined;
+  sessionId?: string | undefined;
   /** Whether this route reports inference usage. */
   tapped: boolean;
 }
@@ -205,8 +214,9 @@ export class Metrics {
     for (const key of scopes) this.active.set(key, (this.active.get(key) ?? 0) + 1);
     this.add(scopes, "requests", 1);
     const entry: RequestEntry = {
-      id: ++this.seq, startedAt: this.now(), endedAt: null, client: start.client, accountId: start.accountId, provider: start.provider,
-      poolId: start.poolId ?? null, route: start.route, model: null, status: null, outcome: "active", bytesUp: 0, bytesDown: 0,
+      id: ++this.seq, requestId: start.requestId ?? randomUUID(), startedAt: this.now(), endedAt: null, client: start.client, accountId: start.accountId, provider: start.provider,
+      poolId: start.poolId ?? null, bindingId: start.bindingId ?? null, sessionId: start.sessionId ?? null,
+      route: start.route, model: null, status: null, outcome: "active", bytesUp: 0, bytesDown: 0,
       usage: zeroUsage(), estimated: false,
     };
     this.recent.push(entry);

@@ -5,6 +5,7 @@ import { modelCapabilities, supportsThinking, validThinking } from "./model-capa
 export type { AccountCatalog, CatalogModel, CliModel } from "./contract.ts";
 import { OwnerService } from "./owner.ts";
 import { AppHub, startAppSocket } from "./app.ts";
+import type { EventLog } from "./events.ts";
 import { Metrics } from "./metrics.ts";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -71,7 +72,9 @@ export function assertPrivatePath(path: string, socket = false): void {
 export class ControlRegistry {
   /** Called after each persisted change, so live UIs can refresh. */
   onChange?: () => void;
-  private clientCache: Map<string, { name: string; poolId?: string }> | undefined;
+  /** Optional analysis log for binding decisions; never sees token hashes. */
+  events?: EventLog;
+  private clientCache: Map<string, { name: string; poolId?: string; bindingId?: string }> | undefined;
   private state: ControlState;
   private readonly path: string;
   private readonly store: StateStore;
@@ -246,27 +249,44 @@ export class ControlRegistry {
     const { id, poolId, model, tokenHash, pool, request, existing, policy, manual } = this.poolRequest(integration, body);
     if (existing) return this.prepare(integration, { id, accountId: existing.accountId, provider: pool.provider, model, tokenHash, thinking: existing.thinking });
     const now = Date.now();
-    const eligible = pool.accountIds.filter(accountId => {
-      const a = this.store.loadAccounts().find(a => a.id === accountId);
-      return eligibility(pool.provider, !!a && a.enabled !== false, model, evidence.get(accountId), policy !== "manual", now) === "eligible" && supportsThinking(evidence.get(accountId).models.find(m => m.id === model), body.thinking as string | undefined);
+    const accounts = this.store.loadAccounts();
+    // Every member's decision is kept for the event log, not only the winner's.
+    const decisions = pool.accountIds.map(accountId => {
+      const a = accounts.find(a => a.id === accountId), o = evidence.get(accountId);
+      const reason = eligibility(pool.provider, !!a && a.enabled !== false, model, o, policy !== "manual", now);
+      return { accountId, eligibility: reason !== "eligible" ? reason : supportsThinking(o.models.find(m => m.id === model), body.thinking as string | undefined) ? "eligible" : "thinking-unsupported",
+        evidence: selectionEvidence(pool.provider, o, model, this.reservations(pool.id, accountId, now)) };
     });
+    const eligible = decisions.filter(d => d.eligibility === "eligible").map(d => d.accountId);
+    const cursor = pool.cursor ? pool.accountIds.indexOf(pool.cursor) : -1;
+    const ordered = [...pool.accountIds.slice(cursor + 1), ...pool.accountIds.slice(0, cursor + 1)].filter(id => eligible.includes(id));
+    const ranked = rankCandidates(policy, ordered.map(accountId => ({ accountId, evidence: decisions.find(d => d.accountId === accountId)!.evidence }))).map(c => c.accountId);
+    const candidates = decisions.map(d => ({ accountId: d.accountId, eligibility: d.eligibility, rank: ranked.indexOf(d.accountId) < 0 ? null : ranked.indexOf(d.accountId), ...d.evidence }));
+    const refuse = (message: string): never => {
+      this.events?.write("binding", { action: "refuse", bindingId: id, integrationId: integration.id, provider: pool.provider, model, poolId, policy, requestedAccountId: manual ?? null, error: message, candidates });
+      return reject(409, message);
+    };
     let chosen = manual;
-    if (chosen && !eligible.includes(chosen)) reject(409, "manual account is not eligible; refresh pool overview");
-    if (!chosen) {
-      const cursor = pool.cursor ? pool.accountIds.indexOf(pool.cursor) : -1;
-      const ordered = [...pool.accountIds.slice(cursor + 1), ...pool.accountIds.slice(0, cursor + 1)].filter(id => eligible.includes(id));
-      chosen = rankCandidates(policy, ordered.map(accountId => ({ accountId, evidence: selectionEvidence(pool.provider, evidence.get(accountId), model, this.reservations(pool.id, accountId, now)) })))[0]?.accountId;
-    }
-    if (!chosen) reject(409, "no eligible pool account; refresh usage or choose Manual");
+    if (chosen && !eligible.includes(chosen)) refuse("manual account is not eligible; refresh pool overview");
+    if (!chosen) chosen = ranked[0];
+    if (!chosen) refuse("no eligible pool account; refresh usage or choose Manual");
     if (this.state.bindings.length >= 100_000) reject(409, "binding limit reached");
-    const selectedEvidence = selectionEvidence(pool.provider, evidence.get(chosen!), model, this.reservations(pool.id, chosen!, now));
+    const selectedEvidence = decisions.find(d => d.accountId === chosen)!.evidence;
     const binding: Binding = { id, integrationId: integration.id, accountId: chosen!, provider: pool.provider, model, tokenHash,
       state: "prepared", createdAt: now, poolId, policy, request, ...(body.thinking === undefined ? {} : { thinking: body.thinking as string }),
       policyVersion: 1, selectionEvidence: selectedEvidence,
       reason: policy === "most-remaining" ? `Most remaining: tightest window has ${selectedEvidence.headroomPercent}% remaining; among accounts with fewest startup reservations` : policy === "round-robin" ? "Round robin among eligible accounts" : "Explicit manual account",
       observedAt: evidence.get(chosen!).quota?.observedAt };
     this.change(state => state.bindings.push(binding));
+    this.record("prepare", binding, { candidates });
     return this.metadata(binding);
+  }
+  /** Binding lifecycle for the event log: ids and evidence, never the token hash or request key. */
+  private record(action: "prepare" | "commit" | "cancel", b: Binding, extra: Record<string, unknown> = {}): void {
+    this.events?.write("binding", { action, bindingId: b.id, integrationId: b.integrationId, accountId: b.accountId, provider: b.provider, model: b.model, state: b.state,
+      poolId: b.poolId ?? null, policy: b.policy ?? "manual", createdAt: new Date(b.createdAt).toISOString(),
+      ...(b.thinking === undefined ? {} : { thinking: b.thinking }), ...(b.policyVersion === undefined ? {} : { policyVersion: b.policyVersion }),
+      ...(b.reason === undefined ? {} : { reason: b.reason }), ...(b.selectionEvidence ? { selectionEvidence: b.selectionEvidence } : {}), ...(b.observedAt ? { observedAt: b.observedAt } : {}), ...extra });
   }
   get routerId(): string { return this.state.routerId; }
   private change(edit: (state: ControlState) => void): void {
@@ -278,10 +298,10 @@ export class ControlRegistry {
     this.onChange?.();
   }
   /** Display name and pool for traffic accounting; bindings show their integration. */
-  describeClient(client: GatewayClientRecord): { name: string; poolId?: string } {
+  describeClient(client: GatewayClientRecord): { name: string; poolId?: string; bindingId?: string } {
     if (!this.clientCache) {
       const names = new Map(this.state.integrations.map(i => [i.id, i.name]));
-      this.clientCache = new Map(this.state.bindings.map(b => [b.id, { name: names.get(b.integrationId) ?? "integration", ...(b.poolId ? { poolId: b.poolId } : {}) }]));
+      this.clientCache = new Map(this.state.bindings.map(b => [b.id, { name: names.get(b.integrationId) ?? "integration", bindingId: b.id, ...(b.poolId ? { poolId: b.poolId } : {}) }]));
     }
     return this.clientCache.get(client.id) ?? { name: client.name };
   }
@@ -327,6 +347,7 @@ export class ControlRegistry {
     if (this.state.bindings.length >= 100_000) reject(409, "binding limit reached");
     const binding: Binding = { id, integrationId: integration.id, accountId, provider: account.provider, model, tokenHash, state: "prepared", createdAt: Date.now(), ...(body.thinking === undefined ? {} : { thinking: body.thinking as string }) };
     this.change((state) => state.bindings.push(binding));
+    this.record("prepare", binding);
     return this.metadata(binding);
   }
   hasBinding(integration: Integration, id: string): boolean { return this.state.bindings.some(b => b.id === id && b.integrationId === integration.id); }
@@ -341,6 +362,7 @@ export class ControlRegistry {
       if (!this.state.cancellations?.some(c => c.id === id && c.integrationId === integration.id)) {
         if ((this.state.cancellations?.length ?? 0) >= 100_000) reject(409, "cancellation limit reached");
         this.change(state => { state.cancellations ??= []; state.cancellations.push({ id, integrationId: integration.id }); });
+        this.events?.write("binding", { action: "cancel", bindingId: id, integrationId: integration.id, accountId: null, state: "cancelled", unprepared: true });
       }
       return { id, state: "cancelled" };
     }
@@ -354,6 +376,7 @@ export class ControlRegistry {
       next.bindings.find((v) => v.id === id)!.state = state;
       if (action === "commit" && b.state === "prepared" && b.poolId && b.policy !== "manual") next.pools!.find(p => p.id === b.poolId)!.cursor = b.accountId;
     });
+    if (b.state !== state) this.record(action, { ...b, state }, { previousState: b.state });
     return this.metadata({ ...b, state });
   }
   revokeById(id: string): object { this.change(state => { const i = state.integrations.find(i => i.id === id) ?? reject(404, "integration not found"); i.revoked = true; }); return { revoked: true }; }
@@ -395,7 +418,7 @@ export async function readCatalog(coordinator: CredentialCoordinator, origin?: s
   });
 }
 
-export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}, lifecycle: { active(): number; stop(force?: boolean): void } = { active: () => 0, stop: () => { throw new ControlError(409, "stop unavailable"); } }, metrics: Metrics = new Metrics()) {
+export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}, lifecycle: { active(): number; stop(force?: boolean): void } = { active: () => 0, stop: () => { throw new ControlError(409, "stop unavailable"); } }, metrics: Metrics = new Metrics(), events?: EventLog) {
   assertPrivatePath(store.dir);
   const socketPath = join(store.dir, "control.sock");
   if (Buffer.byteLength(socketPath) > 100) throw new Error("control socket path too long; choose a shorter state directory");
@@ -429,7 +452,10 @@ export async function startControl(store: StateStore, origin: string, coordinato
     return job;
   };
   const evidence = new PoolEvidence(id => catalog(id, true), id => readAccountQuotas(store.loadAccounts().find(a => a.id === id)!, store.workDir, quotaOptions));
-  evidence.onQuota = (id, observation) => metrics.quota(id, observation.quota?.windows ?? []);
+  evidence.onQuota = (id, observation, observed) => {
+    metrics.quota(id, observation.quota?.windows ?? []);
+    events?.write("quota", { accountId: id, provider: observation.quota?.provider ?? null, source: observed.source, requestId: observed.requestId ?? null, windows: observed.windows });
+  };
   let active = 0;
   let stopping = false;
   let closing: Promise<void> | undefined;
@@ -523,6 +549,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
   const identity = lstatSync(socketPath);
   try {
     registry = new ControlRegistry(store);
+    if (events) registry.events = events;
     owner = new OwnerService(store, registry, coordinators, evidence, id => { generations.set(id, (generations.get(id) ?? 0) + 1); catalogs.delete(id); evidence.invalidate(id); hub?.notifyChange(); }, origin,
       { active: lifecycle.active, busy: () => catalogJobs.size + quotaJobs.size + evidence.active() + Math.max(0, active + (hub?.inflight() ?? 0) - 1), stop: lifecycle.stop });
     owner.extensions.metrics = metrics;

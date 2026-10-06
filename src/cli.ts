@@ -30,16 +30,17 @@ const USAGE = `usage: aar [--state DIR] <command>
   client add <name> [--claude ACCT] [--codex ACCT]
   client list
   client revoke <id-or-name>
-  serve [--dashboard-port N] [--no-dashboard] [--dev]
+  serve [--dashboard-port N] [--no-dashboard] [--dev] [--no-event-log]
                                          run the router on the configured loopback port,
                                          with the web dashboard on 127.0.0.1:${DEFAULT_DASHBOARD_PORT};
-                                         --dev reloads browsers when UI files change
+                                         --dev reloads browsers when UI files change;
+                                         --no-event-log skips the analysis log in events/
   dashboard url                          print a new single-use dashboard access link
   dashboard sessions                     list signed-in dashboard browsers
   dashboard revoke <session-id>|--all    sign out dashboard browsers
 
 State defaults to $AAR_STATE_DIR or ~/.agent-auth-router. The dashboard port can
-also be set with $AAR_DASHBOARD_PORT.`;
+also be set with $AAR_DASHBOARD_PORT. AAR_EVENT_LOG=0 disables the event log.`;
 
 function fail(message: string): never {
   process.stderr.write(`aar: ${message}\n`);
@@ -83,6 +84,7 @@ async function main(argv: string[]): Promise<void> {
       codex: { type: "string" },
       "dashboard-port": { type: "string" },
       "no-dashboard": { type: "boolean" },
+      "no-event-log": { type: "boolean" },
       dev: { type: "boolean" },
       all: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -274,7 +276,7 @@ async function main(argv: string[]): Promise<void> {
       }
       process.on("SIGINT", shutdown);
       process.on("SIGTERM", shutdown);
-      try { router = await startRouter(store, {}, { desktop, recoverStaleSocket: true, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(0), ...(dashboard ? { dashboard } : {}) }); }
+      try { router = await startRouter(store, {}, { desktop, recoverStaleSocket: true, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(0), ...(dashboard ? { dashboard } : {}), ...(values["no-event-log"] ? { eventLog: false } : {}) }); }
       catch (error) {
         if (desktop) { process.stderr.write(`AAR_STARTUP_ERROR:${JSON.stringify({ message: desktopStartupError(error) })}\n`); process.exit(1); }
         throw error;

@@ -38,6 +38,7 @@ export interface Observation {
   blocked?: "auth-unavailable" | "cooldown";
   cooldownUntil?: string;
 }
+export interface QuotaObserved { source: "inference" | "probe"; windows: QuotaWindow[]; requestId?: string | undefined }
 export const emptyObservation = (): Observation => ({ quota: null, models: [], catalogAt: null, attemptedAt: null, error: null });
 const snapshotOf = ({ cliModels: _cliModels, ...snapshot }: QuotaRead): QuotaSnapshot => snapshot;
 const cliModelsFresh = (o: Observation, now: number): boolean =>
@@ -93,8 +94,9 @@ export function eligibility(provider: Provider, enabled: boolean, model: string 
 
 /** Bounded, demand-owned observations; no timers, persistence or background work. */
 export class PoolEvidence {
-  /** Called when an account's quota observation changes. */
-  onQuota?: (id: string, observation: Observation) => void;
+  /** Called when an account's quota observation changes. `observed` holds only
+   * the windows this read reported; the observation carries merged state. */
+  onQuota?: (id: string, observation: Observation, observed: QuotaObserved) => void;
   private readonly generations = new Map<string, number>();
   invalidate(id: string): void { this.generations.set(id, (this.generations.get(id) ?? 0) + 1); this.values.delete(id); this.retryAt.delete(id); this.cliRetryAt.delete(id); }
   private readonly values = new Map<string, Observation>();
@@ -117,7 +119,7 @@ export class PoolEvidence {
    * a failed quota probe, since the credential has just worked. Catalog
    * failures are untouched: a response proves nothing about the catalog.
    */
-  observe(id: string, provider: Provider, headers: ResponseHeaders, now = Date.now()): boolean {
+  observe(id: string, provider: Provider, headers: ResponseHeaders, now = Date.now(), requestId?: string): boolean {
     const windows = normalizeResponseHeaderQuotas(provider, headers, now);
     if (!windows.length) return false;
     const { blocked: _blocked, cooldownUntil: _cooldownUntil, ...previous } = this.get(id);
@@ -125,7 +127,7 @@ export class PoolEvidence {
     this.values.set(id, { ...previous,
       quota: { accountId: id, provider, observedAt: new Date(now).toISOString(), status: "ok", windows: [...windows, ...carried], source: "inference" },
       error: previous.error === QUOTA_REFRESH_UNAVAILABLE ? null : previous.error });
-    this.onQuota?.(id, this.get(id));
+    this.onQuota?.(id, this.get(id), { source: "inference", windows, requestId });
     return true;
   }
   setCatalog(id: string, models: CatalogModel[]): void {
@@ -218,7 +220,7 @@ export class PoolEvidence {
         this.values.set(id, { ...previous,
           ...(ok ? { quota: { ...snapshot, source: "probe" }, error: previous.error === QUOTA_REFRESH_UNAVAILABLE ? null : previous.error } : {}),
           ...(read.cliModels ? { cliModels: read.cliModels, cliModelsAt: new Date(Date.now()).toISOString() } : {}) });
-        if (ok) this.onQuota?.(id, this.get(id));
+        if (ok) this.onQuota?.(id, this.get(id), { source: "probe", windows: snapshot.windows });
         if (!read.cliModels) this.cliRetryAt.set(id, Date.now() + CLI_MODELS_RETRY_MS);
       }).catch(() => { this.cliRetryAt.set(id, Date.now() + CLI_MODELS_RETRY_MS); })
         .finally(() => this.cliReads.delete(id));
@@ -248,7 +250,7 @@ export class PoolEvidence {
         ...(previous.blocked && (previous !== before || error || Date.parse(previous.cooldownUntil!) > Date.now()) ? { blocked: previous.blocked, cooldownUntil: previous.cooldownUntil } : {}),
       };
       this.values.set(id, result);
-      if (snapshot) this.onQuota?.(id, result);
+      if (snapshot) this.onQuota?.(id, result, { source: "probe", windows: snapshot.windows });
       const retry = quota.status === "fulfilled" ? quota.value.retryAfterSeconds : undefined;
       this.retryAt.set(id, Date.now() + (error ? Math.max(5, Math.min(retry ?? 5, 3600)) * 1000 : 1000));
       return result;

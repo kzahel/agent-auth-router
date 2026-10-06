@@ -4,6 +4,7 @@ import https from "node:https";
 import { pipeline } from "node:stream";
 import { authorize } from "./gateway-auth.ts";
 import { CredentialUnavailable, type CredentialCoordinator } from "./coordinator.ts";
+import { clientSessionId } from "./events.ts";
 import { errorText, log } from "./log.ts";
 import type { RequestHandle, RequestStart } from "./metrics.ts";
 import { tapsUsage, UsageTap } from "./usage.ts";
@@ -15,11 +16,11 @@ export interface RouterDeps {
   clients: () => readonly GatewayClientRecord[];
   coordinators: ReadonlyMap<string, CredentialCoordinator>;
   /** Fires once upstream headers arrive, before the body is relayed. */
-  onProviderResponse?: (accountId: string, status: number, retryAfter?: string, headers?: http.IncomingHttpHeaders) => void;
+  onProviderResponse?: (accountId: string, status: number, retryAfter?: string, headers?: http.IncomingHttpHeaders, requestId?: string) => void;
   /** Passive traffic accounting; never sees request or response content. */
   observer?: { begin(start: RequestStart): RequestHandle };
-  /** Display name and pool attribution for an authenticated gateway client. */
-  describeClient?: (client: GatewayClientRecord) => { name: string; poolId?: string | undefined };
+  /** Display name, pool and binding attribution for an authenticated gateway client. */
+  describeClient?: (client: GatewayClientRecord) => { name: string; poolId?: string | undefined; bindingId?: string | undefined };
 }
 
 export interface RouterServer {
@@ -147,7 +148,8 @@ export function createRouter(deps: RouterDeps): RouterServer {
     if (deps.observer) {
       const described = deps.describeClient?.(decision.client) ?? { name: decision.client.name };
       try {
-        tracking.handle = deps.observer.begin({ provider, route: route.path, accountId: decision.accountId, client: described.name, poolId: described.poolId, tapped: tapsUsage(provider, route.path) });
+        tracking.handle = deps.observer.begin({ provider, route: route.path, accountId: decision.accountId, client: described.name, poolId: described.poolId, bindingId: described.bindingId,
+          requestId: String(meta.requestId), sessionId: clientSessionId(provider, req.headers, body), tapped: tapsUsage(provider, route.path) });
         tracking.handle.bytesUp(body.length);
       } catch (error) { log("metrics.error", { error: errorText(error) }); }
     }
@@ -258,7 +260,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
         clearTimeout(headerTimer);
         upstream.setTimeout(limits.streamIdleTimeoutMs, () => upstream.destroy(new Error("upstream stream idle timeout")));
         const status = upstreamRes.statusCode ?? 502;
-        if (typeof meta.account === "string") deps.onProviderResponse?.(meta.account, status, typeof upstreamRes.headers["retry-after"] === "string" ? upstreamRes.headers["retry-after"] : undefined, upstreamRes.headers);
+        if (typeof meta.account === "string") deps.onProviderResponse?.(meta.account, status, typeof upstreamRes.headers["retry-after"] === "string" ? upstreamRes.headers["retry-after"] : undefined, upstreamRes.headers, String(meta.requestId));
 
         if (status === 401) {
           collectBounded(upstreamRes, MAX_RELAYED_ERROR_BYTES).then(
