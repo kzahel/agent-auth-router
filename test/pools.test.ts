@@ -356,3 +356,60 @@ test("a proxied response records inference quota, keeps probed buckets, clears r
   const noCatalog = new PoolEvidence(async () => { throw new Error("secret"); }, async accountId => ({ accountId, provider: "claude", observedAt: new Date(Date.now()).toISOString(), status: "ok", windows: [] }));
   await noCatalog.refresh("c"); noCatalog.observe("c", "claude", headers); assert.equal(noCatalog.get("c").error, "Account catalog unavailable");
 });
+
+test("Claude discovery reads CLI model rows once per hour and records that probe's quota", async t => {
+  let now = Date.now(); t.mock.method(Date, "now", () => now);
+  let reads = 0, fail = false;
+  const cliModels = [{ value: "sonnet", displayName: "Sonnet", resolvedModel: "claude-sonnet-fixture" }];
+  const evidence = new PoolEvidence(async () => [{ id: "claude-sonnet-fixture", name: "Fixture" }], async accountId => {
+    reads++;
+    if (fail) return { accountId, provider: "claude", observedAt: new Date(now).toISOString(), status: "unavailable", windows: [], error: "safe failure" };
+    return { accountId, provider: "claude", observedAt: new Date(now).toISOString(), status: "ok", cliModels,
+      windows: [{ bucket: "five_hour", windowMinutes: 300, usedPercent: 10, remainingPercent: 90, resetsAt: new Date(now + 3600_000).toISOString() }] };
+  });
+  const signal = new AbortController().signal, all = () => true;
+  await evidence.discover(["a"], signal, all);
+  assert.equal(reads, 0, "discovery without a provider stays catalog-only");
+  await evidence.discover(["a"], signal, all, "codex");
+  assert.equal(reads, 0, "no CLI rows for Codex");
+  await evidence.discover(["a"], signal, all, "claude");
+  assert.equal(reads, 1);
+  const observed = evidence.get("a");
+  assert.deepEqual(observed.cliModels, cliModels);
+  assert.equal(observed.cliModelsAt, new Date(now).toISOString());
+  assert.equal(observed.quota?.windows[0]?.remainingPercent, 90);
+  assert.equal(observed.quota?.source, "probe");
+  assert.equal("cliModels" in observed.quota!, false, "rows are not duplicated into the quota snapshot");
+
+  now += 30 * 60_000;
+  await evidence.discover(["a"], signal, all, "claude");
+  assert.equal(reads, 1, "rows younger than an hour are reused");
+  now += 31 * 60_000; fail = true;
+  await evidence.discover(["a"], signal, all, "claude");
+  assert.equal(reads, 2, "stale rows are reread");
+  assert.deepEqual(evidence.get("a").cliModels, cliModels, "a failed read keeps the last rows");
+  assert.equal(evidence.get("a").quota?.windows[0]?.remainingPercent, 90, "a failed read keeps the last quota");
+  now += 60_000;
+  await evidence.discover(["a"], signal, all, "claude");
+  assert.equal(reads, 2, "failed CLI reads back off");
+  now += 5 * 60_000; fail = false;
+  await evidence.discover(["a"], signal, all, "claude");
+  assert.equal(reads, 3);
+  assert.equal(evidence.get("a").cliModelsAt, new Date(now).toISOString());
+});
+
+test("an explicit refresh records CLI model rows and keeps them when the next read has none", async t => {
+  let now = Date.now(); t.mock.method(Date, "now", () => now);
+  let rows: { value: string; displayName: string }[] | undefined = [{ value: "default", displayName: "Default" }];
+  const evidence = new PoolEvidence(async () => [{ id: "m", name: "m" }], async accountId => ({ accountId, provider: "claude",
+    observedAt: new Date(now).toISOString(), status: "unavailable", windows: [], error: "safe failure", ...(rows ? { cliModels: rows } : {}) }));
+  const first = await evidence.refresh("a");
+  assert.deepEqual(first.cliModels, rows);
+  assert.equal(first.cliModelsAt, first.attemptedAt);
+  assert.equal(first.quota, null, "an unavailable usage read still records no quota");
+  const kept = rows; rows = undefined;
+  now += 3600_000;
+  const second = await evidence.refresh("a");
+  assert.deepEqual(second.cliModels, kept);
+  assert.equal(second.cliModelsAt, first.cliModelsAt);
+});

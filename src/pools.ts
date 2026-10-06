@@ -1,6 +1,6 @@
 // Pool observations are metadata only. Reading an overview never runs a provider.
-import type { CatalogModel } from "./control.ts";
-import { normalizeResponseHeaderQuotas, type QuotaSnapshot, type QuotaWindow, type ResponseHeaders } from "./quotas.ts";
+import type { CatalogModel, CliModel } from "./contract.ts";
+import { normalizeResponseHeaderQuotas, type QuotaRead, type QuotaSnapshot, type QuotaWindow, type ResponseHeaders } from "./quotas.ts";
 import type { Provider } from "./types.ts";
 
 export const POOL_POLICIES = ["manual", "round-robin", "most-remaining"] as const;
@@ -21,17 +21,27 @@ export interface Pool {
 export const QUOTA_FRESH_MS = 120_000;
 const QUOTA_REFRESH_UNAVAILABLE = "Quota refresh unavailable";
 export const CATALOG_FRESH_MS = 60_000;
+/** CLI model rows change with CLI releases, not per request. */
+export const CLI_MODELS_FRESH_MS = 3_600_000;
+const CLI_MODELS_RETRY_MS = 300_000;
 export type EligibilityReason = "eligible" | "disabled" | "model-required" | "catalog-unknown" | "catalog-stale" | "model-unavailable" | "quota-unknown" | "quota-stale" | "scope-unknown" | "exhausted" | "reset-unverified" | "cooldown" | "auth-unavailable";
 export interface Observation {
   quota: QuotaSnapshot | null;
   models: CatalogModel[];
   catalogAt: string | null;
+  /** The Claude CLI's own model rows and when they were read. Display and
+   * alias metadata only; eligibility stays keyed on `models` ids. */
+  cliModels?: CliModel[];
+  cliModelsAt?: string;
   attemptedAt: string | null;
   error: string | null;
   blocked?: "auth-unavailable" | "cooldown";
   cooldownUntil?: string;
 }
 export const emptyObservation = (): Observation => ({ quota: null, models: [], catalogAt: null, attemptedAt: null, error: null });
+const snapshotOf = ({ cliModels: _cliModels, ...snapshot }: QuotaRead): QuotaSnapshot => snapshot;
+const cliModelsFresh = (o: Observation, now: number): boolean =>
+  !!o.cliModelsAt && now - Date.parse(o.cliModelsAt) < CLI_MODELS_FRESH_MS && now >= Date.parse(o.cliModelsAt);
 
 /** Unknown scopes are never guessed to grant model access. */
 export function windowScope(provider: Provider, bucket: string): "all" | "opus" | "sonnet" | "unknown" {
@@ -86,14 +96,14 @@ export class PoolEvidence {
   /** Called when an account's quota observation changes. */
   onQuota?: (id: string, observation: Observation) => void;
   private readonly generations = new Map<string, number>();
-  invalidate(id: string): void { this.generations.set(id, (this.generations.get(id) ?? 0) + 1); this.values.delete(id); this.retryAt.delete(id); }
+  invalidate(id: string): void { this.generations.set(id, (this.generations.get(id) ?? 0) + 1); this.values.delete(id); this.retryAt.delete(id); this.cliRetryAt.delete(id); }
   private readonly values = new Map<string, Observation>();
   private readonly jobs = new Map<string, Promise<Observation>>();
   active(): number { return this.jobs.size; }
   private readonly retryAt = new Map<string, number>();
   private readonly catalog: (id: string) => Promise<CatalogModel[]>;
-  private readonly quota: (id: string) => Promise<QuotaSnapshot>;
-  constructor(catalog: (id: string) => Promise<CatalogModel[]>, quota: (id: string) => Promise<QuotaSnapshot>) { this.catalog = catalog; this.quota = quota; }
+  private readonly quota: (id: string) => Promise<QuotaRead>;
+  constructor(catalog: (id: string) => Promise<CatalogModel[]>, quota: (id: string) => Promise<QuotaRead>) { this.catalog = catalog; this.quota = quota; }
   reject(id: string, status: number, retryAfter?: string): void {
     if (![401, 403, 429].includes(status)) return;
     const seconds = retryAfter && /^\d{1,6}$/.test(retryAfter) ? Math.min(Number(retryAfter), 3600) : 60;
@@ -158,32 +168,63 @@ export class PoolEvidence {
   }
   private readonly discoveries = new Map<string, Promise<void>>();
   private readonly discoveryRetryAt = new Map<string, number>();
-  /** Catalog-only discovery; no quota I/O and no idle work. */
-  async discover(ids: string[], signal: AbortSignal, allowed: (id: string) => boolean): Promise<void> {
+  private readonly cliReads = new Map<string, Promise<void>>();
+  private readonly cliRetryAt = new Map<string, number>();
+  /**
+   * Catalog discovery with no idle work. For Claude it also reads the CLI's
+   * model rows when they are missing or older than CLI_MODELS_FRESH_MS; that
+   * read is the usage probe, so its quota is recorded too.
+   */
+  async discover(ids: string[], signal: AbortSignal, allowed: (id: string) => boolean, provider?: Provider): Promise<void> {
     const queue = [...new Set(ids)].slice(0, 256);
     await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
       for (let id = queue.shift(); id; id = queue.shift()) {
         signal.throwIfAborted();
         if (!allowed(id)) continue;
         const before = this.get(id), now = Date.now();
-        if (before.catalogAt && now - Date.parse(before.catalogAt) < CATALOG_FRESH_MS && now >= Date.parse(before.catalogAt)) continue;
-        if ((this.discoveryRetryAt.get(id) ?? 0) > now || (before.blocked && Date.parse(before.cooldownUntil ?? "") > now)) continue;
-        let job = this.discoveries.get(id);
-        if (!job) {
-          const accountId = id, generation = this.generations.get(id);
-          job = this.catalog(id).then(models => {
-            if (generation === this.generations.get(accountId)) this.setCatalog(accountId, models);
-          }).catch(() => { this.discoveryRetryAt.set(accountId, Date.now() + 5_000); })
-            .finally(() => this.discoveries.delete(accountId));
-          this.discoveries.set(id, job);
-        }
+        if (before.blocked && Date.parse(before.cooldownUntil ?? "") > now) continue;
+        const jobs: Promise<void>[] = [];
+        const catalogFresh = before.catalogAt && now - Date.parse(before.catalogAt) < CATALOG_FRESH_MS && now >= Date.parse(before.catalogAt);
+        if (!catalogFresh && (this.discoveryRetryAt.get(id) ?? 0) <= now) jobs.push(this.discoverCatalog(id));
+        if (provider === "claude" && !cliModelsFresh(before, now) && (this.cliRetryAt.get(id) ?? 0) <= now) jobs.push(this.discoverCliModels(id));
+        if (!jobs.length) continue;
         let abort!: () => void;
-        try { await Promise.race([job, new Promise<never>((_, reject) => {
+        try { await Promise.race([Promise.all(jobs), new Promise<never>((_, reject) => {
           abort = () => reject(signal.reason); signal.addEventListener("abort", abort, { once: true });
           if (signal.aborted) abort();
         })]); } finally { signal.removeEventListener("abort", abort); }
       }
     }));
+  }
+  private discoverCatalog(id: string): Promise<void> {
+    let job = this.discoveries.get(id);
+    if (!job) {
+      const generation = this.generations.get(id);
+      job = this.catalog(id).then(models => {
+        if (generation === this.generations.get(id)) this.setCatalog(id, models);
+      }).catch(() => { this.discoveryRetryAt.set(id, Date.now() + 5_000); })
+        .finally(() => this.discoveries.delete(id));
+      this.discoveries.set(id, job);
+    }
+    return job;
+  }
+  private discoverCliModels(id: string): Promise<void> {
+    let job = this.cliReads.get(id);
+    if (!job) {
+      const generation = this.generations.get(id);
+      job = this.quota(id).then(read => {
+        if (generation !== this.generations.get(id)) return;
+        const previous = this.get(id), snapshot = snapshotOf(read), ok = snapshot.status === "ok";
+        this.values.set(id, { ...previous,
+          ...(ok ? { quota: { ...snapshot, source: "probe" }, error: previous.error === QUOTA_REFRESH_UNAVAILABLE ? null : previous.error } : {}),
+          ...(read.cliModels ? { cliModels: read.cliModels, cliModelsAt: new Date(Date.now()).toISOString() } : {}) });
+        if (ok) this.onQuota?.(id, this.get(id));
+        if (!read.cliModels) this.cliRetryAt.set(id, Date.now() + CLI_MODELS_RETRY_MS);
+      }).catch(() => { this.cliRetryAt.set(id, Date.now() + CLI_MODELS_RETRY_MS); })
+        .finally(() => this.cliReads.delete(id));
+      this.cliReads.set(id, job);
+    }
+    return job;
   }
   refresh(id: string): Promise<Observation> {
     const pending = this.jobs.get(id);
@@ -195,13 +236,15 @@ export class PoolEvidence {
       const [catalog, quota] = await Promise.allSettled([this.catalog(id), this.quota(id)]);
       if (generation !== this.generations.get(id)) return this.get(id);
       const previous = this.get(id), attemptedAt = new Date(Date.now()).toISOString();
-      const snapshot = quota.status === "fulfilled" && quota.value.status === "ok" ? quota.value : null;
+      const snapshot = quota.status === "fulfilled" && quota.value.status === "ok" ? snapshotOf(quota.value) : null;
+      const cliModels = quota.status === "fulfilled" ? quota.value.cliModels : undefined;
       const error = catalog.status === "rejected" ? "Account catalog unavailable" : !snapshot ? QUOTA_REFRESH_UNAVAILABLE : null;
       const result: Observation = {
         quota: snapshot ? { ...snapshot, source: "probe" } : previous.quota,
         models: catalog.status === "fulfilled" ? catalog.value : previous.models,
         catalogAt: catalog.status === "fulfilled" ? attemptedAt : null,
         attemptedAt, error,
+        ...(cliModels ? { cliModels, cliModelsAt: attemptedAt } : previous.cliModels ? { cliModels: previous.cliModels, cliModelsAt: previous.cliModelsAt! } : {}),
         ...(previous.blocked && (previous !== before || error || Date.parse(previous.cooldownUntil!) > Date.now()) ? { blocked: previous.blocked, cooldownUntil: previous.cooldownUntil } : {}),
       };
       this.values.set(id, result);

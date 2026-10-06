@@ -1,4 +1,5 @@
 // On-demand, metadata-only quota reads. OAuth remains owned by official CLIs.
+import type { CliModel } from "./contract.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { directProviderProblem, probeClaudeCli } from "./helpers.ts";
 import { helperEnv, startBounded } from "./process.ts";
@@ -198,12 +199,22 @@ async function codexUsage(account: AccountConfig, workDir: string, options: Quot
   return response;
 }
 
+/** A quota read plus the model rows the Claude CLI reported during it. */
+export type QuotaRead = QuotaSnapshot & { cliModels?: CliModel[] };
+
 export async function fetchAccountQuotas(account: AccountConfig, workDir: string, options: QuotaReadOptions = {}): Promise<QuotaSnapshot> {
+  const { cliModels: _cliModels, ...snapshot } = await readAccountQuotas(account, workDir, options);
+  return snapshot;
+}
+
+export async function readAccountQuotas(account: AccountConfig, workDir: string, options: QuotaReadOptions = {}): Promise<QuotaRead> {
   const base = { accountId: account.id, provider: account.provider };
   const unavailable = (error: string, retryAfterSeconds?: number): QuotaSnapshot => ({ ...base,
     observedAt: new Date().toISOString(), status: "unavailable", windows: [], error,
     ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}) });
   if (account.enabled === false) return unavailable("account disabled");
+  let cliModels: CliModel[] | undefined;
+  const read = (snapshot: QuotaSnapshot): QuotaRead => cliModels ? { ...snapshot, cliModels } : snapshot;
   try {
     let response: ReadResponse;
     if (account.provider === "codex") response = await codexUsage(account, workDir, options);
@@ -216,13 +227,14 @@ export async function fetchAccountQuotas(account: AccountConfig, workDir: string
       const probe = await probeClaudeCli({ account, workDir, ...(options.env ? { env: options.env } : {}) }, {
         command: options.claudeCommand ?? helper?.command, args: options.claudeArgs ?? helper?.args, timeoutMs: options.timeoutMs ?? 30_000 });
       response = probe.outcome === "completed" ? { value: probe.rateLimits } : { error: probe.detail };
+      cliModels = probe.cliModels;
     }
-    if ("error" in response) return unavailable(response.error, response.retryAfterSeconds);
+    if ("error" in response) return read(unavailable(response.error, response.retryAfterSeconds));
     const windows = account.provider === "codex" ? normalizeCodexQuotas(response.value) : normalizeClaudeQuotas(response.value);
-    if (!windows.length) return unavailable("provider returned no recognized quota windows");
-    return { ...base, observedAt: new Date().toISOString(), status: "ok", windows };
+    if (!windows.length) return read(unavailable("provider returned no recognized quota windows"));
+    return read({ ...base, observedAt: new Date().toISOString(), status: "ok", windows });
   } catch {
     // Process/network/credential errors may contain private data. No raw errors.
-    return unavailable("quota read failed");
+    return read(unavailable("quota read failed"));
   }
 }

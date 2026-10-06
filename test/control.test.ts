@@ -188,7 +188,7 @@ test("session discovery reads only granted provider catalogs, coalesces and proj
     setTimeout(() => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ data: [{ id: "fixture", display_name: "Fixture", capabilities: { effort: { supported: true, high: { supported: true } } } }] })); }, 20);
   });
   writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
-  const router = await startRouter(store); after(() => router.close());
+  const router = await startRouter(store, fakeClaude); after(() => router.close());
   const socket = router.controlSocket!, token = ctlToken(), id = randomUUID();
   await request(socket, "/v1/pair", undefined, { id, name: "Discovery", tokenHash: hashGatewayToken(token) });
   assert.equal((await request(socket, "/v1/selection", undefined, { provider: "claude" })).status, 401);
@@ -200,9 +200,20 @@ test("session discovery reads only granted provider catalogs, coalesces and proj
   for (const result of results) {
     assert.equal(result.status, 200);
     assert.equal(result.value.accounts[0].models[0].supportedReasoningEfforts[0].reasoningEffort, "high");
-    assert.equal(result.value.accounts[0].quota, null);
-    assert.doesNotMatch(JSON.stringify(result.value), /synthetic-provider-secret|tokenHash|profiles/);
+    assert.deepEqual(result.value.accounts[0].cliModels.map((m: any) => [m.value, m.resolvedModel ?? null]),
+      [["default", "claude-opus-fixture-2"], ["sonnet", "claude-sonnet-fixture-2"], ["haiku", "claude-haiku-fixture-1"], ["opusplan", null]]);
+    assert.equal(result.value.accounts[0].quota.windows[0].remainingPercent, 80, "the CLI read is also a usage probe");
+    assert.doesNotMatch(JSON.stringify(result.value), /synthetic-provider-secret|tokenHash|profiles|SECRET/);
   }
+  const home = store.loadAccounts()[0]!.home;
+  const cliStarts = () => readFileSync(join(home, "cli-log.jsonl"), "utf8").split("\n").filter(line => line.includes('"event":"start"')).length;
+  assert.equal(cliStarts(), 1, "concurrent discovery shares one CLI read");
+  await request(socket, "/v1/selection", token, { provider: "claude" });
+  assert.equal(cliStarts(), 1, "CLI rows are reused within their hour");
+  const catalog = await request(socket, "/v1/catalog", token, { accountId: "fixture" });
+  assert.equal(catalog.value.cliModels.length, 4);
+  assert.equal(catalog.value.cliModelsAt, results[0]!.value.accounts[0].cliModelsAt);
+  assert.ok((await request(socket, "/v1/info")).value.capabilities.includes("catalog-cli-models-v1"));
   await request(socket, "/v1/selection", token, { provider: "codex" });
   assert.equal(reads, 1);
   assert.equal((await request(socket, "/v1/selection", token, { provider: "unknown" })).status, 400);

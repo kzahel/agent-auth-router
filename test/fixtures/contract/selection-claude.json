@@ -1,0 +1,178 @@
+{
+  "supportedPolicies": [
+    "manual",
+    "round-robin",
+    "most-remaining"
+  ],
+  "admissionRefresh": true,
+  "canManagePools": false,
+  "observedAt": "<timestamp>",
+  "quotaFreshSeconds": 120,
+  "pools": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "name": "Work",
+      "provider": "claude",
+      "accountIds": [
+        "work"
+      ],
+      "policy": "round-robin",
+      "revision": 1,
+      "bindings": [
+        {
+          "accountId": "work",
+          "count": 0
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "id": "work",
+      "provider": "claude",
+      "enabled": true,
+      "directAccountAccess": true,
+      "retired": false,
+      "bindingCount": 0,
+      "revision": 0,
+      "renewal": "unverified",
+      "quota": {
+        "accountId": "work",
+        "provider": "claude",
+        "observedAt": "<timestamp>",
+        "status": "ok",
+        "windows": [
+          {
+            "bucket": "five_hour",
+            "windowMinutes": 300,
+            "usedPercent": 20,
+            "remainingPercent": 80,
+            "resetsAt": "<timestamp>"
+          },
+          {
+            "bucket": "seven_day",
+            "windowMinutes": 10080,
+            "usedPercent": 45,
+            "remainingPercent": 55,
+            "resetsAt": "<timestamp>"
+          }
+        ],
+        "source": "probe"
+      },
+      "models": [
+        {
+          "id": "claude-opus-fixture-2",
+          "name": "Claude Opus Fixture 2",
+          "contextWindow": 1000000,
+          "supportsEffort": true,
+          "supportedReasoningEfforts": [
+            {
+              "reasoningEffort": "low",
+              "description": ""
+            },
+            {
+              "reasoningEffort": "high",
+              "description": ""
+            },
+            {
+              "reasoningEffort": "max",
+              "description": ""
+            }
+          ],
+          "capabilitySource": "provider",
+          "supportsAdaptiveThinking": true
+        },
+        {
+          "id": "claude-sonnet-fixture-2",
+          "name": "Claude Sonnet Fixture 2",
+          "contextWindow": 1000000,
+          "supportsEffort": true,
+          "supportedReasoningEfforts": [
+            {
+              "reasoningEffort": "high",
+              "description": ""
+            }
+          ],
+          "capabilitySource": "provider",
+          "supportsAdaptiveThinking": true
+        },
+        {
+          "id": "claude-haiku-fixture-1",
+          "name": "Claude Haiku Fixture 1",
+          "contextWindow": 200000,
+          "supportsEffort": false,
+          "supportedReasoningEfforts": [],
+          "capabilitySource": "provider"
+        }
+      ],
+      "catalogAt": "<timestamp>",
+      "attemptedAt": null,
+      "error": null,
+      "cliModels": [
+        {
+          "value": "default",
+          "displayName": "Default (recommended)",
+          "description": "Opus Fixture 2 for complex work",
+          "resolvedModel": "claude-opus-fixture-2",
+          "supportsEffort": true,
+          "supportsAdaptiveThinking": true,
+          "supportsFastMode": true,
+          "supportsAutoMode": true,
+          "supportedEffortLevels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        {
+          "value": "sonnet",
+          "displayName": "Sonnet",
+          "description": "Sonnet Fixture 2 for everyday tasks",
+          "resolvedModel": "claude-sonnet-fixture-2",
+          "supportsEffort": true,
+          "supportsAdaptiveThinking": true,
+          "supportedEffortLevels": [
+            "low",
+            "medium",
+            "high",
+            "max"
+          ]
+        },
+        {
+          "value": "haiku",
+          "displayName": "Haiku",
+          "description": "Haiku Fixture 1 for quick answers",
+          "resolvedModel": "claude-haiku-fixture-1",
+          "supportsEffort": false
+        },
+        {
+          "value": "opusplan",
+          "displayName": "Opus Plan Mode",
+          "description": "Opus in plan mode, Sonnet otherwise"
+        }
+      ],
+      "cliModelsAt": "<timestamp>",
+      "freshness": "fresh",
+      "windows": [
+        {
+          "bucket": "five_hour",
+          "windowMinutes": 300,
+          "usedPercent": 20,
+          "remainingPercent": 80,
+          "resetsAt": "<timestamp>",
+          "scope": "all"
+        },
+        {
+          "bucket": "seven_day",
+          "windowMinutes": 10080,
+          "usedPercent": 45,
+          "remainingPercent": 55,
+          "resetsAt": "<timestamp>",
+          "scope": "all"
+        }
+      ]
+    }
+  ]
+}

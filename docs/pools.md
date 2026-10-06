@@ -9,11 +9,13 @@ and requests allocation; it cannot administer router-owned pools.
 
 The [unified selection plan](unified-session-selection.md) extends the unshipped router feature without a new compatibility gate. Authenticated POST `/v1/selection` with `provider` reads
 current granted metadata and refreshes missing/stale catalogs for that provider.
-It performs no quota reads or inference. Discovery is bounded to 256 visible
+It performs no inference. Discovery is bounded to 256 visible
 accounts, four catalog requests globally, a 12-second caller deadline and
 per-account coalescing/failure backoff. Cancellation stops admitting queued
 discovery work; shared provider reads retain their own bounded deadline. Grants
 are rechecked after asynchronous reads. Ordinary overview remains passive.
+Since 2026-10-06 Claude discovery may also run the CLI usage probe; see
+[Claude CLI model rows](#claude-cli-model-rows-2026-10-06).
 
 Model rows retain provider-reported reasoning levels/defaults, adaptive-thinking
 support and context size. Unknown capabilities remain unknown, never inferred
@@ -52,9 +54,10 @@ Grants, pool revision, enabled state and eligibility are rechecked before admiss
 Existing committed pins bypass selection and quota refresh on resume/restart.
 
 `/v1/info` advertises `most-remaining-v1`, `admission-refresh-v1`,
-`quota-inference-headers-v1` and `supportedPolicies`. Overview adds
-`supportedPolicies`, `admissionRefresh`, an optional `quota.source` of `probe`
-or `inference` per account, and per-candidate `evidence` (headroom, limiting
+`quota-inference-headers-v1`, `catalog-cli-models-v1` and `supportedPolicies`.
+Overview adds `supportedPolicies`, `admissionRefresh`, an optional
+`quota.source` of `probe` or `inference` per account, optional Claude
+`cliModels`/`cliModelsAt`, and per-candidate `evidence` (headroom, limiting
 bucket IDs, reservation count, catalog and quota timestamps). Reads stay passive. Bindings persist `policyVersion`,
 `selectionEvidence` and a human-readable reason before reply. Most remaining
 prepare requires a `supportedPolicies` array containing `most-remaining`, even
@@ -75,6 +78,29 @@ robin or Most remaining default, and an optimistic revision. Owner pool membersh
 grants. Removing members or deleting a pool blocks affected retained bindings;
 policy/name changes affect future selection only. The overview reports affected
 binding counts. Deleted pool IDs cannot be reused.
+
+## Claude CLI model rows (2026-10-06)
+
+Capability `catalog-cli-models-v1`. The usage probe's `initialize` reply
+already carries the official CLI's own model list: the `--model` value (often
+an alias), display name, description, `resolvedModel`, effort levels and
+fast/auto/adaptive flags. The router keeps those rows per account as
+`cliModels`, with `cliModelsAt`, on overview, selection and catalog responses.
+Rows are recorded only after the CLI reports a signed-in subscription login,
+even when the usage read that follows fails. They are bounded to 64 rows,
+200-character names and ids, 300-character descriptions and the known effort
+vocabulary; unknown fields are dropped.
+
+An explicit account refresh records them from its quota probe. Claude
+`/v1/selection` discovery runs that probe when an account's rows are missing or
+older than one hour, and records the probe's quota as well. A failed read keeps
+the last rows and retries after five minutes. This is a CLI process start, not
+inference. Codex has no equivalent yet.
+
+The rows are display and alias metadata. Admission and eligibility remain
+keyed on exact catalog ids; a consumer translates an alias to its
+`resolvedModel` before preparing a binding. `resolvedModel` is what the CLI
+reports for that profile, not a verified statement of what the provider serves.
 
 Overview reads perform no provider I/O. Explicit account refresh coalesces quota
 and catalog reads, retains the last successful windows after a failed attempt,

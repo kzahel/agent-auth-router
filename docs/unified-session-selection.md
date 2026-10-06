@@ -28,6 +28,11 @@ metadata can fill gaps in YA without consulting the user's direct account.
 
 YA combines AAR account availability with native adapter support into the same
 model metadata used by normal controls. Resolve aliases before admission.
+Implemented in the router on 2026-10-06: Claude accounts report the CLI's own
+alias rows with `resolvedModel` (`catalog-cli-models-v1`, see
+[pools](pools.md#claude-cli-model-rows-2026-10-06)), so YA can resolve an alias
+from the account's CLI instead of guessing by model family. YA does not consume
+it yet.
 Explicit thinking is carried to allocation, checked against candidate models,
 and passed unchanged through session persistence and provider launch. Native
 effort mappings (including Codex Max/ultra and Off) use the selected account's

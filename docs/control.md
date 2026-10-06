@@ -29,6 +29,11 @@ while running. Neither uses background polling.
 - `POST /v1/catalog`, `POST /v1/quotas`: `{accountId}`. Catalog discovery is
   possible before allocation. Catalog entries are evidence of model availability,
   not guaranteed entitlement. Quotas preserve the existing normalizer's limits.
+  With `catalog-cli-models-v1`, a Claude catalog also carries `cliModels` and
+  `cliModelsAt` once a discovery or refresh has read them (see
+  [pools](pools.md#claude-cli-model-rows-2026-10-06)); the catalog request
+  itself does not start the CLI. Types are in `src/contract.ts`; the selection
+  shape is pinned by `test/fixtures/contract/selection-claude.json`.
 - `POST /v1/bindings/prepare`: `{id, accountId, provider, model, tokenHash}`.
   YA persists the allocation UUID and random `aar_` inference token before this
   request. The selected model must be in the account catalog. Identical repeats

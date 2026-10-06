@@ -1,14 +1,7 @@
+import { EFFORT_LEVELS as levels, type CatalogModel } from "./contract.ts";
 import type { Provider } from "./types.ts";
+export type { CatalogModel } from "./contract.ts";
 
-export interface CatalogModel {
-  id: string; name: string; contextWindow?: number;
-  supportedReasoningEfforts?: { reasoningEffort: string; description: string }[];
-  defaultReasoningEffort?: string;
-  supportsAdaptiveThinking?: boolean;
-  supportsEffort?: boolean;
-  capabilitySource?: "provider";
-}
-const levels = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const object = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
 
 /** Account catalog metadata only; never infer entitlement from a model name. */

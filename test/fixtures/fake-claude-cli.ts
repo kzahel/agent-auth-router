@@ -1,6 +1,6 @@
 // Stand-in for `claude -p --input-format stream-json --output-format stream-json`.
 // Usage: node fake-claude-cli.ts <mode>
-// Modes: ok | renew | logged-out | no-usage | reject-usage | hang | oversized | callback | slow | api-key
+// Modes: ok | renew | logged-out | no-usage | reject-usage | hang | oversized | callback | slow | api-key | odd-models
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -27,6 +27,18 @@ function renewIfExpired(): void {
   renameSync(`${path}.tmp`, path);
 }
 
+// Shaped like Claude Code's initialize.models rows; names and ids are synthetic.
+const MODELS = [
+  { value: "default", resolvedModel: "claude-opus-fixture-2", displayName: "Default (recommended)", description: "Opus Fixture 2 for complex work", supportsEffort: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"], supportsAdaptiveThinking: true, supportsFastMode: true, supportsAutoMode: true },
+  { value: "sonnet", resolvedModel: "claude-sonnet-fixture-2", displayName: "Sonnet", description: "Sonnet Fixture 2 for everyday tasks", supportsEffort: true, supportedEffortLevels: ["low", "medium", "high", "max"], supportsAdaptiveThinking: true },
+  { value: "haiku", resolvedModel: "claude-haiku-fixture-1", displayName: "Haiku", description: "Haiku Fixture 1 for quick answers", supportsEffort: false },
+  { value: "opusplan", displayName: "Opus Plan Mode", description: "Opus in plan mode, Sonnet otherwise" },
+];
+const ODD_MODELS = [
+  ...Array.from({ length: 70 }, (_, i) => ({ value: `m${i}`, displayName: "N".repeat(500), description: "D".repeat(1000), supportedEffortLevels: ["high", "SECRET-level", 7], secret: "SECRET-extra" })),
+];
+ODD_MODELS.splice(0, 3, null as never, { displayName: "no value" } as never, { value: "x".repeat(300), displayName: "too long" } as never);
+
 let callbackAnswered = false;
 const rl = createInterface({ input: process.stdin });
 rl.on("line", async (line) => {
@@ -43,7 +55,7 @@ rl.on("line", async (line) => {
     const account = mode === "logged-out" ? { tokenSource: "none", apiProvider: "firstParty" }
       : mode === "api-key" ? { apiProvider: "bedrock" }
       : { email: "SECRET-email", organization: "SECRET-org", subscriptionType: "Claude Max", apiProvider: "firstParty" };
-    reply(id, { models: [{ value: "default" }], account, pid: process.pid });
+    reply(id, { models: mode === "odd-models" ? ODD_MODELS : MODELS, account, pid: process.pid });
     return;
   }
   if (message.request?.subtype === "get_usage") {

@@ -5,6 +5,7 @@ import { providerExecutable } from "./platform.ts";
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { sanitizeCliModels, type CliModel } from "./contract.ts";
 import { accountEnv, helperEnv, startBounded, type ProcessResult } from "./process.ts";
 import type { AccountConfig, HelperConfig } from "./types.ts";
 
@@ -238,9 +239,15 @@ export const CLAUDE_CLI_ARGS: readonly string[] = [
   "--no-session-persistence", "--strict-mcp-config", "--setting-sources=", "--tools", "",
 ];
 
-export type ClaudeProbe =
+/**
+ * `cliModels` is the CLI's own `initialize.models` list, present once the
+ * profile is known to be a signed-in subscription login, whether or not the
+ * usage read that follows succeeds.
+ */
+export type ClaudeProbe = (
   | { outcome: "completed"; rateLimits: Record<string, unknown> }
-  | Exclude<HelperOutcome, { outcome: "completed" }>;
+  | Exclude<HelperOutcome, { outcome: "completed" }>
+) & { cliModels?: CliModel[] };
 
 export interface ClaudeProbeOptions {
   command?: string | undefined;
@@ -272,7 +279,9 @@ async function runClaudeCli(config: Extract<HelperConfig, { kind: "claude-cli" }
     args: config.args,
     timeoutMs: (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
   });
-  return probe.outcome === "completed" ? { outcome: "completed" } : probe;
+  if (probe.outcome === "completed") return { outcome: "completed" };
+  const { cliModels: _cliModels, ...outcome } = probe;
+  return outcome;
 }
 
 const object = (value: unknown): Record<string, unknown> | undefined =>
@@ -362,11 +371,14 @@ async function runClaudeProbe(context: HelperContext, options: ClaudeProbeOption
     return finish({ outcome: "failed", detail: "profile does not use a Claude subscription login" });
   }
 
+  const cliModels = sanitizeCliModels(object(init.response)?.models);
+  const withModels = (outcome: ClaudeProbe): ClaudeProbe => cliModels ? { ...outcome, cliModels } : outcome;
+
   const usage = await request("aar-usage", "get_usage");
-  if (usage?.subtype !== "success") return failed(usage, "get_usage");
+  if (usage?.subtype !== "success") return withModels(await failed(usage, "get_usage"));
   const value = object(usage.response), rateLimits = object(value?.rate_limits);
   if (value?.rate_limits_available !== true || !rateLimits) {
-    return finish({ outcome: "failed", detail: "Claude CLI returned no subscription usage; the saved login may need renewal" });
+    return finish(withModels({ outcome: "failed", detail: "Claude CLI returned no subscription usage; the saved login may need renewal" }));
   }
-  return finish({ outcome: "completed", rateLimits });
+  return finish(withModels({ outcome: "completed", rateLimits }));
 }

@@ -1,7 +1,8 @@
 // Private control protocol v1: integration use credentials and a separate
 // local-owner administration credential. The inference listener serves neither.
-import { modelCapabilities, supportsThinking, validThinking, type CatalogModel } from "./model-capabilities.ts";
-export type { CatalogModel } from "./model-capabilities.ts";
+import type { AccountCatalog, CatalogModel } from "./contract.ts";
+import { modelCapabilities, supportsThinking, validThinking } from "./model-capabilities.ts";
+export type { AccountCatalog, CatalogModel, CliModel } from "./contract.ts";
 import { OwnerService } from "./owner.ts";
 import { AppHub, startAppSocket } from "./app.ts";
 import { Metrics } from "./metrics.ts";
@@ -13,7 +14,7 @@ import { join } from "node:path";
 import { hashGatewayToken } from "./gateway-auth.ts";
 import { accountHelper } from "./helpers.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
-import { fetchAccountQuotas, type QuotaReadOptions } from "./quotas.ts";
+import { fetchAccountQuotas, readAccountQuotas, type QuotaReadOptions } from "./quotas.ts";
 import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, isPoolPolicy, rankCandidates, selectionEvidence, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
 import type { CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
@@ -427,7 +428,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     }
     return job;
   };
-  const evidence = new PoolEvidence(id => catalog(id, true), id => fetchAccountQuotas(store.loadAccounts().find(a => a.id === id)!, store.workDir, quotaOptions));
+  const evidence = new PoolEvidence(id => catalog(id, true), id => readAccountQuotas(store.loadAccounts().find(a => a.id === id)!, store.workDir, quotaOptions));
   evidence.onQuota = (id, observation) => metrics.quota(id, observation.quota?.windows ?? []);
   let active = 0;
   let stopping = false;
@@ -440,7 +441,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     void (async () => {
       if (req.headers.origin || req.headers.host !== "localhost") reject(403, "invalid control origin");
       const path = req.url;
-      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "admission-refresh-v1", "quota-inference-headers-v1"], supportedPolicies: POOL_POLICIES });
+      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1"], supportedPolicies: POOL_POLICIES });
       const isOwner = path?.startsWith("/v1/owner/");
       if (isOwner) owner.authenticate(req.headers.authorization);
       let integration = path === "/v1/pair" || isOwner ? undefined : registry.authenticate(req.headers.authorization);
@@ -467,7 +468,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
         try {
           await evidence.discover(ids, controller.signal, id => {
             try { registry.account(registry.authenticate(req.headers.authorization), id); return true; } catch { return false; }
-          });
+          }, body.provider as Provider);
           return reply(200, registry.overview(registry.authenticate(req.headers.authorization), evidence));
         } finally { clearTimeout(timer); controller.abort(); res.removeListener("close", cancel); }
       }
@@ -493,7 +494,11 @@ export async function startControl(store: StateStore, origin: string, coordinato
       if (path === "/v1/disconnect") return reply(200, registry.revoke(integration));
       if (path === "/v1/catalog" || path === "/v1/quotas") {
         const account = registry.account(integration, field(body, "accountId"));
-        if (path === "/v1/catalog") { const models = await catalog(account.id); registry.account(registry.authenticate(req.headers.authorization), account.id); return reply(200, { models }); }
+        if (path === "/v1/catalog") {
+          const models = await catalog(account.id); registry.account(registry.authenticate(req.headers.authorization), account.id);
+          const { cliModels, cliModelsAt } = evidence.get(account.id);
+          return reply(200, { models, ...(cliModels ? { cliModels, cliModelsAt } : {}) } satisfies AccountCatalog);
+        }
         let job = quotaJobs.get(account.id);
         if (!job) { job = fetchAccountQuotas(account, store.workDir, quotaOptions).finally(() => quotaJobs.delete(account.id)); quotaJobs.set(account.id, job); }
         const snapshot = await job; registry.account(registry.authenticate(req.headers.authorization), account.id); return reply(200, snapshot);

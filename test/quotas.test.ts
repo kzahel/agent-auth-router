@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fetchAccountQuotas, normalizeClaudeQuotas, normalizeCodexQuotas, normalizeResponseHeaderQuotas } from "../src/quotas.ts";
+import { fetchAccountQuotas, normalizeClaudeQuotas, readAccountQuotas, normalizeCodexQuotas, normalizeResponseHeaderQuotas } from "../src/quotas.ts";
 import type { AccountConfig } from "../src/types.ts";
 import { FIXTURES, tempDir, writeClaudeCredentials } from "./support.ts";
 
@@ -121,6 +121,31 @@ test("Claude CLI usage failures are bounded and sanitized", async () => {
     assert.deepEqual(snapshot.windows, [], mode);
     assert.doesNotMatch(JSON.stringify(snapshot), /SECRET/, mode);
   }
+});
+
+test("the Claude usage read also returns the CLI's own model rows, bounded", async () => {
+  const account = profile("claude");
+  writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
+  const read = await readAccountQuotas(account, tempDir(), fakeClaude());
+  assert.equal(read.status, "ok");
+  assert.deepEqual(read.cliModels?.map(m => [m.value, m.resolvedModel ?? null]), [
+    ["default", "claude-opus-fixture-2"], ["sonnet", "claude-sonnet-fixture-2"], ["haiku", "claude-haiku-fixture-1"], ["opusplan", null]]);
+  assert.equal(read.cliModels?.[1]?.description, "Sonnet Fixture 2 for everyday tasks");
+  assert.deepEqual(read.cliModels?.[1]?.supportedEffortLevels, ["low", "medium", "high", "max"]);
+  assert.equal("cliModels" in await fetchAccountQuotas(account, tempDir(), fakeClaude()), false, "quota snapshots stay quota-only");
+
+  for (const mode of ["no-usage", "reject-usage"]) {
+    const failed = await readAccountQuotas(account, tempDir(), fakeClaude(mode));
+    assert.equal(failed.status, "unavailable", mode);
+    assert.equal(failed.cliModels?.length, 4, `${mode}: rows survive a failed usage read`);
+  }
+  assert.equal((await readAccountQuotas(account, tempDir(), fakeClaude("logged-out"))).cliModels, undefined, "a signed-out CLI's rows are not the account's");
+
+  const odd = await readAccountQuotas(account, tempDir(), fakeClaude("odd-models"));
+  assert.equal(odd.cliModels?.length, 61, "64-row bound applied before malformed rows are dropped");
+  assert.ok(odd.cliModels!.every(m => m.displayName.length <= 200 && (m.description?.length ?? 0) <= 300 && m.value.length <= 200));
+  assert.deepEqual(odd.cliModels![0]!.supportedEffortLevels, ["high"]);
+  assert.doesNotMatch(JSON.stringify(odd), /SECRET/);
 });
 
 test("Claude quota reader refuses endpoint overrides before spawning", async () => {
