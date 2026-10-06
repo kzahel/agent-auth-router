@@ -232,10 +232,9 @@ specifies. Nothing in this document is served on the inference listener.
   - `aar serve --dev` also watches the UI folder and sends signed-in
     browsers a `ui-reload` event when a served file changes; desktop
     sessions never receive it.
-  - `npm run dev` adds `node --watch-path=src`, which restarts the router on
-    core edits. The old process releases its sockets before the new one
-    starts. Restarts interrupt active requests, and each restart prints a
-    new link, but the browser's session cookie keeps it signed in.
+  - `npm run dev` runs `aar serve --dev`. The router is never restarted
+    automatically; core edits need a manual restart, after which the
+    browser's session cookie keeps it signed in.
 
 LAN, Tailscale and remote access are out of scope. They need their own design
 (rstorrent's basic-auth and tailscale-serve modes are a reference) and are
