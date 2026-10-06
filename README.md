@@ -99,6 +99,11 @@ app.
 session lasts until you log out or run `aar dashboard revoke`. It is
 loopback-only. See [the dashboard design](docs/dashboard.md).
 
+For UI work, `npm run dev` runs `serve --dev` under `node --watch`: edits in
+`desktop/ui` reload signed-in browsers, and edits in `src/` restart the router,
+which interrupts active requests. `aar serve --dev` alone reloads browsers
+without restarting the router.
+
 ## Limitations
 
 - The desktop app is macOS only; Windows and Linux are coming. Windows also

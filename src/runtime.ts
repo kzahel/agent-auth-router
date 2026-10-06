@@ -42,7 +42,7 @@ export interface RunningRouter extends RouterServer {
   close(force?: boolean): Promise<void>;
 }
 
-export interface DashboardOptions { port: number; uiDir?: string }
+export interface DashboardOptions { port: number; uiDir?: string; dev?: boolean }
 
 export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}, lifecycle: { desktop?: boolean; cancelProcesses?: () => Promise<void>; onClosed?: () => void; dashboard?: DashboardOptions } = {}): Promise<RunningRouter> {
   store.init();
@@ -95,7 +95,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
       }, metrics);
       if (lifecycle.dashboard) {
         const owner = control.owner;
-        dashboard = await startDashboard({ store, hub: control.hub, authenticateOwner: header => owner.authenticate(header), port: lifecycle.dashboard.port, ...(lifecycle.dashboard.uiDir ? { uiDir: lifecycle.dashboard.uiDir } : {}) });
+        dashboard = await startDashboard({ store, hub: control.hub, authenticateOwner: header => owner.authenticate(header), port: lifecycle.dashboard.port, ...(lifecycle.dashboard.uiDir ? { uiDir: lifecycle.dashboard.uiDir } : {}), dev: lifecycle.dashboard.dev === true });
         owner.extensions.dashboard = dashboard;
       }
     }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import http, { type IncomingHttpHeaders } from "node:http";
 import net from "node:net";
 import { join } from "node:path";
@@ -10,7 +10,7 @@ import { generateGatewayToken, hashGatewayToken } from "../src/gateway-auth.ts";
 import { ownerRequest } from "../src/owner.ts";
 import { startRouter } from "../src/runtime.ts";
 import { StateStore } from "../src/state.ts";
-import { startDashboard } from "../src/dashboard.ts";
+import { defaultUiDir, startDashboard } from "../src/dashboard.ts";
 import { captureLogs, mockUpstream, tempDir, waitFor, writeClaudeCredentials } from "./support.ts";
 
 const skip = process.platform === "win32";
@@ -98,7 +98,7 @@ function claudeStream(res: http.ServerResponse) {
   setTimeout(() => { send({ type: "message_delta", usage: { output_tokens: 33 } }); res.end(); }, 50);
 }
 
-async function fixture(t: { after(fn: () => unknown): void }, upstreamHandler: (req: http.IncomingMessage, res: http.ServerResponse) => void = (_req, res) => claudeStream(res)) {
+async function fixture(t: { after(fn: () => unknown): void }, upstreamHandler: (req: http.IncomingMessage, res: http.ServerResponse) => void = (_req, res) => claudeStream(res), dashboard: { uiDir?: string; dev?: boolean } = {}) {
   captureLogs();
   const upstream = await mockUpstream(upstreamHandler);
   const store = new StateStore(tempDir("aa-"));
@@ -110,7 +110,7 @@ async function fixture(t: { after(fn: () => unknown): void }, upstreamHandler: (
   store.saveAccounts([{ id: "work", provider: "claude", home, helper: { kind: "none" } }]);
   const token = generateGatewayToken();
   store.saveClients([{ id: randomUUID(), name: "laptop", tokenSha256: hashGatewayToken(token), createdAt: new Date().toISOString(), accounts: { claude: "work" } }]);
-  const router = await startRouter(store, {}, { dashboard: { port: 0 } });
+  const router = await startRouter(store, {}, { dashboard: { port: 0, ...dashboard } });
   t.after(() => router.close(true));
   const infer = (body = "{}") => fetch(`${router.origin}/claude/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body }).then((r) => r.text());
   return { store, router, upstream, infer, token, ownerToken: readFileSync(join(store.dir, "owner.key"), "utf8") };
@@ -228,6 +228,24 @@ test("web dashboard: exact host and origin, single-use codes, sessions and logou
   assert.match(String(logout.headers["set-cookie"]), /Max-Age=0/);
   assert.equal((await webSocket(origin, { host, cookie, origin })).status, 401, "logout ends the session on the server");
   assert.equal((await ownerRequest(store, "dashboard/sessions")).sessions.length, 0);
+});
+
+test("dev mode reloads signed-in browsers when a served UI file changes", { skip }, async (t) => {
+  const uiDir = tempDir("aa-ui-");
+  cpSync(defaultUiDir(), uiDir, { recursive: true });
+  const { store, router } = await fixture(t, undefined, { uiDir, dev: true });
+  const origin = router.dashboard!.origin, host = new URL(origin).host;
+  const code = new URL((await ownerRequest(store, "dashboard/code")).url).hash.slice("#code=".length);
+  const cookie = String((await httpRequest(origin, "/auth/exchange", { method: "POST", headers: { host, origin, "content-type": "application/json" }, body: JSON.stringify({ code }) })).headers["set-cookie"]).split(";")[0]!;
+  const ws = await webSocket(origin, { host, cookie, origin });
+  t.after(() => ws.close());
+  await waitFor(() => ws.messages.some((m) => m.hello));
+  writeFileSync(join(uiDir, "terminal.html"), "not served");
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(!ws.messages.some((m) => m.event === "ui-reload"), "files the dashboard does not serve are ignored");
+  writeFileSync(join(uiDir, "style.css"), readFileSync(join(uiDir, "style.css"), "utf8") + "\n/* edited */\n");
+  await waitFor(() => ws.messages.some((m) => m.event === "ui-reload"));
+  assert.match((await httpRequest(origin, "/style.css", { headers: { host } })).text, /edited/, "files are served fresh");
 });
 
 test("a dashboard port conflict fails clearly", { skip }, async (t) => {

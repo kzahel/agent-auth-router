@@ -88,6 +88,10 @@ export class AppHub {
     this.changeTimer.unref();
   }
   get currentRevision(): number { return this.revision; }
+  /** Sends an event to every authenticated session of one kind. */
+  broadcast(kind: AppKind, message: object): void {
+    for (const session of this.sessions) if (session.kind === kind) session.event(message);
+  }
   get id(): string { return this.routerId(); }
   authenticate(token: unknown): void {
     if (typeof token !== "string" || token.length > 200) throw new ControlError(401, "local owner credential required");

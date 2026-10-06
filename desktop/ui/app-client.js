@@ -158,6 +158,8 @@ export class AppClient {
     Promise.resolve().then(() => this.#port.send({ id, subscribe: subscription.kind, body: subscription.body })).catch(() => {});
   }
   #message(message) {
+    // Dev mode (`aar serve --dev`): a served UI file changed.
+    if (message.event === "ui-reload" && this.kind === "web") { location.reload(); return; }
     if (message.event === "change" && message.sub === undefined) {
       for (const listener of this.#changeListeners) listener(message.data);
       return;

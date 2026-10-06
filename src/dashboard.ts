@@ -5,7 +5,7 @@
 // the page never receives the owner credential.
 
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
@@ -51,7 +51,7 @@ export interface Dashboard extends DashboardControl {
   close(): Promise<void>;
 }
 
-export async function startDashboard(options: { store: StateStore; hub: AppHub; authenticateOwner: (header: string | undefined) => void; port: number; uiDir?: string }): Promise<Dashboard> {
+export async function startDashboard(options: { store: StateStore; hub: AppHub; authenticateOwner: (header: string | undefined) => void; port: number; uiDir?: string; dev?: boolean }): Promise<Dashboard> {
   const { store, hub } = options;
   const uiDir = options.uiDir ?? defaultUiDir();
   if (!existsSync(join(uiDir, "index.html"))) throw new Error(`dashboard UI files not found in ${uiDir}`);
@@ -61,6 +61,16 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
   let port = options.port;
   let cookieName = "";
   const sockets = new Set<import("node:stream").Duplex>();
+  // Development: reload signed-in browsers when a served UI file changes.
+  let watcher: FSWatcher | undefined, reloadTimer: NodeJS.Timeout | undefined;
+  if (options.dev) {
+    watcher = watch(uiDir, (_event, file) => {
+      if (!file || !ASSETS[`/${file}`]) return;
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => hub.broadcast("web", { event: "ui-reload", data: { file } }), 100);
+    });
+    watcher.unref();
+  }
 
   const origins = () => new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
   const hostAllowed = (req: IncomingMessage) => req.headers.host === `127.0.0.1:${port}` || req.headers.host === `localhost:${port}`;
@@ -226,6 +236,8 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
       return before - sessions.length;
     },
     close: () => new Promise<void>(resolveClose => {
+      watcher?.close();
+      clearTimeout(reloadTimer);
       for (const socket of sockets) socket.destroy();
       server.close(() => resolveClose());
       server.closeAllConnections();

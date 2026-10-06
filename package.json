@@ -18,7 +18,8 @@
     "integration:prepare": "node integration/yepanywhere/prepare.mjs",
     "test:integration": "node --test --test-concurrency=1 'integration/yepanywhere/*.test.mjs'",
     "check": "npm run typecheck && npm test",
-    "aar": "node src/cli.ts"
+    "aar": "node src/cli.ts",
+    "dev": "node --watch-path=src src/cli.ts serve --dev"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",

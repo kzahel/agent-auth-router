@@ -227,6 +227,15 @@ specifies. Nothing in this document is served on the inference listener.
   - Stopping the router from the web UI follows the desktop's idle rules;
     restarting it needs the command line.
 - **Lifecycle:** closing the browser does not affect the router.
+- **Development:** UI files are read on each request with `no-store`, so a
+  browser refresh shows edits.
+  - `aar serve --dev` also watches the UI folder and sends signed-in
+    browsers a `ui-reload` event when a served file changes; desktop
+    sessions never receive it.
+  - `npm run dev` adds `node --watch-path=src`, which restarts the router on
+    core edits. The old process releases its sockets before the new one
+    starts. Restarts interrupt active requests, and each restart prints a
+    new link, but the browser's session cookie keeps it signed in.
 
 LAN, Tailscale and remote access are out of scope. They need their own design
 (rstorrent's basic-auth and tailscale-serve modes are a reference) and are
