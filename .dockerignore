@@ -1,0 +1,5 @@
+*
+!package.json
+!src/
+!desktop/ui/
+!docker/entrypoint.sh

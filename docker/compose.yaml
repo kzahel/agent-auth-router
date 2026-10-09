@@ -1,0 +1,14 @@
+# docker compose -f docker/compose.yaml up -d --build
+# (or docker build --network host -t agent-auth-router:local . first, then
+# up -d, where build containers cannot resolve names; see docs/docker.md)
+# docker compose -f docker/compose.yaml run --rm aar login work
+services:
+  aar:
+    build: ..
+    image: agent-auth-router:local
+    # The router and dashboard listen on loopback only, so they share the
+    # host's network.
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ${AAR_STATE:-./state}:/state

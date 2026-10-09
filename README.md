@@ -103,6 +103,10 @@ For UI work, `npm run dev` (`aar serve --dev`) reloads signed-in browsers when a
 file in `desktop/ui` changes. The router itself never restarts; restart it by
 hand after editing `src/`.
 
+A [`Dockerfile`](Dockerfile) packages the headless router with pinned `claude`
+and `codex` CLIs, and [`docker/compose.yaml`](docker/compose.yaml) runs it as a
+service with its state on a volume. See [Running the router in Docker](docs/docker.md).
+
 ## Limitations
 
 - The desktop app is macOS only; Windows and Linux are coming. Windows also
@@ -126,6 +130,7 @@ hand after editing `src/`.
 - [Credential lifecycle](docs/auth-lifecycle.md)
 - [Prototype history and observations](docs/prototype.md)
 - [Source repositories and evidence](docs/sources.md)
+- [Running the router in Docker](docs/docker.md)
 
 ## License
 
