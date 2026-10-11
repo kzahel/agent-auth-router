@@ -24,8 +24,8 @@ operations include `overview`, `providers`,
 `profiles/discover`, `profiles/inspect`, `accounts/add`, `accounts/set-nickname`, `accounts/set-enabled`, `accounts/retire` (legacy), `accounts/removal-preview`, `accounts/remove`, `accounts/login`,
 `accounts/login-status`, `accounts/open-login`, `accounts/cancel-login`,
 `accounts/refresh`, `accounts/renew`, `pools/save`, `pools/remove`,
-`grants/save`, `integrations/revoke`, `clients/add`, `clients/revoke`, `stop` and
-`shutdown`, plus `accounts/login-command`, `metrics/snapshot`, `metrics/history`,
+`grants/save`, `integrations/revoke`, `clients/add`, `clients/revoke`, `stop`,
+`shutdown` and `restart` (`aar serve` only), plus `accounts/login-command`, `metrics/snapshot`, `metrics/history`,
 `requests/recent` and the CLI-only `dashboard/code`, `dashboard/sessions` and
 `dashboard/revoke`. UIs reach a policy-limited subset through the
 [app protocol](dashboard.md#app-protocol) on the separate private `app.sock`.
@@ -140,6 +140,43 @@ current router ID and cancels active work. Integration credentials cannot use it
 crash) triggers shutdown. The ordinary headless CLI remains independently usable;
 the desktop exposes no keep-running mode. Startup errors use a bounded safe
 message envelope, never raw provider output or configuration contents.
+
+## Restarting `aar serve` (2026-10-11)
+
+`aar restart [--quiet-seconds N] [--cancel]` asks a running `aar serve` to
+restart with the code currently on disk once it is idle. The owner `restart`
+operation takes the current `routerId`, an optional `quietSeconds` (1 to 600,
+default 5) and `cancel`. It returns at once; a repeat replaces the pending
+request's quiet period.
+
+- **Idle** uses the same checks as `stop`, without excluding the caller:
+  proxied requests, control and app calls, usage and catalog reads, renewals,
+  sign-ins and terminal logins. The router polls every half second and needs
+  the whole quiet period clear.
+- **Restart** closes the listeners and lets anything accepted in the meantime
+  finish; nothing is interrupted. The new process reads the same state, so
+  pins, client tokens, grants, the router ID and dashboard sessions carry
+  over. Quota and catalog observations are in memory and start unknown, as
+  after any restart; automatic admission refreshes them.
+- **Process shape:** CLI `serve` is a small parent that runs the router as a
+  child process (`AAR_SERVE_CHILD=1`, with an IPC channel). The child exits
+  with status 75 to ask for a restart; any other status, or a signal the parent
+  received, ends the parent with that status. The parent forwards SIGINT and
+  SIGTERM, and the child shuts down if the parent disappears, including after
+  SIGKILL. `desktop-serve` is unchanged and refuses `restart`.
+- **Gap:** new connections are refused from the moment the old router closes
+  its listeners until the new one listens. Three local runs with a synthetic
+  state measured 94 to 113 ms. A client request arriving then fails to connect;
+  whether a given CLI retries that is not verified here.
+- A router started before this change answers "unknown owner operation"; the
+  command then asks for one manual restart. If the code on disk no longer
+  loads, the new child exits and so does `serve`; `aar restart` itself runs
+  the current code, so a module that fails to load fails the command first.
+
+`test/cli.test.ts` covers a restart held by an open stream and then completed
+through the parent, identity and state carrying over, cancel, argument
+validation, refusal under `desktop-serve`, Ctrl-C, and a killed parent taking
+its router down.
 
 
 ## Account removal (0.1.5)

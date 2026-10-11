@@ -110,6 +110,18 @@ export function ownerRequest(
   });
 }
 
+/** How the router stops and, under `aar serve`, restarts itself. `busy` excludes
+ * the owner call being served unless asked not to. */
+export interface OwnerLifecycle {
+  active(): number;
+  busy?(excludingCaller?: boolean): number;
+  stop(force?: boolean): void;
+  restart?: { now(): void; note(message: string): void };
+}
+/** A requested restart waits for this long with no work of any kind. */
+export const RESTART_QUIET_MS = 5_000;
+const RESTART_POLL_MS = 500;
+
 export class OwnerService {
   /** Optional services attached after construction by the runtime. */
   extensions: { metrics?: Metrics; dashboard?: DashboardControl } = {};
@@ -120,7 +132,8 @@ export class OwnerService {
   private readonly evidence: PoolEvidence;
   private readonly invalidate: (id: string) => void;
   private readonly origin: string;
-  private readonly lifecycle: { active(): number; busy?(): number; stop(force?: boolean): void };
+  private readonly lifecycle: OwnerLifecycle;
+  private restartTimer: NodeJS.Timeout | undefined;
   private readonly terminals = new Map<string, TerminalLogin>();
   private readonly logins = new Map<
     string,
@@ -137,7 +150,7 @@ export class OwnerService {
     evidence: PoolEvidence,
     invalidate: (id: string) => void,
     origin: string,
-    lifecycle: { active(): number; busy?(): number; stop(force?: boolean): void },
+    lifecycle: OwnerLifecycle,
   ) {
     this.store = store;
     this.registry = registry;
@@ -582,20 +595,53 @@ export class OwnerService {
     if (operation === "stop" || operation === "shutdown") {
       if (body.routerId !== this.registry.routerId)
         throw new ControlError(409, "router identity changed");
-      if (operation === "stop" && (
-        this.lifecycle.active() ||
-        this.lifecycle.busy?.() ||
-        [...this.coordinators.values()].some((c) => c.status().state === "renewing") ||
-        [...this.logins.values()].some((l) => l.status === "running") ||
-        [...this.terminals.values()].some(t => t.busy())
-      ))
+      if (operation === "stop" && this.busy(true))
         throw new ControlError(409, "router busy; finish requests and logins before stopping");
       this.lifecycle.stop(operation === "shutdown");
       return { stopping: true };
     }
+    if (operation === "restart") {
+      if (body.routerId !== this.registry.routerId)
+        throw new ControlError(409, "router identity changed");
+      const restart = this.lifecycle.restart ?? (() => { throw new ControlError(409, "restart is available only under aar serve"); })();
+      if (body.cancel === true) {
+        const pending = this.restartTimer !== undefined;
+        clearInterval(this.restartTimer); this.restartTimer = undefined;
+        if (pending) restart.note("restart cancelled");
+        return { cancelled: pending };
+      }
+      if (body.cancel !== undefined && body.cancel !== false) throw new ControlError(400, "cancel must be a boolean");
+      const quiet = body.quietSeconds;
+      const quietMs = quiet === undefined ? RESTART_QUIET_MS
+        : typeof quiet === "number" && Number.isInteger(quiet) && quiet >= 1 && quiet <= 600 ? quiet * 1000
+        : (() => { throw new ControlError(400, "quietSeconds must be a whole number from 1 to 600"); })();
+      clearInterval(this.restartTimer);
+      // Idle means nothing at all in flight, including this caller once it returns.
+      let quietSince: number | undefined;
+      this.restartTimer = setInterval(() => {
+        const now = Date.now();
+        if (this.busy(false)) { quietSince = undefined; return; }
+        quietSince ??= now;
+        if (now - quietSince < quietMs) return;
+        clearInterval(this.restartTimer); this.restartTimer = undefined;
+        restart.note("idle; restarting");
+        restart.now();
+      }, RESTART_POLL_MS);
+      this.restartTimer.unref();
+      restart.note(`restart requested; waiting for ${quietMs / 1000} idle seconds`);
+      return { pending: true, quietSeconds: quietMs / 1000 };
+    }
     throw new ControlError(404, "unknown owner operation");
   }
+  /** Requests, usage and catalog reads, renewals, sign-ins and terminal logins. */
+  private busy(excludingCaller: boolean): boolean {
+    return !!this.lifecycle.active() || !!this.lifecycle.busy?.(excludingCaller) ||
+      [...this.coordinators.values()].some((c) => c.status().state === "renewing") ||
+      [...this.logins.values()].some((l) => l.status === "running") ||
+      [...this.terminals.values()].some(t => t.busy());
+  }
   async close(): Promise<void> {
+    clearInterval(this.restartTimer); this.restartTimer = undefined;
     for (const login of this.logins.values()) login.process.terminate();
     await Promise.all([...this.logins.values()].map((l) => l.process.done));
     await Promise.all([...this.terminals.values()].map(t => t.close()));

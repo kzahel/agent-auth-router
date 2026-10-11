@@ -100,8 +100,10 @@ session lasts until you log out or run `aar dashboard revoke`. It is
 loopback-only. See [the dashboard design](docs/dashboard.md).
 
 For UI work, `npm run dev` (`aar serve --dev`) reloads signed-in browsers when a
-file in `desktop/ui` changes. The router itself never restarts; restart it by
-hand after editing `src/`.
+file in `desktop/ui` changes. After editing `src/`, run `aar restart` (or
+`npm run aar restart`): the router restarts with the current code once nothing
+has been in flight for five seconds, without interrupting a request. See
+[restarting `aar serve`](docs/owner-management.md#restarting-aar-serve-2026-10-11).
 
 A [`Dockerfile`](Dockerfile) packages the headless router with pinned `claude`
 and `codex` CLIs, and [`docker/compose.yaml`](docker/compose.yaml) runs it as a

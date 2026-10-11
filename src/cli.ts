@@ -5,8 +5,11 @@ import { desktopStartupError } from "./desktop-lifecycle.ts";
 import { stopManagedProcesses } from "./process.ts";
 import { terminalLogin } from "./terminal-login.ts";
 import { loginCommand, ownerRequest } from "./owner.ts";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { credentialReaderFor } from "./credentials.ts";
@@ -35,6 +38,8 @@ const USAGE = `usage: aar [--state DIR] <command>
                                          with the web dashboard on 127.0.0.1:${DEFAULT_DASHBOARD_PORT};
                                          --dev reloads browsers when UI files change;
                                          --no-event-log skips the analysis log in events/
+  restart [--quiet-seconds N] [--cancel] restart aar serve with the current code once nothing
+                                         has been in flight for N seconds (default 5)
   dashboard url                          print a new single-use dashboard access link
   dashboard sessions                     list signed-in dashboard browsers
   dashboard revoke <session-id>|--all    sign out dashboard browsers
@@ -45,6 +50,27 @@ also be set with $AAR_DASHBOARD_PORT. AAR_EVENT_LOG=0 disables the event log.`;
 function fail(message: string): never {
   process.stderr.write(`aar: ${message}\n`);
   process.exit(1);
+}
+
+/** Exit status asking the `aar serve` parent to start the router again. */
+const RESTART_EXIT_CODE = 75;
+
+/**
+ * CLI serve runs the router in a child process so `aar restart` can load the
+ * current code in the same terminal. Ctrl-C reaches both; the parent forwards
+ * signals, never restarts after one, and exits with the router's status.
+ */
+async function supervise(): Promise<void> {
+  let stopping = false, child: ChildProcess | undefined;
+  const forward = (signal: NodeJS.Signals) => { stopping = true; child?.kill(signal); };
+  process.on("SIGINT", () => forward("SIGINT"));
+  process.on("SIGTERM", () => forward("SIGTERM"));
+  for (;;) {
+    child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: ["inherit", "inherit", "inherit", "ipc"], env: { ...process.env, AAR_SERVE_CHILD: "1" } });
+    const [code, signal] = await once(child, "exit") as [number | null, NodeJS.Signals | null];
+    if (code !== RESTART_EXIT_CODE || stopping) { process.exitCode = code ?? (signal ? 128 + osConstants.signals[signal] : 1); return; }
+    process.stdout.write("aar: starting the router again\n");
+  }
 }
 
 function clientSnippets(origin: string, token: string, accounts: Partial<Record<Provider, string>>): string {
@@ -87,6 +113,8 @@ async function main(argv: string[]): Promise<void> {
       "no-event-log": { type: "boolean" },
       dev: { type: "boolean" },
       all: { type: "boolean" },
+      cancel: { type: "boolean" },
+      "quiet-seconds": { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -246,9 +274,24 @@ async function main(argv: string[]): Promise<void> {
       }
       fail("dashboard requires url, sessions or revoke");
     }
+    case "restart": {
+      if (!existsSync(join(store.dir, "control.sock"))) fail("the router is not running; start it with aar serve");
+      const quiet = values["quiet-seconds"];
+      if (quiet !== undefined && !/^\d{1,3}$/.test(quiet)) fail("--quiet-seconds must be a whole number from 1 to 600");
+      const { routerId } = await ownerRequest(store, "overview", {});
+      const result = await ownerRequest(store, "restart", { routerId, ...(values.cancel ? { cancel: true } : {}), ...(quiet !== undefined ? { quietSeconds: Number(quiet) } : {}) })
+        .catch((error: unknown) => {
+          if (error instanceof Error && /unknown owner operation/.test(error.message)) fail("this router predates aar restart; stop and start it by hand once");
+          throw error;
+        });
+      if (values.cancel) process.stdout.write(result.cancelled ? "restart cancelled\n" : "no restart was pending\n");
+      else process.stdout.write(`restart pending: aar serve restarts after ${result.quietSeconds} seconds with no requests, usage checks, renewals or sign-ins\n`);
+      return;
+    }
     case "serve":
     case "desktop-serve": {
       const desktop = command === "desktop-serve";
+      if (!desktop && process.env.AAR_SERVE_CHILD !== "1") return supervise();
       // The desktop app uses its private socket; only the CLI opens the web dashboard.
       let dashboard: { port: number; dev?: boolean } | undefined;
       if (!desktop && !values["no-dashboard"]) {
@@ -259,9 +302,11 @@ async function main(argv: string[]): Promise<void> {
       }
       let parentClosed = false;
       let router: Awaited<ReturnType<typeof startRouter>> | undefined;
-      let stopping = false;
+      let stopping = false, restarting = false;
       const shutdown = () => {
         parentClosed = true;
+        // A signal during a restart's drain stops instead and interrupts the drain.
+        restarting = false;
         // Ctrl-C under npm arrives twice (from the terminal and forwarded by
         // npm). Repeats must not interrupt cleanup and strand the sockets.
         if (!router || stopping) return;
@@ -273,10 +318,17 @@ async function main(argv: string[]): Promise<void> {
         // The app holds this private pipe open. EOF also covers app crashes.
         process.stdin.on("end", shutdown);
         process.stdin.resume();
+      } else {
+        // Under the serve parent: losing it, even to SIGKILL, stops the router.
+        process.on("disconnect", shutdown);
+        process.channel?.unref();
       }
+      // Waits for accepted streams; the owner only calls this once idle.
+      const restart = { note: (message: string) => process.stdout.write(`aar: ${message}\n`),
+        now: () => { if (!router || stopping || restarting) return; restarting = true; void router.close(false); } };
       process.on("SIGINT", shutdown);
       process.on("SIGTERM", shutdown);
-      try { router = await startRouter(store, {}, { desktop, recoverStaleSocket: true, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(0), ...(dashboard ? { dashboard } : {}), ...(values["no-event-log"] ? { eventLog: false } : {}) }); }
+      try { router = await startRouter(store, {}, { desktop, recoverStaleSocket: true, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(restarting ? RESTART_EXIT_CODE : 0), ...(desktop ? {} : { restart }), ...(dashboard ? { dashboard } : {}), ...(values["no-event-log"] ? { eventLog: false } : {}) }); }
       catch (error) {
         if (desktop) { process.stderr.write(`AAR_STARTUP_ERROR:${JSON.stringify({ message: desktopStartupError(error) })}\n`); process.exit(1); }
         throw error;

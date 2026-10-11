@@ -10,6 +10,7 @@ import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { accountHelper } from "./helpers.ts";
 import { log } from "./log.ts";
+import type { OwnerLifecycle } from "./owner.ts";
 import { createRouter, type RouterServer } from "./server.ts";
 import { LiveClients, type StateStore } from "./state.ts";
 import type { AccountConfig } from "./types.ts";
@@ -47,7 +48,7 @@ export interface RunningRouter extends RouterServer {
 
 export interface DashboardOptions { port: number; uiDir?: string; dev?: boolean }
 
-export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}, lifecycle: { desktop?: boolean; recoverStaleSocket?: boolean; cancelProcesses?: () => Promise<void>; onClosed?: () => void; dashboard?: DashboardOptions; eventLog?: boolean } = {}): Promise<RunningRouter> {
+export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}, lifecycle: { desktop?: boolean; recoverStaleSocket?: boolean; cancelProcesses?: () => Promise<void>; onClosed?: () => void; dashboard?: DashboardOptions; eventLog?: boolean; restart?: OwnerLifecycle["restart"] } = {}): Promise<RunningRouter> {
   store.init();
   const metrics = new Metrics({ path: join(store.dir, "metrics.json") });
   // Default on; AAR_EVENT_LOG=0 or --no-event-log switches it off.
@@ -103,6 +104,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
       control = await startControl(store, boundOrigin, coordinators, quotaOptions, {
         active: router.activeRequests,
         stop: (force) => { router.server.close(); setImmediate(() => { void close(force); }); },
+        ...(lifecycle.restart ? { restart: lifecycle.restart } : {}),
       }, metrics, events);
       events?.write("router", { action: "start", routerId: control.registry.routerId, pid: process.pid, accounts: coordinators.size });
       if (lifecycle.dashboard) {

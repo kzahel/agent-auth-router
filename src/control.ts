@@ -3,7 +3,7 @@
 import type { AccountCatalog, CatalogModel } from "./contract.ts";
 import { modelCapabilities, supportsThinking, validThinking } from "./model-capabilities.ts";
 export type { AccountCatalog, CatalogModel, CliModel } from "./contract.ts";
-import { OwnerService } from "./owner.ts";
+import { OwnerService, type OwnerLifecycle } from "./owner.ts";
 import { AppHub, startAppSocket } from "./app.ts";
 import type { EventLog } from "./events.ts";
 import { Metrics } from "./metrics.ts";
@@ -418,7 +418,7 @@ export async function readCatalog(coordinator: CredentialCoordinator, origin?: s
   });
 }
 
-export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}, lifecycle: { active(): number; stop(force?: boolean): void } = { active: () => 0, stop: () => { throw new ControlError(409, "stop unavailable"); } }, metrics: Metrics = new Metrics(), events?: EventLog) {
+export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}, lifecycle: Pick<OwnerLifecycle, "active" | "stop" | "restart"> = { active: () => 0, stop: () => { throw new ControlError(409, "stop unavailable"); } }, metrics: Metrics = new Metrics(), events?: EventLog) {
   assertPrivatePath(store.dir);
   const socketPath = join(store.dir, "control.sock");
   if (Buffer.byteLength(socketPath) > 100) throw new Error("control socket path too long; choose a shorter state directory");
@@ -551,7 +551,8 @@ export async function startControl(store: StateStore, origin: string, coordinato
     registry = new ControlRegistry(store);
     if (events) registry.events = events;
     owner = new OwnerService(store, registry, coordinators, evidence, id => { generations.set(id, (generations.get(id) ?? 0) + 1); catalogs.delete(id); evidence.invalidate(id); hub?.notifyChange(); }, origin,
-      { active: lifecycle.active, busy: () => catalogJobs.size + quotaJobs.size + evidence.active() + Math.max(0, active + (hub?.inflight() ?? 0) - 1), stop: lifecycle.stop });
+      { active: lifecycle.active, busy: (excludingCaller = true) => catalogJobs.size + quotaJobs.size + evidence.active() + Math.max(0, active + (hub?.inflight() ?? 0) - (excludingCaller ? 1 : 0)),
+        stop: lifecycle.stop, ...(lifecycle.restart ? { restart: lifecycle.restart } : {}) });
     owner.extensions.metrics = metrics;
     const liveHub = hub = new AppHub(owner, metrics, () => registry.routerId);
     registry.onChange = () => liveHub.notifyChange();
