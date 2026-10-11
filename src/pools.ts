@@ -3,15 +3,28 @@ import type { CatalogModel, CliModel } from "./contract.ts";
 import { normalizeResponseHeaderQuotas, type QuotaRead, type QuotaSnapshot, type QuotaWindow, type ResponseHeaders } from "./quotas.ts";
 import type { Provider } from "./types.ts";
 
-export const POOL_POLICIES = ["manual", "round-robin", "most-remaining"] as const;
+export const POOL_POLICIES = ["manual", "round-robin", "most-remaining", "weekly-pace"] as const;
 export type PoolPolicy = typeof POOL_POLICIES[number];
 export const isPoolPolicy = (value: unknown): value is PoolPolicy => POOL_POLICIES.includes(value as PoolPolicy);
+export const POLICY_LABELS: Record<PoolPolicy, string> = { manual: "Manual", "round-robin": "Round robin", "most-remaining": "Most remaining", "weekly-pace": "Weekly pace" };
+/** Policies an older client could not have known; prepare requires the client to list them. */
+export const GATED_POLICIES: readonly PoolPolicy[] = ["most-remaining", "weekly-pace"];
+export const WEEKLY_MINUTES = 10_080;
+/** Weekly pace backs off an account whose windows shorter than a week have less than this left. */
+export const SHORT_RESERVE_PERCENT = 30;
 export interface SelectionEvidence {
   headroomPercent: number | null;
   limitingBuckets: string[];
   reservations: number;
   catalogAt: string | null;
   quotaAt: string | null;
+  /** Tightest applicable window shorter than a week (Claude's five_hour); null when none is reported. */
+  shortHeadroomPercent: number | null;
+  /** An applicable weekly window is unused with no reset time, so its timer starts on first use. */
+  weeklyUnstarted: boolean;
+  /** Lowest (share of the week elapsed − percent used) across started applicable weekly windows.
+   * Positive means behind pace: allowance that would otherwise go unused at reset. */
+  weeklyPacePercent: number | null;
 }
 export interface Pool {
   id: string; name: string; provider: Provider;
@@ -59,17 +72,48 @@ function applies(provider: Provider, window: QuotaWindow, model: string): boolea
 export function applicableWindows(provider: Provider, observation: Observation, model: string): QuotaWindow[] {
   return observation.quota?.windows.filter(w => applies(provider, w, model)) ?? [];
 }
-export function selectionEvidence(provider: Provider, observation: Observation, model: string, reservations: number): SelectionEvidence {
+export function selectionEvidence(provider: Provider, observation: Observation, model: string, reservations: number, now = Date.now()): SelectionEvidence {
   const windows = applicableWindows(provider, observation, model);
   const headroomPercent = windows.length && windows.every(w => w.remainingPercent !== null)
     ? Math.min(...windows.map(w => w.remainingPercent!)) : null;
+  const short = windows.filter(w => w.windowMinutes !== null && w.windowMinutes < WEEKLY_MINUTES && w.remainingPercent !== null);
+  const weekly = windows.filter(w => w.windowMinutes === WEEKLY_MINUTES && w.usedPercent !== null);
+  const unstarted = (w: QuotaWindow) => w.usedPercent === 0 && !w.resetsAt;
+  const paces = weekly.filter(w => w.resetsAt && !unstarted(w)).map(w => {
+    const left = Math.min(Math.max((Date.parse(w.resetsAt!) - now) / (WEEKLY_MINUTES * 60_000), 0), 1);
+    return Math.round(((1 - left) * 100 - w.usedPercent!) * 10) / 10;
+  });
   return { headroomPercent, limitingBuckets: headroomPercent === null ? [] : windows.filter(w => w.remainingPercent === headroomPercent).map(w => w.bucket).sort(),
-    reservations, catalogAt: observation.catalogAt, quotaAt: observation.quota?.observedAt ?? null };
+    reservations, catalogAt: observation.catalogAt, quotaAt: observation.quota?.observedAt ?? null,
+    shortHeadroomPercent: short.length ? Math.min(...short.map(w => w.remainingPercent!)) : null,
+    weeklyUnstarted: weekly.some(unstarted), weeklyPacePercent: paces.length ? Math.min(...paces) : null };
+}
+const keepsReserve = (e: SelectionEvidence) => e.shortHeadroomPercent === null || e.shortHeadroomPercent >= SHORT_RESERVE_PERCENT;
+/** Unstarted weekly timer first, then the short-window reserve, then furthest behind weekly pace. */
+function weeklyPaceOrder(a: SelectionEvidence, b: SelectionEvidence): number {
+  return Number(b.weeklyUnstarted) - Number(a.weeklyUnstarted) ||
+    Number(keepsReserve(b)) - Number(keepsReserve(a)) ||
+    (keepsReserve(a) ? 0 : (b.shortHeadroomPercent ?? 0) - (a.shortHeadroomPercent ?? 0)) ||
+    // Pace lies in [-100, 100]; no started weekly window ranks last.
+    (b.weeklyPacePercent ?? -101) - (a.weeklyPacePercent ?? -101);
 }
 /** Input is already eligible and in cursor order; stable ties preserve that order. */
 export function rankCandidates(policy: PoolPolicy, candidates: { accountId: string; evidence: SelectionEvidence }[]) {
   return [...candidates].sort((a, b) => a.evidence.reservations - b.evidence.reservations ||
-    (policy === "most-remaining" ? (b.evidence.headroomPercent ?? -1) - (a.evidence.headroomPercent ?? -1) : 0));
+    (policy === "most-remaining" ? (b.evidence.headroomPercent ?? -1) - (a.evidence.headroomPercent ?? -1)
+      : policy === "weekly-pace" ? weeklyPaceOrder(a.evidence, b.evidence) : 0));
+}
+/** The persisted, human-readable explanation of an automatic or manual choice. */
+export function selectionReason(policy: PoolPolicy, e: SelectionEvidence): string {
+  const spread = "; among accounts with fewest startup reservations";
+  if (policy === "most-remaining") return `Most remaining: tightest window has ${e.headroomPercent}% remaining${spread}`;
+  if (policy === "round-robin") return "Round robin among eligible accounts";
+  if (policy === "manual") return "Explicit manual account";
+  if (e.weeklyUnstarted) return `Weekly pace: weekly window not started; this session starts its timer${spread}`;
+  if (!keepsReserve(e)) return `Weekly pace: every candidate is under the ${SHORT_RESERVE_PERCENT}% short-window reserve; this one has the most (${e.shortHeadroomPercent}%)${spread}`;
+  const pace = e.weeklyPacePercent === null ? "no started weekly window"
+    : e.weeklyPacePercent >= 0 ? `${e.weeklyPacePercent} points behind weekly pace` : `${-e.weeklyPacePercent} points ahead of weekly pace`;
+  return `Weekly pace: ${pace}; short-window headroom ${e.shortHeadroomPercent === null ? "not reported" : `${e.shortHeadroomPercent}%`}${spread}`;
 }
 export function eligibility(provider: Provider, enabled: boolean, model: string | undefined, observation: Observation, automatic: boolean, now = Date.now()): EligibilityReason {
   if (!enabled) return "disabled";

@@ -71,10 +71,46 @@ catalog discovery can still require an initial explicit refresh. Whole-pool
 refresh controls, weekly reset and task-aware Auto remain follow-ups in
 [routing policies](routing-policies.md).
 
+## Weekly pace (2026-10-11)
+
+Capability `weekly-pace-v1`, policy `weekly-pace`. It aims to use weekly
+allowance before it resets and to stay off accounts whose five-hour window is
+nearly full. After the shared eligibility checks and the fewest-startup-
+reservations rule, candidates are ordered by:
+
+1. **Weekly timer not started.** An applicable weekly window (10,080 minutes)
+   at 0% used with no reset time ranks first, so the next session starts its
+   timer. This tier outranks the short-window reserve.
+2. **Short-window reserve.** Accounts whose tightest applicable window shorter
+   than a week has at least `SHORT_RESERVE_PERCENT` (30%) remaining rank ahead
+   of those below it. If every candidate is below, the most short-window
+   headroom wins. An account with no short window keeps the reserve.
+3. **Weekly pace.** `share of the week elapsed × 100 − percent used`, the
+   lowest across the account's started applicable weekly windows, highest
+   first. Positive means behind pace: allowance that would otherwise go unused
+   at reset. An account with no started weekly window ranks last.
+4. Membership order after the durable cursor.
+
+Windows are classified by duration, so Codex `primary`/`secondary` positions do
+not matter. The 30% reserve is a fixed constant of policy version 1, chosen
+from about five days of hourly dashboard metrics (the largest one-hour rise in
+a five-hour window was about 35 points); it is not a per-pool setting yet.
+Evidence gains `shortHeadroomPercent`, `weeklyUnstarted` and
+`weeklyPacePercent`, and the persisted reason names the deciding tier.
+Prepare requires `supportedPolicies` to contain `weekly-pace`, as for Most
+remaining.
+
+Limits: selection happens only at session start, so a long session can still
+fill its account's five-hour window. The jump start assumes a weekly window
+begins at its first use; the hourly metrics fit that (the three accounts reset
+at different hours) but do not prove it. The event log can confirm it. The
+router never sends its own request to start a timer. Percentages are compared
+as if accounts had equal plans.
+
 ## Shared allocation behavior
 
 Pools have a name, ordered unique account subset (at most 16), Manual, Round
-robin or Most remaining default, and an optimistic revision. Owner pool membership edits change the accounts available through its use
+robin, Most remaining or Weekly pace default, and an optimistic revision. Owner pool membership edits change the accounts available through its use
 grants. Removing members or deleting a pool blocks affected retained bindings;
 policy/name changes affect future selection only. The overview reports affected
 binding counts. Deleted pool IDs cannot be reused.
@@ -128,7 +164,7 @@ window. A window reporting 0% used with no reset time has not started; that is
 observed full headroom, while a used window without a reset time stays
 unverified.
 
-Round robin and Most remaining require an enabled, granted account, fresh catalog membership and
+Automatic policies require an enabled, granted account, fresh catalog membership and
 fresh applicable quota evidence with headroom and future resets. Manual can
 proceed without quota evidence, but cannot ignore a known applicable exhausted
 window or failed model validation. Fresh metadata is evidence, not a guarantee
@@ -163,7 +199,7 @@ and `/v1/owner/pools/remove` (id/revision). Integration use operations include
 `/v1/overview` (optional poolId/model/policy),
 `/v1/overview/refresh` (accountId), and `/v1/pools/prepare` (allocation UUID,
 poolId/provider/model/tokenHash, optional policy and manual accountId, and
-`supportedPolicies` for Most remaining).
+`supportedPolicies` for Most remaining and Weekly pace).
 Save uses revision 0 for creation and the current revision for updates/deletion.
 Existing binding commit/cancel/inspect operations also handle pool allocations.
 

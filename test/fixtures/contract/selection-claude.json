@@ -2,7 +2,8 @@
   "supportedPolicies": [
     "manual",
     "round-robin",
-    "most-remaining"
+    "most-remaining",
+    "weekly-pace"
   ],
   "admissionRefresh": true,
   "canManagePools": false,

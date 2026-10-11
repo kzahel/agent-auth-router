@@ -16,7 +16,7 @@ import { hashGatewayToken } from "./gateway-auth.ts";
 import { accountHelper } from "./helpers.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
 import { fetchAccountQuotas, readAccountQuotas, type QuotaReadOptions } from "./quotas.ts";
-import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, isPoolPolicy, rankCandidates, selectionEvidence, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
+import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LABELS, GATED_POLICIES, isPoolPolicy, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
 import type { CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
 import type { GatewayClientRecord, Provider } from "./types.ts";
@@ -191,7 +191,7 @@ export class ControlRegistry {
     if (policy !== undefined && !isPoolPolicy(policy)) reject(400, "invalid pool policy");
     const decisions = pool?.accountIds.map(accountId => { const a = accounts.find(a => a.id === accountId); return { accountId,
       reason: eligibility(pool.provider, !!a?.enabled, model, evidence.get(accountId), policy !== "manual", now),
-      ...(model ? { evidence: selectionEvidence(pool.provider, evidence.get(accountId), model, this.reservations(pool.id, accountId, now)) } : {}) }; });
+      ...(model ? { evidence: selectionEvidence(pool.provider, evidence.get(accountId), model, this.reservations(pool.id, accountId, now), now) } : {}) }; });
     return { supportedPolicies: POOL_POLICIES, admissionRefresh: true, canManagePools: !integration, observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
       pools: this.pools(integration).map(p => this.poolMetadata(p, integration)), accounts,
       ...(pool ? { selection: { poolId: pool.id, policy, model: model ?? null, decisions } } : {}) };
@@ -214,7 +214,7 @@ export class ControlRegistry {
     if (existing && !this.poolAllows(existing)) reject(409, "pinned account removed from pool");
     const policy = existing?.policy ?? (requestedPolicy ?? pool.policy) as PoolPolicy;
     if (!isPoolPolicy(policy)) reject(409, "unsupported pool policy; update router");
-    if (policy === "most-remaining" && (!Array.isArray(body.supportedPolicies) || !body.supportedPolicies.includes(policy))) reject(409, "update client to use Most remaining");
+    if (GATED_POLICIES.includes(policy) && (!Array.isArray(body.supportedPolicies) || !body.supportedPolicies.includes(policy))) reject(409, `update client to use ${POLICY_LABELS[policy]}`);
     if (policy === "manual" && !manual) reject(400, "manual pool selection requires an account");
     if (policy !== "manual" && manual) reject(400, "automatic selection cannot specify an account");
     if (manual && !pool.accountIds.includes(manual)) reject(403, "account not in pool");
@@ -255,7 +255,7 @@ export class ControlRegistry {
       const a = accounts.find(a => a.id === accountId), o = evidence.get(accountId);
       const reason = eligibility(pool.provider, !!a && a.enabled !== false, model, o, policy !== "manual", now);
       return { accountId, eligibility: reason !== "eligible" ? reason : supportsThinking(o.models.find(m => m.id === model), body.thinking as string | undefined) ? "eligible" : "thinking-unsupported",
-        evidence: selectionEvidence(pool.provider, o, model, this.reservations(pool.id, accountId, now)) };
+        evidence: selectionEvidence(pool.provider, o, model, this.reservations(pool.id, accountId, now), now) };
     });
     const eligible = decisions.filter(d => d.eligibility === "eligible").map(d => d.accountId);
     const cursor = pool.cursor ? pool.accountIds.indexOf(pool.cursor) : -1;
@@ -275,7 +275,7 @@ export class ControlRegistry {
     const binding: Binding = { id, integrationId: integration.id, accountId: chosen!, provider: pool.provider, model, tokenHash,
       state: "prepared", createdAt: now, poolId, policy, request, ...(body.thinking === undefined ? {} : { thinking: body.thinking as string }),
       policyVersion: 1, selectionEvidence: selectedEvidence,
-      reason: policy === "most-remaining" ? `Most remaining: tightest window has ${selectedEvidence.headroomPercent}% remaining; among accounts with fewest startup reservations` : policy === "round-robin" ? "Round robin among eligible accounts" : "Explicit manual account",
+      reason: selectionReason(policy, selectedEvidence),
       observedAt: evidence.get(chosen!).quota?.observedAt };
     this.change(state => state.bindings.push(binding));
     this.record("prepare", binding, { candidates });
@@ -467,7 +467,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     void (async () => {
       if (req.headers.origin || req.headers.host !== "localhost") reject(403, "invalid control origin");
       const path = req.url;
-      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1"], supportedPolicies: POOL_POLICIES });
+      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1"], supportedPolicies: POOL_POLICIES });
       const isOwner = path?.startsWith("/v1/owner/");
       if (isOwner) owner.authenticate(req.headers.authorization);
       let integration = path === "/v1/pair" || isOwner ? undefined : registry.authenticate(req.headers.authorization);

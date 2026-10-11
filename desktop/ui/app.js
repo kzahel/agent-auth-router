@@ -103,7 +103,7 @@ function editPool(pool) {
   members(value.accountIds);
   $("pool-impact").textContent = value.revision
     ? `${pool.bindings.reduce((n, b) => n + b.count, 0)} session pins reference this pool. Removing a member or deleting the pool blocks subsequent requests for affected pins.`
-    : "Automatic policies refresh stale quota and model observations when a session starts. Most remaining prefers the greatest headroom in the tightest applicable window.";
+    : "Automatic policies refresh stale quota and model observations when a session starts. Most remaining prefers the greatest headroom in the tightest applicable window. Weekly pace starts unused weekly timers first, backs off accounts under 30% short-window headroom, then prefers the account furthest behind its weekly pace.";
   $("delete-pool").hidden = !value.revision;
   form.elements.name.focus();
 }
@@ -308,7 +308,7 @@ async function reload(start = false) {
       element("h3", p.name),
       element(
         "p",
-        `${p.provider} · ${p.policy === "manual" ? "Manual" : p.policy === "most-remaining" ? "Most remaining" : p.policy === "round-robin" ? "Round robin" : "Unsupported policy"} · ${p.accountIds.length} accounts`,
+        `${p.provider} · ${p.policy === "manual" ? "Manual" : p.policy === "most-remaining" ? "Most remaining" : p.policy === "weekly-pace" ? "Weekly pace" : p.policy === "round-robin" ? "Round robin" : "Unsupported policy"} · ${p.accountIds.length} accounts`,
         "badge",
       ),
       element("p", p.accountIds.map(id => accountLabel(next.accounts.find(a => a.id === id) ?? { id })).join(", "), "hint profile-path"),

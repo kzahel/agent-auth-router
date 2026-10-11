@@ -3,7 +3,10 @@
 Research date: 2026-10-04. The original proposals below remain dated research.
 **Implemented follow-up:** Most remaining and bounded admission refresh now join
 Manual and Round robin; [pools](pools.md) records the shipped-source contract.
-Soonest weekly reset, Auto and task-size hints remain proposals.
+On 2026-10-11 [Weekly pace](pools.md#weekly-pace-2026-10-11) followed: it
+starts unused weekly timers, keeps a 30% short-window reserve and prefers the
+account furthest behind its weekly pace, in place of Soonest weekly reset.
+Auto and task-size hints remain proposals.
 This document records the maintainer's request to explore quota-aware policies,
 especially using allowance before its weekly window resets.
 

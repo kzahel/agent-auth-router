@@ -26,8 +26,8 @@ app is signed and notarized, and updates itself after you confirm.
 3. **Sign in** runs the official `claude` or `codex` login in Terminal.app or
    the built-in terminal. No inference is used to sign in.
 4. **Pools → create a pool** for one provider and choose a policy: Manual,
-   Round robin or Most remaining. **Refresh usage** shows quota left on each
-   account.
+   Round robin, Most remaining or Weekly pace. **Refresh usage** shows quota
+   left on each account.
 5. **Connect Yep Anywhere**, then use **Manage access** to grant it a pool.
    Account and pool changes take effect live, with no restart or re-pairing.
 

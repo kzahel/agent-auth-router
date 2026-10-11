@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ControlRegistry } from "../src/control.ts";
 import { hashGatewayToken, generateGatewayToken } from "../src/gateway-auth.ts";
-import { PoolEvidence, eligibility, QUOTA_FRESH_MS, type Observation } from "../src/pools.ts";
+import { PoolEvidence, eligibility, rankCandidates, selectionEvidence, selectionReason, QUOTA_FRESH_MS, SHORT_RESERVE_PERCENT, type Observation } from "../src/pools.ts";
+import type { QuotaWindow } from "../src/quotas.ts";
 import { StateStore } from "../src/state.ts";
 import { tempDir } from "./support.ts";
 
@@ -174,7 +175,7 @@ function rankedEvidence(values: Record<string, [number, number]>, read = (_id: s
     ] };
   });
 }
-const supportedPolicies = ["manual", "round-robin", "most-remaining"];
+const supportedPolicies = ["manual", "round-robin", "most-remaining", "weekly-pace"];
 
 test("Most remaining ranks the tightest applicable window, spreads reservations and persists explanations", async () => {
   const f = fixture(), values: Record<string, [number, number]> = { a: [80, 15], b: [35, 60] };
@@ -211,6 +212,70 @@ test("Most remaining ties advance only on commit and still reject exhausted or c
   assert.equal(b.accountId, "b");
   evidence.reject("b", 429);
   assert.throws(() => f.registry.transition(f.integration, b.id, "commit", evidence), /evidence changed/);
+});
+
+const HOUR = 3600_000, WEEK = 168 * HOUR;
+const iso = (at: number) => new Date(at).toISOString();
+function paceFixture(now: number) {
+  const short = (remaining: number, bucket = "five_hour"): QuotaWindow => ({ bucket, windowMinutes: 300, usedPercent: 100 - remaining, remainingPercent: remaining, resetsAt: iso(now + HOUR) });
+  const weekly = (used: number, resetIn: number | null, bucket = "seven_day"): QuotaWindow => ({ bucket, windowMinutes: 10080, usedPercent: used, remainingPercent: 100 - used, resetsAt: resetIn === null ? null : iso(now + resetIn) });
+  const observed = (windows: QuotaWindow[], provider: "claude" | "codex" = "claude"): Observation => ({ models: [{ id: "claude-sonnet-fixture", name: "Fixture" }], catalogAt: iso(now), attemptedAt: iso(now), error: null,
+    quota: { accountId: "x", provider, status: "ok", observedAt: iso(now), windows } });
+  const evidence = (windows: QuotaWindow[], reservations = 0) => selectionEvidence("claude", observed(windows), "claude-sonnet-fixture", reservations, now);
+  const rank = (accounts: Record<string, QuotaWindow[]>, reservations: Record<string, number> = {}) =>
+    rankCandidates("weekly-pace", Object.entries(accounts).map(([accountId, windows]) => ({ accountId, evidence: evidence(windows, reservations[accountId] ?? 0) }))).map(c => c.accountId);
+  return { short, weekly, observed, evidence, rank };
+}
+
+test("Weekly pace starts unused weekly timers, keeps a short-window reserve, then harvests allowance behind pace", () => {
+  const now = Date.now(), { short, weekly, observed, evidence, rank } = paceFixture(now);
+  const expiring = [short(90), weekly(45, 6 * HOUR)], fresh = [short(90), weekly(1, WEEK)];
+  assert.equal(evidence(expiring).weeklyPacePercent, 51.4, "45% used with six hours left is well behind pace");
+  assert.equal(evidence(fresh).weeklyPacePercent, -1);
+  assert.deepEqual(rank({ fresh, expiring }), ["expiring", "fresh"], "allowance about to reset beats a week just begun");
+
+  const idle = [short(10), weekly(0, null)];
+  assert.equal(eligibility("claude", true, "claude-sonnet-fixture", observed(idle), true, now), "eligible");
+  assert.deepEqual(evidence(idle), { ...evidence(idle), weeklyUnstarted: true, weeklyPacePercent: null });
+  assert.deepEqual(rank({ expiring, idle }), ["idle", "expiring"], "an unstarted weekly timer outranks everything, even the reserve");
+
+  const ahead = [short(SHORT_RESERVE_PERCENT), weekly(60, 72 * HOUR)], tight = [short(SHORT_RESERVE_PERCENT - 1), weekly(10, 6 * HOUR)];
+  assert.deepEqual(rank({ tight, ahead }), ["ahead", "tight"], "below the reserve backs off despite better pace");
+  assert.deepEqual(rank({ tight, worse: [short(10), weekly(60, 72 * HOUR)] }), ["tight", "worse"], "all under the reserve: most short headroom");
+  assert.deepEqual(rank({ none: [short(90)], ahead: [short(90), weekly(60, 144 * HOUR)] }), ["ahead", "none"], "no weekly window ranks last");
+  assert.deepEqual(rank({ expiring, fresh }, { expiring: 1 }), ["fresh", "expiring"], "startup reservations still come first");
+  assert.deepEqual(rank({ a: fresh, b: fresh }), ["a", "b"], "ties keep cursor order");
+
+  const families = [short(90), weekly(20, 84 * HOUR), weekly(45, 84 * HOUR, "seven_day_sonnet"), weekly(100, 84 * HOUR, "seven_day_opus")];
+  assert.equal(evidence(families).weeklyPacePercent, 5, "the most constrained applicable weekly sets the pace; Opus does not apply");
+  assert.equal(evidence([short(90), weekly(20, 84 * HOUR), weekly(0, null, "seven_day_sonnet")]).weeklyUnstarted, true);
+  const codex = selectionEvidence("codex", observed([{ ...weekly(30, 84 * HOUR), bucket: "codex:primary" }, short(70, "codex:secondary")], "codex"), "claude-sonnet-fixture", 0, now);
+  assert.deepEqual([codex.weeklyPacePercent, codex.shortHeadroomPercent], [20, 70], "Codex windows are classified by duration, not position");
+
+  assert.match(selectionReason("weekly-pace", evidence(idle)), /not started; this session starts its timer/);
+  assert.match(selectionReason("weekly-pace", evidence(tight)), /under the 30% short-window reserve; this one has the most \(29%\)/);
+  assert.match(selectionReason("weekly-pace", evidence(expiring)), /51.4 points behind weekly pace; short-window headroom 90%/);
+  assert.match(selectionReason("weekly-pace", evidence(fresh)), /1 points ahead/);
+});
+
+test("Weekly pace requires client support and persists its explanation through prepare and commit", async () => {
+  const f = fixture(), now = Date.now(), { short, weekly } = paceFixture(now);
+  const windows: Record<string, QuotaWindow[]> = { a: [short(80), weekly(45, 6 * HOUR)], b: [short(100), weekly(0, null)] };
+  const evidence = new PoolEvidence(async () => [{ id: "claude-sonnet-fixture", name: "Fixture" }], async accountId => ({ accountId, provider: "claude", status: "ok", observedAt: new Date().toISOString(), windows: windows[accountId]! }));
+  f.registry.savePool({ ...f.pool, revision: 1, policy: "weekly-pace" });
+  await assert.rejects(f.registry.preparePoolWithRefresh(f.integration, { ...f.allocation(), supportedPolicies: ["most-remaining"] }, evidence, new AbortController().signal), /update client to use Weekly pace/);
+  const selected = await f.registry.preparePoolWithRefresh(f.integration, { ...f.allocation(), supportedPolicies }, evidence, new AbortController().signal) as any;
+  assert.equal(selected.accountId, "b");
+  assert.equal(selected.policy, "weekly-pace");
+  assert.equal(selected.selectionEvidence.weeklyUnstarted, true);
+  assert.match(selected.reason, /starts its timer/);
+  const parallel = f.registry.preparePool(f.integration, { ...f.allocation(), supportedPolicies }, evidence) as any;
+  assert.equal(parallel.accountId, "a", "a burst spreads before the jump start repeats");
+  assert.match(parallel.reason, /behind weekly pace/);
+  f.registry.transition(f.integration, selected.id, "commit", evidence);
+  const overview = f.registry.overview(f.integration, evidence, { poolId: f.pool.id, model: "claude-sonnet-fixture" }) as any;
+  assert.ok(overview.supportedPolicies.includes("weekly-pace"));
+  assert.ok(overview.selection.decisions[0].evidence.weeklyPacePercent > 50);
 });
 
 test("admission refresh is coalesced and globally bounded across more than four members", async () => {
