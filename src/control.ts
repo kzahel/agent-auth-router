@@ -16,7 +16,7 @@ import { hashGatewayToken } from "./gateway-auth.ts";
 import { accountHelper } from "./helpers.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
 import { fetchAccountQuotas, readAccountQuotas, type QuotaReadOptions } from "./quotas.ts";
-import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LABELS, GATED_POLICIES, isPoolPolicy, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
+import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
 import type { CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
 import type { GatewayClientRecord, Provider } from "./types.ts";
@@ -192,7 +192,7 @@ export class ControlRegistry {
     const decisions = pool?.accountIds.map(accountId => { const a = accounts.find(a => a.id === accountId); return { accountId,
       reason: eligibility(pool.provider, !!a?.enabled, model, evidence.get(accountId), policy !== "manual", now),
       ...(model ? { evidence: selectionEvidence(pool.provider, evidence.get(accountId), model, this.reservations(pool.id, accountId, now), now) } : {}) }; });
-    return { supportedPolicies: POOL_POLICIES, admissionRefresh: true, canManagePools: !integration, observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
+    return { supportedPolicies: POOL_POLICIES, policies: POLICY_LIST, admissionRefresh: true, canManagePools: !integration, observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
       pools: this.pools(integration).map(p => this.poolMetadata(p, integration)), accounts,
       ...(pool ? { selection: { poolId: pool.id, policy, model: model ?? null, decisions } } : {}) };
   }
@@ -214,7 +214,6 @@ export class ControlRegistry {
     if (existing && !this.poolAllows(existing)) reject(409, "pinned account removed from pool");
     const policy = existing?.policy ?? (requestedPolicy ?? pool.policy) as PoolPolicy;
     if (!isPoolPolicy(policy)) reject(409, "unsupported pool policy; update router");
-    if (GATED_POLICIES.includes(policy) && (!Array.isArray(body.supportedPolicies) || !body.supportedPolicies.includes(policy))) reject(409, `update client to use ${POLICY_LABELS[policy]}`);
     if (policy === "manual" && !manual) reject(400, "manual pool selection requires an account");
     if (policy !== "manual" && manual) reject(400, "automatic selection cannot specify an account");
     if (manual && !pool.accountIds.includes(manual)) reject(403, "account not in pool");
@@ -235,12 +234,13 @@ export class ControlRegistry {
       return current;
     };
     try {
-      if (initial.policy !== "manual") {
-        await evidence.refreshAdmission(initial.pool.accountIds, initial.pool.provider, initial.model, controller.signal, id => {
-          const current = check();
-          return current.pool.accountIds.includes(id) && this.store.loadAccounts().some(a => a.id === id && a.enabled !== false && !a.retired);
-        });
-      }
+      const allowed = (id: string) => {
+        const current = check();
+        return current.pool.accountIds.includes(id) && this.store.loadAccounts().some(a => a.id === id && a.enabled !== false && !a.retired);
+      };
+      // Manual needs no quota, only a fresh catalog for its one account.
+      if (initial.manual) await evidence.discover([initial.manual], controller.signal, allowed);
+      else await evidence.refreshAdmission(initial.pool.accountIds, initial.pool.provider, initial.model, controller.signal, allowed);
       check();
       return this.preparePool(this.current(integration), body, evidence);
     } finally { controller.abort(new ControlError(409, "pool admission ended")); clearTimeout(timer); signal.removeEventListener("abort", abort); }
@@ -467,7 +467,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     void (async () => {
       if (req.headers.origin || req.headers.host !== "localhost") reject(403, "invalid control origin");
       const path = req.url;
-      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1"], supportedPolicies: POOL_POLICIES });
+      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1"], supportedPolicies: POOL_POLICIES, policies: POLICY_LIST });
       const isOwner = path?.startsWith("/v1/owner/");
       if (isOwner) owner.authenticate(req.headers.authorization);
       let integration = path === "/v1/pair" || isOwner ? undefined : registry.authenticate(req.headers.authorization);

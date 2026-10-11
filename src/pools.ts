@@ -7,8 +7,8 @@ export const POOL_POLICIES = ["manual", "round-robin", "most-remaining", "weekly
 export type PoolPolicy = typeof POOL_POLICIES[number];
 export const isPoolPolicy = (value: unknown): value is PoolPolicy => POOL_POLICIES.includes(value as PoolPolicy);
 export const POLICY_LABELS: Record<PoolPolicy, string> = { manual: "Manual", "round-robin": "Round robin", "most-remaining": "Most remaining", "weekly-pace": "Weekly pace" };
-/** Policies an older client could not have known; prepare requires the client to list them. */
-export const GATED_POLICIES: readonly PoolPolicy[] = ["most-remaining", "weekly-pace"];
+/** English display names, so a consumer can offer every policy without knowing it. */
+export const POLICY_LIST = POOL_POLICIES.map(id => ({ id, label: POLICY_LABELS[id] }));
 export const WEEKLY_MINUTES = 10_080;
 /** Weekly pace backs off an account whose windows shorter than a week have less than this left. */
 export const SHORT_RESERVE_PERCENT = 30;

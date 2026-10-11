@@ -6,7 +6,10 @@ Manual and Round robin; [pools](pools.md) records the shipped-source contract.
 On 2026-10-11 [Weekly pace](pools.md#weekly-pace-2026-10-11) followed: it
 starts unused weekly timers, keeps a 30% short-window reserve and prefers the
 account furthest behind its weekly pace, in place of Soonest weekly reset.
-Auto and task-size hints remain proposals.
+Auto and task-size hints remain proposals. Also on 2026-10-11 the pool policy
+became a default that consumers may override per session, and the client
+policy gate proposed under [metadata](#metadata-and-ui-contract-to-add) was
+removed; see [pools](pools.md#default-policy-and-per-session-choice-2026-10-11).
 This document records the maintainer's request to explore quota-aware policies,
 especially using allowance before its weekly window resets.
 

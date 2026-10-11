@@ -170,11 +170,13 @@ test("management UI preserves typing while observations update, and offers owner
     samples.every((s) => s.retained && s.elapsed < 100),
     JSON.stringify(samples),
   );
-  await page.locator("#pool-form select[name=policy]").selectOption("most-remaining");
+  await page.locator("#pool-form select[name=policy]").selectOption("weekly-pace");
+  await page.locator("#pool-access").getByLabel("Yep Anywhere").check();
   await page.getByRole("button", { name: "Save pool", exact: true }).click();
   await page.getByRole("heading", { name, exact: true }).waitFor();
-  await page.getByText("codex · Most remaining · 2 accounts", { exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => window.fixtureState.pools[0].policy), "most-remaining");
+  await page.getByText("codex · Weekly pace · 2 accounts", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.fixtureState.pools[0].policy), "weekly-pace");
+  assert.deepEqual(await page.evaluate(() => window.fixtureState.integrations[0].poolIds), ["work"], "Available to writes the grant");
   await page.getByRole("tab", { name: "Connections", exact: true }).click();
   await page.getByRole("button", { name: "Manage access", exact: true }).click();
   await page.locator("#grant-pools input").check();

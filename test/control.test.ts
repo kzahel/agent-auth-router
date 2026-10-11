@@ -152,7 +152,7 @@ test("pool HTTP overview is cached metadata and shares eligibility with native a
   assert.equal((await request(socket, "/v1/bindings/cancel", token, { id: allocation.id })).status, 200);
 });
 
-test("HTTP automatic admission refreshes cold evidence and refuses unsupported clients without provider reads", { skip: process.platform === "win32" }, async t => {
+test("HTTP automatic admission refreshes cold evidence once and needs no client policy list", { skip: process.platform === "win32" }, async t => {
   const store = storeFixture();
   const upstream = await mockUpstream((_req, res, recorded) => {
     res.setHeader("content-type", "application/json");
@@ -165,17 +165,16 @@ test("HTTP automatic admission refreshes cold evidence and refuses unsupported c
   await ownerRequest(store, "pools/save", { id: poolId, name: "Work", revision: 0, provider: "claude", policy: "most-remaining", accountIds: ["fixture"] });
   await ownerRequest(store, "grants/save", { id, revision: 1, poolIds: [poolId] });
   const body = { id: randomUUID(), poolId, model: "synthetic-model", provider: "claude", tokenHash: hashGatewayToken(generateGatewayToken()) };
-  assert.equal((await request(socket, "/v1/pools/prepare", token, body)).status, 409);
-  assert.equal(upstream.requests.length, 0);
   const overview = await request(socket, "/v1/overview", token, {});
   assert.ok(overview.value.supportedPolicies.includes("most-remaining"));
-  assert.equal(upstream.requests.length, 0);
-  const admitted = await request(socket, "/v1/pools/prepare", token, { ...body, supportedPolicies: ["most-remaining"] });
+  assert.deepEqual(overview.value.policies.map((p: { label: string }) => p.label), ["Manual", "Round robin", "Most remaining", "Weekly pace"]);
+  assert.equal(upstream.requests.length, 0, "overview is passive");
+  const admitted = await request(socket, "/v1/pools/prepare", token, body);
   assert.equal(admitted.status, 200);
   assert.equal(admitted.value.selectionEvidence.headroomPercent, 55);
   assert.equal(upstream.requests.length, 1, "catalog over HTTP; usage through the official CLI");
   assert.equal((await request(socket, "/v1/bindings/commit", token, { id: body.id })).status, 200);
-  const repeat = await request(socket, "/v1/pools/prepare", token, { ...body, supportedPolicies: ["most-remaining"] });
+  const repeat = await request(socket, "/v1/pools/prepare", token, body);
   assert.equal(repeat.value.accountId, admitted.value.accountId);
   assert.equal(upstream.requests.length, 1);
 });

@@ -101,9 +101,14 @@ function editPool(pool) {
     form.elements[key].value = value[key];
   form.elements.provider.disabled = value.revision > 0;
   members(value.accountIds);
+  $("pool-access").replaceChildren();
+  for (const i of snapshot.integrations.filter(i => !i.revoked))
+    check($("pool-access"), i.id, i.name, i.poolIds.includes(value.id));
+  if (!$("pool-access").childElementCount)
+    $("pool-access").append(element("p", "No connections. Pair from Yep Anywhere to share this pool.", "hint"));
   $("pool-impact").textContent = value.revision
     ? `${pool.bindings.reduce((n, b) => n + b.count, 0)} session pins reference this pool. Removing a member or deleting the pool blocks subsequent requests for affected pins.`
-    : "Automatic policies refresh stale quota and model observations when a session starts. Most remaining prefers the greatest headroom in the tightest applicable window. Weekly pace starts unused weekly timers first, backs off accounts under 30% short-window headroom, then prefers the account furthest behind its weekly pace.";
+    : "Sessions use the default policy unless the app starting them picks another policy or a specific account. Automatic policies refresh stale quota and model observations when a session starts. Most remaining prefers the greatest headroom in the tightest applicable window. Weekly pace starts unused weekly timers first, backs off accounts under 30% short-window headroom, then prefers the account furthest behind its weekly pace.";
   $("delete-pool").hidden = !value.revision;
   form.elements.name.focus();
 }
@@ -477,6 +482,15 @@ $("pool-form").onsubmit = (e) => {
       policy: fields.policy.value,
       accountIds: checked("members"),
     });
+    // Sharing writes each changed connection's grant, as Manage access does.
+    const shared = checked("pool-access");
+    for (const i of snapshot.integrations.filter(i => !i.revoked && i.poolIds.includes(fields.id.value) !== shared.includes(i.id)))
+      await api("grants/save", {
+        id: i.id,
+        revision: i.revision,
+        poolIds: shared.includes(i.id) ? [...i.poolIds, fields.id.value] : i.poolIds.filter(id => id !== fields.id.value),
+        accountIds: i.accountIds,
+      });
     form.hidden = true;
     await reload();
   }, form.querySelector("button[type=submit]"));

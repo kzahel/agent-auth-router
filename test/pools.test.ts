@@ -182,7 +182,6 @@ test("Most remaining ranks the tightest applicable window, spreads reservations 
   const evidence = rankedEvidence(values);
   f.registry.savePool({ ...f.pool, revision: 1, policy: "most-remaining" });
   const request = { ...f.allocation(), supportedPolicies };
-  assert.throws(() => f.registry.preparePool(f.integration, f.allocation(), evidence), /update client/);
   const selected = await f.registry.preparePoolWithRefresh(f.integration, request, evidence, new AbortController().signal) as any;
   assert.equal(selected.accountId, "b");
   assert.equal(selected.selectionEvidence.headroomPercent, 35);
@@ -258,13 +257,13 @@ test("Weekly pace starts unused weekly timers, keeps a short-window reserve, the
   assert.match(selectionReason("weekly-pace", evidence(fresh)), /1 points ahead/);
 });
 
-test("Weekly pace requires client support and persists its explanation through prepare and commit", async () => {
+test("Weekly pace needs no client support and persists its explanation through prepare and commit", async () => {
   const f = fixture(), now = Date.now(), { short, weekly } = paceFixture(now);
   const windows: Record<string, QuotaWindow[]> = { a: [short(80), weekly(45, 6 * HOUR)], b: [short(100), weekly(0, null)] };
   const evidence = new PoolEvidence(async () => [{ id: "claude-sonnet-fixture", name: "Fixture" }], async accountId => ({ accountId, provider: "claude", status: "ok", observedAt: new Date().toISOString(), windows: windows[accountId]! }));
   f.registry.savePool({ ...f.pool, revision: 1, policy: "weekly-pace" });
-  await assert.rejects(f.registry.preparePoolWithRefresh(f.integration, { ...f.allocation(), supportedPolicies: ["most-remaining"] }, evidence, new AbortController().signal), /update client to use Weekly pace/);
-  const selected = await f.registry.preparePoolWithRefresh(f.integration, { ...f.allocation(), supportedPolicies }, evidence, new AbortController().signal) as any;
+  // Consumers need not list a policy to use it; the overview names every policy.
+  const selected = await f.registry.preparePoolWithRefresh(f.integration, f.allocation(), evidence, new AbortController().signal) as any;
   assert.equal(selected.accountId, "b");
   assert.equal(selected.policy, "weekly-pace");
   assert.equal(selected.selectionEvidence.weeklyUnstarted, true);
@@ -275,7 +274,22 @@ test("Weekly pace requires client support and persists its explanation through p
   f.registry.transition(f.integration, selected.id, "commit", evidence);
   const overview = f.registry.overview(f.integration, evidence, { poolId: f.pool.id, model: "claude-sonnet-fixture" }) as any;
   assert.ok(overview.supportedPolicies.includes("weekly-pace"));
+  assert.deepEqual(overview.policies.find((p: { id: string }) => p.id === "weekly-pace"), { id: "weekly-pace", label: "Weekly pace" });
   assert.ok(overview.selection.decisions[0].evidence.weeklyPacePercent > 50);
+});
+
+test("a consumer can pick an account in an automatic pool; admission refreshes only that account's catalog", async () => {
+  const f = fixture(), now = Date.now(), { short, weekly } = paceFixture(now), reads: string[] = [];
+  const evidence = new PoolEvidence(async accountId => { reads.push(`catalog:${accountId}`); return [{ id: "claude-sonnet-fixture", name: "Fixture" }]; }, async accountId => {
+    reads.push(`quota:${accountId}`);
+    return { accountId, provider: "claude", status: "ok", observedAt: new Date().toISOString(), windows: [short(80), weekly(10, 6 * HOUR)] };
+  });
+  f.registry.savePool({ ...f.pool, revision: 1, policy: "weekly-pace" });
+  const picked = await f.registry.preparePoolWithRefresh(f.integration, { ...f.allocation(), policy: "manual", accountId: "b" }, evidence, new AbortController().signal) as any;
+  assert.deepEqual([picked.accountId, picked.policy, picked.reason], ["b", "manual", "Explicit manual account"]);
+  assert.deepEqual(reads, ["catalog:b"], "a stale catalog is refreshed for the picked account only; Manual needs no quota");
+  const other = await f.registry.preparePoolWithRefresh(f.integration, { ...f.allocation(), policy: "round-robin" }, evidence, new AbortController().signal) as any;
+  assert.equal(other.policy, "round-robin", "any policy can override the pool default per session");
 });
 
 test("admission refresh is coalesced and globally bounded across more than four members", async () => {

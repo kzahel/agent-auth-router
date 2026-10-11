@@ -59,11 +59,10 @@ Overview adds `supportedPolicies`, `admissionRefresh`, an optional
 `quota.source` of `probe` or `inference` per account, optional Claude
 `cliModels`/`cliModelsAt`, and per-candidate `evidence` (headroom, limiting
 bucket IDs, reservation count, catalog and quota timestamps). Reads stay passive. Bindings persist `policyVersion`,
-`selectionEvidence` and a human-readable reason before reply. Most remaining
-prepare requires a `supportedPolicies` array containing `most-remaining`, even
-when it is the pool default. An old client receives upgrade guidance before
-provider I/O rather than silently running a policy it does not understand.
-YA gates the policy with optional capability 117 and connected-router support.
+`selectionEvidence` and a human-readable reason before reply. Until
+2026-10-11 Most remaining prepare also required a `supportedPolicies` array
+containing `most-remaining`; [default policy and per-session
+choice](#default-policy-and-per-session-choice-2026-10-11) removed that gate.
 
 Desktop pool editing exposes Most remaining; YA exposes its session selection and
 cached headroom preview. Unknown/missing observations remain explicit. Model
@@ -97,8 +96,6 @@ from about five days of hourly dashboard metrics (the largest one-hour rise in
 a five-hour window was about 35 points); it is not a per-pool setting yet.
 Evidence gains `shortHeadroomPercent`, `weeklyUnstarted` and
 `weeklyPacePercent`, and the persisted reason names the deciding tier.
-Prepare requires `supportedPolicies` to contain `weekly-pace`, as for Most
-remaining.
 
 Limits: selection happens only at session start, so a long session can still
 fill its account's five-hour window. The jump start assumes a weekly window
@@ -106,6 +103,28 @@ begins at its first use; the hourly metrics fit that (the three accounts reset
 at different hours) but do not prove it. The event log can confirm it. The
 router never sends its own request to start a timer. Percentages are compared
 as if accounts had equal plans.
+
+## Default policy and per-session choice (2026-10-11)
+
+A pool's policy is its **default**. Any consumer granted the pool may override
+it for one allocation: prepare's `policy` accepts any router policy, and
+`policy: "manual"` with `accountId` picks any member, whatever the default.
+Pins, idempotency and commit behave as before; the request identity includes
+the override.
+
+- **No client policy list.** Prepare no longer requires `supportedPolicies`
+  to name Most remaining or Weekly pace. A consumer can offer every policy
+  the router lists without knowing it; the cost is that an older consumer may
+  receive a policy id it has no label for.
+- **Labels.** The overview, selection response and `/v1/info` return
+  `policies`, each `{ id, label }` with an English display name, alongside
+  the existing `supportedPolicies` ids.
+- **Manual admission refresh.** A Manual prepare refreshes a stale catalog for
+  its one account (no usage probe; Manual needs no quota evidence), so a pick
+  made more than 60 seconds after discovery does not fail on a stale catalog.
+- **Desktop.** The pool form says "Default policy" and has **Available to**
+  checkboxes for connected integrations, which write the same grant as
+  **Manage access**.
 
 ## Shared allocation behavior
 
@@ -198,8 +217,7 @@ owner mutations are POST `/v1/owner/pools/save` (id/name/provider/accountIds/pol
 and `/v1/owner/pools/remove` (id/revision). Integration use operations include
 `/v1/overview` (optional poolId/model/policy),
 `/v1/overview/refresh` (accountId), and `/v1/pools/prepare` (allocation UUID,
-poolId/provider/model/tokenHash, optional policy and manual accountId, and
-`supportedPolicies` for Most remaining and Weekly pace).
+poolId/provider/model/tokenHash, optional policy and manual accountId).
 Save uses revision 0 for creation and the current revision for updates/deletion.
 Existing binding commit/cancel/inspect operations also handle pool allocations.
 
