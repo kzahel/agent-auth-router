@@ -21,6 +21,8 @@ export interface RouterDeps {
   observer?: { begin(start: RequestStart): RequestHandle };
   /** Display name, pool and binding attribution for an authenticated gateway client. */
   describeClient?: (client: GatewayClientRecord) => { name: string; poolId?: string | undefined; bindingId?: string | undefined };
+  /** The pool member for a pool-backed client's request; rejects with a `status`. */
+  sessionAccount?: (input: { client: GatewayClientRecord; provider: Provider; poolId: string; sessionId: string | undefined; model: () => string | undefined }) => Promise<string>;
 }
 
 export interface RouterServer {
@@ -133,13 +135,24 @@ export function createRouter(deps: RouterDeps): RouterServer {
     const decision = authorize(deps.clients(), req.headers, provider);
     if (!decision.ok) throw new HttpError(decision.status, decision.message);
     meta.client = decision.client.name;
-    meta.account = decision.accountId;
-    const coordinator = deps.coordinators.get(decision.accountId);
+    let body: Buffer | undefined;
+    let accountId: string;
+    if (decision.poolId === undefined) accountId = decision.accountId;
+    else {
+      const poolId = decision.poolId;
+      const read = body = await readBody(req, limits.maxBodyBytes);
+      meta.poolId = poolId;
+      if (!deps.sessionAccount) throw new HttpError(503, "gateway pools are unavailable");
+      accountId = await deps.sessionAccount({ client: decision.client, provider, poolId, sessionId: clientSessionId(provider, req.headers, read), model: () => requestModel(read) })
+        .catch((error: unknown) => { throw new HttpError(statusOf(error) === 403 ? 403 : 503, error instanceof Error ? error.message : "pool selection failed"); });
+    }
+    meta.account = accountId;
+    const coordinator = deps.coordinators.get(accountId);
     if (!coordinator || coordinator.account.provider !== provider || coordinator.account.enabled === false) {
       throw new HttpError(503, "assigned upstream account is not available");
     }
 
-    const body = await readBody(req, limits.maxBodyBytes);
+    body ??= await readBody(req, limits.maxBodyBytes);
     let clientClosed = false;
     res.once("close", () => {
       clientClosed = !res.writableFinished;
@@ -148,7 +161,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
     if (deps.observer) {
       const described = deps.describeClient?.(decision.client) ?? { name: decision.client.name };
       try {
-        tracking.handle = deps.observer.begin({ provider, route: route.path, accountId: decision.accountId, client: described.name, poolId: described.poolId, bindingId: described.bindingId,
+        tracking.handle = deps.observer.begin({ provider, route: route.path, accountId, client: described.name, poolId: described.poolId ?? decision.poolId, bindingId: described.bindingId,
           requestId: String(meta.requestId), sessionId: clientSessionId(provider, req.headers, body), tapped: tapsUsage(provider, route.path) });
         tracking.handle.bytesUp(body.length);
       } catch (error) { log("metrics.error", { error: errorText(error) }); }
@@ -313,6 +326,18 @@ function observe(upstreamRes: IncomingMessage, observed: RequestHandle, provider
   };
   upstreamRes.on("data", (chunk: Buffer) => safely(() => { observed.bytesDown(chunk.length); tap?.push(chunk); }));
   upstreamRes.on("end", () => safely(() => tap?.end()));
+}
+
+function requestModel(body: Buffer): string | undefined {
+  try {
+    const model = (JSON.parse(body.toString("utf8")) as { model?: unknown }).model;
+    return typeof model === "string" && model.length > 0 && model.length <= 200 ? model : undefined;
+  } catch { return undefined; }
+}
+
+function statusOf(error: unknown): number | undefined {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" ? status : undefined;
 }
 
 function collectBounded(stream: IncomingMessage, max: number): Promise<Buffer> {

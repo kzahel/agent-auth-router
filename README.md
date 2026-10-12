@@ -82,6 +82,7 @@ npm run aar -- init
 npm run aar -- account add work --provider claude --credential-store claude-keychain
 npm run aar -- account login-command work       # run the printed official login
 npm run aar -- client add laptop --claude work  # prints client configuration
+npm run aar -- client add ci --claude-pool Work # sessions spread across a pool
 npm run aar -- serve                            # prints a web dashboard sign-in link
 npm run aar -- dashboard url                    # a new single-use dashboard link
 npm run aar -- account quotas                   # quota percentages and resets (JSON)

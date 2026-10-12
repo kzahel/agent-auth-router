@@ -126,6 +126,34 @@ the override.
   checkboxes for connected integrations, which write the same grant as
   **Manage access**.
 
+## Pool-backed gateway tokens (2026-10-12)
+
+A gateway client may name a pool per provider instead of an account
+(`aar client add NAME --claude-pool POOL`, by id or name; `clients/add` takes
+`pools: { claude: <pool id> }`, and rejects an account and a pool for the same
+provider). It suits clients that cannot run the integration protocol, such as
+the PR review worker's Claude Code containers, which hold one static token.
+
+- **Session.** The router reads the client's own session id: Claude Code
+  2.1.291 sends `x-claude-code-session-id` and repeats it in
+  `metadata.user_id`, now a JSON string; Codex sends `session_id`. The id is
+  unauthenticated, but it can only move a client between accounts its pool
+  already grants.
+- **Selection.** A session's first request runs the same admission refresh and
+  ranking as `pools/prepare`, with the pool's default policy and the request's
+  `model`. The pick is pinned in `control.json` for seven days (at most
+  10,000 pins), advances the pool cursor, and is logged as a `binding` event
+  with action `session` and every candidate's evidence.
+- **Spread.** A pin made within the five-minute prepare window counts as a
+  startup reservation, so sessions that start together go to different members
+  even before their traffic moves the quota evidence.
+- **Affinity.** A pinned session keeps its account while the account stays in
+  the pool and enabled, even when its quota runs low or it is rate limited. It
+  moves only when the account leaves the pool or is disabled.
+- **No session.** A request that names no session is chosen individually and
+  never pinned; one without a model, such as `GET /v1/models`, takes the first
+  enabled member. A deleted pool answers 403, and no eligible member 503.
+
 ## Shared allocation behavior
 
 Pools have a name, ordered unique account subset (at most 16), Manual, Round

@@ -81,7 +81,11 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   let control: Awaited<ReturnType<typeof startControl>> | undefined;
   let dashboard: Dashboard | undefined;
   const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, observer: metrics,
-    describeClient: client => control?.registry.describeClient(client) ?? { name: client.name }, onProviderResponse: (accountId, status, retryAfter, headers, requestId) => {
+    describeClient: client => control?.registry.describeClient(client) ?? { name: client.name },
+    sessionAccount: ({ client, provider, poolId, sessionId, model }) => control
+      ? control.registry.sessionAccount(client, provider, poolId, sessionId, model, control.evidence)
+      : Promise.reject(Object.assign(new Error("gateway pools need the control socket"), { status: 503 })),
+    onProviderResponse: (accountId, status, retryAfter, headers, requestId) => {
     if (!control) return;
     const provider = coordinators.get(accountId)?.account.provider;
     control.evidence.reject(accountId, status, retryAfter);

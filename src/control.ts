@@ -30,7 +30,9 @@ interface Binding {
   policyVersion?: number; selectionEvidence?: SelectionEvidence;
   poolId?: string; policy?: PoolPolicy; request?: string; reason?: string; observedAt?: string | undefined;
 }
-interface ControlState { version: 3; routerId: string; integrations: Integration[]; bindings: Binding[]; pools?: Pool[]; cancellations?: { id: string; integrationId: string }[] }
+/** A pool-backed gateway client's session and the member chosen for it. */
+interface SessionPin { key: string; poolId: string; accountId: string; createdAt: number }
+interface ControlState { version: 3; routerId: string; integrations: Integration[]; bindings: Binding[]; pools?: Pool[]; cancellations?: { id: string; integrationId: string }[]; sessions?: SessionPin[] }
 export class ControlError extends Error {
   status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
@@ -39,6 +41,8 @@ const reject = (status: number, message: string): never => { throw new ControlEr
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const PREPARE_MS = 5 * 60_000;
+const SESSION_PIN_MS = 7 * 86_400_000;
+const MAX_SESSION_PINS = 10_000;
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) reject(400, "expected object");
   return value as Record<string, unknown>;
@@ -196,8 +200,27 @@ export class ControlRegistry {
       pools: this.pools(integration).map(p => this.poolMetadata(p, integration)), accounts,
       ...(pool ? { selection: { poolId: pool.id, policy, model: model ?? null, decisions } } : {}) };
   }
+  /** Startup reservations: prepared bindings and gateway sessions pinned within
+   * the prepare window, so sessions that start together spread across members. */
   private reservations(poolId: string, accountId: string, now: number): number {
-    return this.state.bindings.filter(b => b.poolId === poolId && b.accountId === accountId && b.state === "prepared" && b.createdAt + PREPARE_MS > now).length;
+    return this.state.bindings.filter(b => b.poolId === poolId && b.accountId === accountId && b.state === "prepared" && b.createdAt + PREPARE_MS > now).length
+      + (this.state.sessions ?? []).filter(s => s.poolId === poolId && s.accountId === accountId && s.createdAt + PREPARE_MS > now).length;
+  }
+  private rank(pool: Pool, policy: PoolPolicy, model: string, thinking: string | undefined, evidence: PoolEvidence, now: number) {
+    const accounts = this.store.loadAccounts();
+    // Every member's decision is kept for the event log, not only the winner's.
+    const decisions = pool.accountIds.map(accountId => {
+      const a = accounts.find(a => a.id === accountId), o = evidence.get(accountId);
+      const reason = eligibility(pool.provider, !!a && a.enabled !== false, model, o, policy !== "manual", now);
+      return { accountId, eligibility: reason !== "eligible" ? reason : supportsThinking(o.models.find(m => m.id === model), thinking) ? "eligible" : "thinking-unsupported",
+        evidence: selectionEvidence(pool.provider, o, model, this.reservations(pool.id, accountId, now), now) };
+    });
+    const eligible = decisions.filter(d => d.eligibility === "eligible").map(d => d.accountId);
+    const cursor = pool.cursor ? pool.accountIds.indexOf(pool.cursor) : -1;
+    const ordered = [...pool.accountIds.slice(cursor + 1), ...pool.accountIds.slice(0, cursor + 1)].filter(id => eligible.includes(id));
+    const ranked = rankCandidates(policy, ordered.map(accountId => ({ accountId, evidence: decisions.find(d => d.accountId === accountId)!.evidence }))).map(c => c.accountId);
+    const candidates = decisions.map(d => ({ accountId: d.accountId, eligibility: d.eligibility, rank: ranked.indexOf(d.accountId) < 0 ? null : ranked.indexOf(d.accountId), ...d.evidence }));
+    return { decisions, eligible, ranked, candidates };
   }
   private poolRequest(integration: Integration, body: Record<string, unknown>) {
     const id = field(body, "id", UUID), poolId = field(body, "poolId", UUID), model = field(body, "model"), tokenHash = field(body, "tokenHash", HASH);
@@ -249,19 +272,7 @@ export class ControlRegistry {
     const { id, poolId, model, tokenHash, pool, request, existing, policy, manual } = this.poolRequest(integration, body);
     if (existing) return this.prepare(integration, { id, accountId: existing.accountId, provider: pool.provider, model, tokenHash, thinking: existing.thinking });
     const now = Date.now();
-    const accounts = this.store.loadAccounts();
-    // Every member's decision is kept for the event log, not only the winner's.
-    const decisions = pool.accountIds.map(accountId => {
-      const a = accounts.find(a => a.id === accountId), o = evidence.get(accountId);
-      const reason = eligibility(pool.provider, !!a && a.enabled !== false, model, o, policy !== "manual", now);
-      return { accountId, eligibility: reason !== "eligible" ? reason : supportsThinking(o.models.find(m => m.id === model), body.thinking as string | undefined) ? "eligible" : "thinking-unsupported",
-        evidence: selectionEvidence(pool.provider, o, model, this.reservations(pool.id, accountId, now), now) };
-    });
-    const eligible = decisions.filter(d => d.eligibility === "eligible").map(d => d.accountId);
-    const cursor = pool.cursor ? pool.accountIds.indexOf(pool.cursor) : -1;
-    const ordered = [...pool.accountIds.slice(cursor + 1), ...pool.accountIds.slice(0, cursor + 1)].filter(id => eligible.includes(id));
-    const ranked = rankCandidates(policy, ordered.map(accountId => ({ accountId, evidence: decisions.find(d => d.accountId === accountId)!.evidence }))).map(c => c.accountId);
-    const candidates = decisions.map(d => ({ accountId: d.accountId, eligibility: d.eligibility, rank: ranked.indexOf(d.accountId) < 0 ? null : ranked.indexOf(d.accountId), ...d.evidence }));
+    const { decisions, eligible, ranked, candidates } = this.rank(pool, policy, model, body.thinking as string | undefined, evidence, now);
     const refuse = (message: string): never => {
       this.events?.write("binding", { action: "refuse", bindingId: id, integrationId: integration.id, provider: pool.provider, model, poolId, policy, requestedAccountId: manual ?? null, error: message, candidates });
       return reject(409, message);
@@ -287,6 +298,64 @@ export class ControlRegistry {
       poolId: b.poolId ?? null, policy: b.policy ?? "manual", createdAt: new Date(b.createdAt).toISOString(),
       ...(b.thinking === undefined ? {} : { thinking: b.thinking }), ...(b.policyVersion === undefined ? {} : { policyVersion: b.policyVersion }),
       ...(b.reason === undefined ? {} : { reason: b.reason }), ...(b.selectionEvidence ? { selectionEvidence: b.selectionEvidence } : {}), ...(b.observedAt ? { observedAt: b.observedAt } : {}), ...extra });
+  }
+  private sessionJobs = new Map<string, Promise<string>>();
+  /**
+   * The account for one request of a pool-backed gateway client. A named
+   * session keeps the member first chosen for it while that member stays in
+   * the pool and enabled, even when its quota runs low: conversation affinity
+   * wins over balance. A new session gets the pool policy's pick after the
+   * same admission refresh as pools/prepare. Requests that name no session
+   * are chosen individually and never pinned; ones without a model (model
+   * listings) take the first enabled member.
+   */
+  async sessionAccount(client: GatewayClientRecord, provider: Provider, poolId: string, sessionId: string | undefined, model: () => string | undefined, evidence: PoolEvidence, timeoutMs = 12_000): Promise<string> {
+    const key = sessionId === undefined ? undefined : `${client.id}:${provider}:${sessionId}`;
+    const pin = key === undefined ? undefined : this.state.sessions?.find(s => s.key === key);
+    if (pin && pin.poolId === poolId && this.member(poolId, provider, pin.accountId)) return pin.accountId;
+    const requested = model();
+    if (requested === undefined) {
+      const pool = this.gatewayPool(poolId, provider);
+      return pool.accountIds.find(id => this.member(poolId, provider, id)) ?? reject(503, "no enabled pool account");
+    }
+    if (key === undefined) return this.selectSession(client, provider, poolId, undefined, requested, evidence, timeoutMs);
+    let job = this.sessionJobs.get(key);
+    if (!job) {
+      job = this.selectSession(client, provider, poolId, sessionId, requested, evidence, timeoutMs).finally(() => this.sessionJobs.delete(key));
+      this.sessionJobs.set(key, job);
+    }
+    return job;
+  }
+  private gatewayPool(poolId: string, provider: Provider): Pool {
+    return this.pools().find(p => p.id === poolId && p.provider === provider) ?? reject(403, "gateway pool unavailable");
+  }
+  private member(poolId: string, provider: Provider, accountId: string): boolean {
+    return this.gatewayPool(poolId, provider).accountIds.includes(accountId) && this.store.loadAccounts().some(a => a.id === accountId && a.enabled !== false && !a.retired);
+  }
+  private async selectSession(client: GatewayClientRecord, provider: Provider, poolId: string, sessionId: string | undefined, model: string, evidence: PoolEvidence, timeoutMs: number): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new ControlError(503, "pool refresh deadline; retry")), timeoutMs);
+    try {
+      await evidence.refreshAdmission(this.gatewayPool(poolId, provider).accountIds, provider, model, controller.signal, id => this.member(poolId, provider, id));
+    } finally { controller.abort(new ControlError(503, "pool admission ended")); clearTimeout(timer); }
+    const pool = this.gatewayPool(poolId, provider), now = Date.now();
+    const { ranked, decisions, candidates } = this.rank(pool, pool.policy, model, undefined, evidence, now);
+    const chosen = ranked[0];
+    const base = { action: "session", clientId: client.id, client: client.name, sessionId: sessionId ?? null, provider, model, poolId, policy: pool.policy };
+    if (!chosen) {
+      this.events?.write("binding", { ...base, error: "no eligible pool account", candidates });
+      return reject(503, "no eligible pool account");
+    }
+    const chosenEvidence = decisions.find(d => d.accountId === chosen)!.evidence;
+    if (sessionId !== undefined) {
+      const key = `${client.id}:${provider}:${sessionId}`;
+      this.change(state => {
+        state.sessions = [...(state.sessions ?? []).filter(s => s.key !== key && s.createdAt + SESSION_PIN_MS > now), { key, poolId, accountId: chosen, createdAt: now }].slice(-MAX_SESSION_PINS);
+        if (pool.policy !== "manual") state.pools!.find(p => p.id === poolId)!.cursor = chosen;
+      });
+    }
+    this.events?.write("binding", { ...base, accountId: chosen, policyVersion: 1, reason: selectionReason(pool.policy, chosenEvidence), selectionEvidence: chosenEvidence, candidates });
+    return chosen;
   }
   get routerId(): string { return this.state.routerId; }
   private change(edit: (state: ControlState) => void): void {

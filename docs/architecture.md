@@ -15,12 +15,13 @@ headers or payload adjustments; prove and document those adaptations for the
 tested CLI versions. A simple header swap is the conceptual authentication
 boundary, not a promise of complete wire compatibility.
 
-The current slice has one explicitly selected account per provider per gateway
-credential, rather than a limit of one enrolled account overall. Later,
-gateway client policy can select from an allowed account set, with stable
-conversation affinity and cooldown handling. An HTTP request does not reveal
-a client's local PID or home directory. Client identity comes from its gateway
-credential; conversation identity needs an explicit, validated identifier.
+A gateway credential names one account per provider, or a router-owned pool
+whose policy picks a member for each client session and pins the session to
+it ([pool-backed gateway tokens](pools.md#pool-backed-gateway-tokens-2026-10-12)).
+An HTTP request does not reveal a client's local PID or home directory. Client
+identity comes from its gateway credential; conversation identity there comes
+from the client's own, unauthenticated session id, which can only choose among
+the accounts its pool grants.
 
 The agreed YA integration direction uses a router allocation and per-session
 gateway credential pinned to an account. This can enforce affinity without

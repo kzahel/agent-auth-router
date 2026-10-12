@@ -30,7 +30,8 @@ export function presentedToken(headers: IncomingHttpHeaders): string | undefined
 }
 
 export type AuthDecision =
-  | { ok: true; client: GatewayClientRecord; accountId: string }
+  | { ok: true; client: GatewayClientRecord; accountId: string; poolId?: undefined }
+  | { ok: true; client: GatewayClientRecord; poolId: string; accountId?: undefined }
   | { ok: false; status: 401 | 403; message: string };
 
 export function authorize(
@@ -52,6 +53,8 @@ export function authorize(
     return { ok: false, status: 401, message: "invalid or revoked gateway token" };
   }
   const accountId = found.accounts[provider];
+  const poolId = found.pools?.[provider];
+  if (!accountId && poolId) return { ok: true, client: found, poolId };
   if (!accountId) {
     return { ok: false, status: 403, message: `gateway client is not permitted to use ${provider}` };
   }

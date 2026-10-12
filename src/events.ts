@@ -91,22 +91,23 @@ export class EventLog {
 
 const SESSION_ID = /^[A-Za-z0-9._:-]{8,128}$/;
 const CLAUDE_USER_ID = /"user_id"\s*:\s*"user_[0-9a-f]{64}_account_([0-9a-f-]{36})_session_([0-9a-f-]{36})"/;
+const CLAUDE_USER_ID_JSON = /^"user_id"\s*:\s*"\{(?:[^"\\]|\\.)*?\\"session_id\\"\s*:\s*\\"([0-9a-f-]{36})\\"/;
 const NEEDLE = Buffer.from('"user_id"');
 
 /**
- * The client's own session identifier, so a request can later be joined to
- * the CLI's rollout and Yep Anywhere metadata. Codex sends a session_id
- * header. Claude Code embeds its session id in metadata.user_id, a source
- * observation of the CLI versions in docs/prototype.md; only the id leaves
- * this function, never the surrounding body.
+ * The client's own session identifier, so a request can be pinned to an
+ * account and later joined to the CLI's rollout and Yep Anywhere metadata.
+ * Codex sends a session_id header. Claude Code 2.1.291 sends
+ * x-claude-code-session-id and embeds the same id in metadata.user_id, a JSON
+ * string; older versions used `user_<hex>_account_<uuid>_session_<uuid>`
+ * (docs/prototype.md). Only the id leaves this function, never the body.
  */
 export function clientSessionId(provider: Provider, headers: Record<string, string | string[] | undefined>, body: Buffer): string | undefined {
-  if (provider === "codex") {
-    const value = headers.session_id;
-    return typeof value === "string" && SESSION_ID.test(value) ? value : undefined;
-  }
+  const header = provider === "codex" ? headers.session_id : headers["x-claude-code-session-id"];
+  if (typeof header === "string" && SESSION_ID.test(header)) return header;
+  if (provider === "codex") return undefined;
   const at = body.indexOf(NEEDLE);
   if (at < 0) return undefined;
-  const match = CLAUDE_USER_ID.exec(body.subarray(at, at + 256).toString("latin1"));
-  return match ? match[2] : undefined;
+  const window = body.subarray(at, at + 512).toString("latin1");
+  return CLAUDE_USER_ID.exec(window)?.[2] ?? CLAUDE_USER_ID_JSON.exec(window)?.[1];
 }

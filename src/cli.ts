@@ -30,7 +30,9 @@ const USAGE = `usage: aar [--state DIR] <command>
   account quotas [id]                    fetch quota percentages and reset times (JSON)
   account login-command <id>             print the official CLI login command
   renew <id>                             run the renewal helper once and verify
-  client add <name> [--claude ACCT] [--codex ACCT]
+  client add <name> [--claude ACCT|--claude-pool POOL] [--codex ACCT|--codex-pool POOL]
+                                         POOL is a pool id or name: each client session
+                                         is pinned to the member the pool's policy picks
   client list
   client revoke <id-or-name>
   serve [--dashboard-port N] [--no-dashboard] [--dev] [--no-event-log]
@@ -108,6 +110,8 @@ async function main(argv: string[]): Promise<void> {
       "credential-store": { type: "string" },
       claude: { type: "string" },
       codex: { type: "string" },
+      "claude-pool": { type: "string" },
+      "codex-pool": { type: "string" },
       "dashboard-port": { type: "string" },
       "no-dashboard": { type: "boolean" },
       "no-event-log": { type: "boolean" },
@@ -216,7 +220,17 @@ async function main(argv: string[]): Promise<void> {
           if (!accountIds.has(`${provider}:${id}`)) fail(`no ${provider} account ${id}`);
           accounts[provider] = id;
         }
-        if (!Object.keys(accounts).length) fail("grant at least one of --claude or --codex");
+        const pools: Partial<Record<Provider, string>> = {};
+        const poolNames = PROVIDERS.filter((provider) => values[`${provider}-pool`] !== undefined);
+        const known = poolNames.length ? ((await administer("overview", {})) as { pools: { id: string; name: string; provider: Provider }[] }).pools : [];
+        for (const provider of poolNames) {
+          const wanted = values[`${provider}-pool`]!;
+          if (accounts[provider]) fail(`choose either --${provider} or --${provider}-pool`);
+          const matches = known.filter((pool) => pool.provider === provider && (pool.id === wanted || pool.name === wanted));
+          if (matches.length !== 1) fail(matches.length ? `ambiguous ${provider} pool ${wanted}` : `no ${provider} pool ${wanted}`);
+          pools[provider] = matches[0]!.id;
+        }
+        if (!Object.keys({ ...accounts, ...pools }).length) fail("grant at least one of --claude, --codex, --claude-pool or --codex-pool");
         const token = generateGatewayToken();
         const record: GatewayClientRecord = {
           id: randomUUID(),
@@ -224,21 +238,23 @@ async function main(argv: string[]): Promise<void> {
           tokenSha256: hashGatewayToken(token),
           createdAt: new Date().toISOString(),
           accounts,
+          ...(Object.keys(pools).length ? { pools } : {}),
         };
         store.init();
         await administer("clients/add", { record });
         const config = store.loadConfig();
         const origin = `http://${config.listen.host}:${config.listen.port}`;
         process.stdout.write(
-          `client ${record.name} (${record.id})\n\nGateway token (shown once, store it securely):\n  ${token}\n\n${clientSnippets(origin, token, accounts)}\n`,
+          `client ${record.name} (${record.id})\n\nGateway token (shown once, store it securely):\n  ${token}\n\n${clientSnippets(origin, token, { ...accounts, ...pools })}\n`,
         );
         return;
       }
       if (sub === "list") {
         for (const client of clients) {
-          const grants = Object.entries(client.accounts)
-            .map(([provider, id]) => `${provider}=${id}`)
-            .join(",");
+          const grants = [
+            ...Object.entries(client.accounts).map(([provider, id]) => `${provider}=${id}`),
+            ...Object.entries(client.pools ?? {}).map(([provider, id]) => `${provider}=pool:${id}`),
+          ].join(",");
           process.stdout.write(`${client.id}\t${client.name}\t${client.revokedAt ? "revoked" : "active"}\t${grants}\n`);
         }
         return;

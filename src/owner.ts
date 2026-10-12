@@ -225,7 +225,8 @@ export class OwnerService {
         typeof record.name !== "string" ||
         !/^[a-f0-9]{64}$/.test(record.tokenSha256) ||
         !record.accounts ||
-        !Object.keys(record.accounts).length
+        (record.pools !== undefined && (typeof record.pools !== "object" || Array.isArray(record.pools))) ||
+        !Object.keys({ ...record.accounts, ...record.pools }).length
       )
         throw new ControlError(400, "invalid client");
       for (const [provider, id] of Object.entries(record.accounts))
@@ -235,6 +236,9 @@ export class OwnerService {
             .some((a) => a.id === id && a.provider === provider && a.enabled !== false)
         )
           throw new ControlError(400, "invalid client account");
+      for (const [provider, id] of Object.entries(record.pools ?? {}))
+        if (provider in record.accounts || !this.registry.pools().some((p) => p.id === id && p.provider === provider))
+          throw new ControlError(400, "invalid client pool");
       const clients = this.store.loadClients();
       if (clients.some((c) => c.id === record.id)) throw new ControlError(409, "client exists");
       this.store.saveClients([...clients, record]);

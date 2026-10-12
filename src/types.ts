@@ -79,6 +79,9 @@ export interface GatewayClientRecord {
   revokedAt?: string;
   /** One explicitly selected account per provider in this slice. */
   accounts: Partial<Record<Provider, string>>;
+  /** A router-owned pool per provider instead of an account: each client
+   * session is pinned to the member the pool's policy picks. */
+  pools?: Partial<Record<Provider, string>>;
 }
 
 export interface RouterConfig {

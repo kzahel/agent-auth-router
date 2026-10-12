@@ -84,6 +84,17 @@ describe("event log", () => {
     assert.equal(clientSessionId("claude", {}, Buffer.from('{"metadata":{"user_id":"user_short_session_x"}}')), undefined);
     assert.equal(clientSessionId("claude", {}, Buffer.from("{}")), undefined);
   });
+
+  test("Claude Code 2.1.291 names its session in a header and in a JSON user_id", () => {
+    const session = randomUUID();
+    assert.equal(clientSessionId("claude", { "x-claude-code-session-id": session }, Buffer.from("{}")), session);
+    assert.equal(clientSessionId("claude", { "x-claude-code-session-id": "bad value" }, Buffer.from("{}")), undefined);
+    const userId = JSON.stringify({ device_id: "ab".repeat(32), account_uuid: "", session_id: session });
+    const body = Buffer.from(JSON.stringify({ model: "claude-x", metadata: { user_id: userId }, messages: [{ role: "user", content: "SECRET PROMPT" }] }));
+    assert.equal(clientSessionId("claude", {}, body), session);
+    const outside = Buffer.from(JSON.stringify({ metadata: { user_id: "{}" }, note: `\\"session_id\\":\\"${session}\\"` }));
+    assert.equal(clientSessionId("claude", {}, outside), undefined, "only inside user_id");
+  });
 });
 
 const fakeClaude = { claudeCommand: process.execPath, claudeArgs: [join(FIXTURES, "fake-claude-cli.ts"), "ok"] };
