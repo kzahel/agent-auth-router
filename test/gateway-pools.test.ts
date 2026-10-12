@@ -22,7 +22,7 @@ function send(origin: string, method: string, path: string, headers: Record<stri
   });
 }
 
-async function fixture(t: { after: (fn: () => unknown) => void }) {
+async function fixture(t: { after: (fn: () => unknown) => void }, catalog = ["synthetic-model"]) {
   const store = new StateStore(tempDir("agp-")); store.init();
   store.saveAccounts(MEMBERS.map((id) => {
     const home = join(store.dir, "profiles", id); mkdirSync(home, { recursive: true });
@@ -31,7 +31,7 @@ async function fixture(t: { after: (fn: () => unknown) => void }) {
   }));
   const upstream = await mockUpstream((_req, res, recorded) => {
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(recorded.url?.startsWith("/v1/models") ? { data: [{ id: "synthetic-model" }] } : { ok: true }));
+    res.end(JSON.stringify(recorded.url?.startsWith("/v1/models") ? { data: catalog.map((id) => ({ id })) } : { ok: true }));
   });
   writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
   let router = await startRouter(store, fakeClaude);
@@ -75,6 +75,15 @@ test("pool-backed gateway tokens pin each session to the policy's pick and sprea
   const sessions = events.split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((e) => e.type === "binding" && e.action === "session");
   assert.deepEqual(sessions.map((e) => [e.sessionId, e.accountId, e.policy]), [[first, "a", "weekly-pace"], [second, "b", "weekly-pace"], [third, "c", "weekly-pace"]]);
   assert.ok(events.split("\n").filter(Boolean).some((line) => { const e = JSON.parse(line); return e.type === "request" && e.sessionId === first && e.poolId === f.poolId; }));
+});
+
+test("a model alias matches its dated catalog snapshot, but not another model", { skip: process.platform === "win32" }, async (t) => {
+  const aliased = await fixture(t, ["synthetic-model-20250101"]);
+  const result = await aliased.message(randomUUID());
+  assert.equal(result.status, 200, result.text);
+  assert.ok(result.account);
+  const other = await fixture(t, ["synthetic-model-preview"]);
+  assert.equal((await other.message(randomUUID())).status, 503);
 });
 
 test("sessionless requests are chosen individually and never pinned", { skip: process.platform === "win32" }, async (t) => {

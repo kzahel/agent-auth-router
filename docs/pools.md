@@ -141,7 +141,9 @@ the PR review worker's Claude Code containers, which hold one static token.
   already grants.
 - **Selection.** A session's first request runs the same admission refresh and
   ranking as `pools/prepare`, with the pool's default policy and the request's
-  `model`. The pick is pinned in `control.json` for seven days (at most
+  `model`. A model the catalogs list only as a dated snapshot matches its
+  alias, as Claude Code sends `claude-haiku-4-5` for
+  `claude-haiku-4-5-20251001`. The pick is pinned in `control.json` for seven days (at most
   10,000 pins), advances the pool cursor, and is logged as a `binding` event
   with action `session` and every candidate's evidence.
 - **Spread.** A pin made within the five-minute prepare window counts as a

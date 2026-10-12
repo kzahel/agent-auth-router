@@ -329,6 +329,13 @@ export class ControlRegistry {
   private gatewayPool(poolId: string, provider: Provider): Pool {
     return this.pools().find(p => p.id === poolId && p.provider === provider) ?? reject(403, "gateway pool unavailable");
   }
+  /** Claude Code names older models by alias (`claude-haiku-4-5`) while the
+   * catalog lists their dated snapshot (`claude-haiku-4-5-20251001`). */
+  private catalogModel(pool: Pool, model: string, evidence: PoolEvidence): string {
+    const ids = new Set(pool.accountIds.flatMap(id => evidence.get(id).models.map(m => m.id)));
+    if (ids.has(model)) return model;
+    return [...ids].find(id => id.startsWith(`${model}-`) && /^\d{8}$/.test(id.slice(model.length + 1))) ?? model;
+  }
   private member(poolId: string, provider: Provider, accountId: string): boolean {
     return this.gatewayPool(poolId, provider).accountIds.includes(accountId) && this.store.loadAccounts().some(a => a.id === accountId && a.enabled !== false && !a.retired);
   }
@@ -339,9 +346,10 @@ export class ControlRegistry {
       await evidence.refreshAdmission(this.gatewayPool(poolId, provider).accountIds, provider, model, controller.signal, id => this.member(poolId, provider, id));
     } finally { controller.abort(new ControlError(503, "pool admission ended")); clearTimeout(timer); }
     const pool = this.gatewayPool(poolId, provider), now = Date.now();
-    const { ranked, decisions, candidates } = this.rank(pool, pool.policy, model, undefined, evidence, now);
+    const catalogModel = this.catalogModel(pool, model, evidence);
+    const { ranked, decisions, candidates } = this.rank(pool, pool.policy, catalogModel, undefined, evidence, now);
     const chosen = ranked[0];
-    const base = { action: "session", clientId: client.id, client: client.name, sessionId: sessionId ?? null, provider, model, poolId, policy: pool.policy };
+    const base = { action: "session", clientId: client.id, client: client.name, sessionId: sessionId ?? null, provider, model, ...(catalogModel !== model ? { catalogModel } : {}), poolId, policy: pool.policy };
     if (!chosen) {
       this.events?.write("binding", { ...base, error: "no eligible pool account", candidates });
       return reject(503, "no eligible pool account");
