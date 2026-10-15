@@ -167,8 +167,13 @@ code { font-family: ui-monospace, monospace; font-size: 12px; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; margin: 0 0 4px 4px; }
 .legend-item, .tooltip-row { display: inline-flex; align-items: center; gap: 6px; }
 /* Totals keep a fixed width so the legend does not shift as they change. */
-.legend b { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 4ch; }
-.legend .context { color: var(--muted); }
+.legend b { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 4ch; text-align: left; }
+/* Legend entries switch series on and off; an off series keeps an outlined swatch. */
+.legend button.legend-item { border: 0; background: none; min-height: 0; padding: 2px 4px; margin: -2px -4px; font: inherit; font-weight: 400; color: var(--text); border-radius: 4px; }
+.legend button.legend-item:hover { background: var(--hover); }
+.legend .swatch { background: var(--swatch); border: 1.5px solid var(--swatch); }
+.legend [aria-pressed="false"] { color: var(--muted); }
+.legend [aria-pressed="false"] .swatch { background: transparent; }
 .legend-range { color: var(--muted); }
 .chart-values { margin-top: 4px; }
 .chart-values summary { font-size: 12px; }
@@ -176,6 +181,7 @@ code { font-family: ui-monospace, monospace; font-size: 12px; }
 .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 .chart-frame { position: relative; }
 .chart-frame canvas { display: block; width: 100%; height: 240px; }
+.chart-frame canvas.single-pane { height: 190px; }
 .quota-frame canvas { height: 130px; }
 #dash-quota { margin-top: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
 canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

@@ -34,42 +34,51 @@ export function createDashboard({ client, overview }) {
   let scope = localStorage.getItem("dash-scope") ?? "all";
   let units = localStorage.getItem("dash-units") === "bytes" ? "bytes" : "tokens";
   let activity = localStorage.getItem("dash-activity") === "sessions" ? "sessions" : "requests";
+  // Series switched off in the legend. Cache reads start off: nearly all of what
+  // is sent and cheap, they would flatten the costlier tokens to a hairline.
+  let hidden;
+  try { hidden = new Set(JSON.parse(localStorage.getItem("dash-hidden") ?? '["cacheRead"]')); } catch { hidden = new Set(["cacheRead"]); }
   let live, requests = [], visible = false, lastEvent = 0;
   let sessions, sessionsStored = true, sessionsTimer;
   const sparklines = new Map();
   const stop = [];
 
+  // Tokens share one axis: new input and output are of similar size. Bytes keep
+  // two panes, since uploads (whole contexts) dwarf downloads.
   const panes = () => units === "tokens"
-    ? [
-      // Cache reads are nearly all of what is sent and cost little, so they
-      // would flatten the tokens that matter; they stay in the tooltip and table.
-      { title: "New input · tokens/s", series: ["cacheWrite", "input"], context: ["cacheRead"], stacked: true, format: formatNumber, unit: "/s" },
-      { title: "Output · est. tokens/s", series: ["output"], format: formatNumber, unit: "/s" },
-    ]
+    ? [{ title: "Tokens/s · output estimated while streaming", series: ["cacheRead", "cacheWrite", "input", "output"], line: ["output"], stacked: true, format: formatNumber, unit: "/s" }]
     : [
       { title: "Uploaded · per second", series: ["bytesUp"], format: formatBytes, unit: "/s" },
       { title: "Downloaded · per second", series: ["bytesDown"], format: formatBytes, unit: "/s" },
     ];
   const configure = () => {
-    graph.configure(panes().map(p => ({ ...p, series: p.series.map(key => ({ key, label: SERIES[key].label, color: color(SERIES[key].slot) })),
-      context: (p.context ?? []).map(key => ({ key, label: SERIES[key].label })) })), { live: LIVE_RANGES.has(range) });
+    const shown = panes().filter(p => p.series.some(key => !hidden.has(key)));
+    $("dash-graph").classList.toggle("single-pane", shown.length <= 1);
+    graph.configure((shown.length ? shown : panes().slice(0, 1)).map(p => ({ ...p,
+      series: p.series.filter(key => !hidden.has(key)).map(key => ({ key, label: SERIES[key].label, color: color(SERIES[key].slot), line: p.line?.includes(key) })),
+      context: p.series.filter(key => hidden.has(key)).map(key => ({ key, label: SERIES[key].label })) })), { live: LIVE_RANGES.has(range) });
     renderLegend();
   };
-  // Drawn series first, then context series, each with its total for the
-  // selected range, which leads the legend so the totals are not read as
-  // running counts. The full values table sits collapsed under the chart.
+  // Every series with its total for the selected range, which leads the legend
+  // so the totals are not read as running counts. Each entry switches its series
+  // on or off; the full values table sits collapsed under the chart.
   function renderLegend() {
-    const panesNow = panes();
-    const keys = [...panesNow.flatMap(p => p.series), ...panesNow.flatMap(p => p.context ?? [])];
     const span = RANGES.find(([key]) => key === range)[1].replace(/^1 /, "");
-    $("dash-legend").replaceChildren(element("span", `Last ${span}:`, "legend-range"), ...keys.map(key => {
-      const drawn = panesNow.some(p => p.series.includes(key));
-      const item = element("span", undefined, drawn ? "legend-item" : "legend-item context");
+    $("dash-legend").replaceChildren(element("span", `Last ${span}:`, "legend-range"), ...panes().flatMap(p => p.series).map(key => {
+      const item = element("button", undefined, "legend-item");
+      item.type = "button";
       item.dataset.key = key;
+      item.setAttribute("aria-pressed", String(!hidden.has(key)));
+      item.title = hidden.has(key) ? `Show ${SERIES[key].label.toLowerCase()} in the chart` : `Hide ${SERIES[key].label.toLowerCase()} from the chart`;
       const swatch = element("span", undefined, "swatch");
-      if (drawn) swatch.style.background = color(SERIES[key].slot);
-      else item.title = "Not drawn: nearly all of what is sent, so it would flatten the rest";
+      swatch.style.setProperty("--swatch", color(SERIES[key].slot));
       item.append(swatch, document.createTextNode(SERIES[key].label), element("b", "–"));
+      item.onclick = () => {
+        if (hidden.has(key)) hidden.delete(key); else hidden.add(key);
+        localStorage.setItem("dash-hidden", JSON.stringify([...hidden]));
+        configure();
+        renderSummary();
+      };
       return item;
     }));
   }
@@ -307,15 +316,14 @@ export function createDashboard({ client, overview }) {
     const format = units === "tokens" ? formatNumber : formatBytes;
     // Totals are whole counts; the rate formatter would print 6 as "6.0".
     const formatTotal = (value) => value < 10 ? String(Math.round(value)) : format(value);
-    const drawn = new Set(panes().flatMap(p => p.series));
-    body.replaceChildren(...panes().flatMap(p => [...p.series, ...(p.context ?? [])]).map(key => {
+    body.replaceChildren(...panes().flatMap(p => p.series).map(key => {
       const values = [];
       for (let i = 0; i < length; i++) { const v = data.series[key]?.[i]; if (v !== null && v !== undefined) values.push(v); }
       const total = values.reduce((a, b) => a + b, 0);
       const row = element("tr");
       const name = element("th"), label = element("span", undefined, "legend-item");
       const swatch = element("span", undefined, "swatch");
-      if (drawn.has(key)) swatch.style.background = color(SERIES[key].slot);
+      swatch.style.background = color(SERIES[key].slot);
       label.append(swatch, document.createTextNode(SERIES[key].label));
       name.append(label);
       name.scope = "row";

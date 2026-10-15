@@ -265,16 +265,17 @@ no accounts it links to Accounts.
   and the tiles follow the scope, not the selected range. Requests in flight
   show as streams in the Accounts table and as "streaming" in Recent
   requests.
-- **Traffic graph:** two panes on a shared time axis, each with its own
-  labelled scale. "New input" stacks cache write and uncached input as solid
-  bands; "Output" is a line of output tokens, estimated live until the
-  provider reports its count. The legend gives each series' total for the
-  visible range. Cache reads are left out of the drawing and listed, without
-  a swatch, in the legend, tooltip and table: agent sessions resend
+- **Traffic graph:** tokens per second in one pane: cache read, cache write
+  and uncached input stack as solid bands, and output (estimated live until
+  the provider reports its count) is a line on top. New input and output are
+  of similar size, so they share an axis. Each legend entry gives the
+  series' total for the selected range and switches the series on or off;
+  choices are kept per browser. Cache reads start off: agent sessions resend
   their whole context each turn, so cache reads are typically over 99% of
-  what is sent and would flatten the costlier tokens to a hairline. The two
-  panes are separate scales, not a dual-axis chart. Bytes mode draws uploaded
-  and downloaded as lines.
+  what is sent and would flatten the costlier tokens to a hairline. Bytes
+  mode keeps uploaded and downloaded in separate panes, each with its own
+  scale, since uploads run about a hundred times downloads; a pane whose
+  series are all off is left out.
 - **Values table:** last, average, peak and total for each series over the
   visible range, collapsed under the chart. It doubles as the accessible
   table view, and as relief for two light-mode colours below 3:1 contrast.

@@ -71,9 +71,10 @@ function runs(length, covered) {
 }
 
 /**
- * panes: [{ title, series: [{ key, label, color }], context?: [{ key, label }], stacked,
+ * panes: [{ title, series: [{ key, label, color, line? }], context?: [{ key, label, color? }], stacked,
  *           format(value), unit, maximum? }]
- * Stacked panes draw solid bands; others draw lines. Context series are not
+ * In a stacked pane, series stack as solid bands unless marked `line`, which
+ * draw on top unstacked; other panes draw lines. Context series are not
  * drawn but are listed in the tooltip.
  */
 export class TrafficGraph {
@@ -202,16 +203,18 @@ export class TrafficGraph {
       const spacing = (right - left) / Math.max(1, count - 1);
       const x = (i) => right - (length - 1 - i + phase) * spacing;
       const covered = (i) => pane.series.some(s => this.value(s.key, i) !== null);
-      // Stack values bottom-up in series order.
+      // Stack band values bottom-up in series order; lines keep their own values.
+      const banded = pane.series.map(s => !!pane.stacked && !s.line);
+      // The band each one sits on; lastIndexOf would read -1 as "from the end".
+      const below = banded.map((band, k) => band && k ? banded.lastIndexOf(true, k - 1) : -1);
       const stacks = pane.series.map(() => new Array(length).fill(0));
       let maximum = 0;
       for (let i = 0; i < length; i++) {
         let total = 0;
         pane.series.forEach((s, k) => {
           const v = Math.max(0, this.value(s.key, i) ?? 0);
-          total = pane.stacked ? total + v : v;
-          stacks[k][i] = total;
-          if (total > maximum && x(i) >= left - spacing) maximum = total;
+          stacks[k][i] = banded[k] ? (total += v) : v;
+          if (stacks[k][i] > maximum && x(i) >= left - spacing) maximum = stacks[k][i];
         });
       }
       const scale = this.#scale(pane, index, maximum, now);
@@ -242,36 +245,39 @@ export class TrafficGraph {
       ctx.clip();
       for (const run of runs(length, covered)) {
         const edges = pane.series.map((_, k) => run.map(i => ({ x: x(i), y: y(stacks[k][i]) })));
+        const dot = (point, color) => { ctx.beginPath(); ctx.arc(point.x, point.y, 1.5, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); };
+        // Bands first: a line per layer would sit on the band above it, so bands are solid.
         pane.series.forEach((s, k) => {
+          if (!banded[k]) return;
           const top = edges[k];
+          if (top.length === 1) { dot(top[0], s.color); return; }
           ctx.beginPath();
-          if (top.length === 1) {
-            ctx.arc(top[0].x, top[0].y, 1.5, 0, Math.PI * 2);
-            ctx.fillStyle = s.color;
-            ctx.fill();
-          } else if (pane.stacked) {
-            // A line per layer would sit on the band above it, so bands are solid.
-            trace(ctx, top);
-            if (k) trace(ctx, edges[k - 1], true, false);
-            else { ctx.lineTo(top.at(-1).x, baseline); ctx.lineTo(top[0].x, baseline); }
-            ctx.closePath();
-            ctx.fillStyle = s.color;
-            ctx.fill();
-          } else {
-            trace(ctx, top);
-            ctx.strokeStyle = s.color;
-            ctx.lineWidth = 2;
-            ctx.stroke();
-          }
+          trace(ctx, top);
+          if (below[k] >= 0) trace(ctx, edges[below[k]], true, false);
+          else { ctx.lineTo(top.at(-1).x, baseline); ctx.lineTo(top[0].x, baseline); }
+          ctx.closePath();
+          ctx.fillStyle = s.color;
+          ctx.fill();
         });
         // A hairline of surface between stacked bands.
-        if (pane.stacked && run.length > 1) for (const edge of edges.slice(0, -1)) {
+        const bands = pane.series.flatMap((_, k) => banded[k] ? [k] : []);
+        if (run.length > 1) for (const k of bands.slice(0, -1)) {
           ctx.beginPath();
-          trace(ctx, edge);
+          trace(ctx, edges[k]);
           ctx.strokeStyle = surface;
           ctx.lineWidth = 1;
           ctx.stroke();
         }
+        // Lines on top.
+        pane.series.forEach((s, k) => {
+          if (banded[k]) return;
+          if (edges[k].length === 1) { dot(edges[k][0], s.color); return; }
+          ctx.beginPath();
+          trace(ctx, edges[k]);
+          ctx.strokeStyle = s.color;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        });
       }
       ctx.restore();
       // Cursor hairline and markers.
