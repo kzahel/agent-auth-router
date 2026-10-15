@@ -223,7 +223,7 @@ describe("metrics", () => {
     let now = 5_000_000_000_000;
     const store = new HistoryStore(join(tempDir(), "history.db"));
     const metrics = new Metrics({ history: store, now: () => now });
-    const pruned: number[] = [];
+    const pruned: (number | null)[] = [];
     metrics.onPrune = (days) => pruned.push(days);
     assert.equal(metrics.retentionDays(), 30, "30 days by default");
     const handle = metrics.begin({ provider: "claude", route: "/v1/messages", accountId: "a", client: "c", sessionId: "old", tapped: true });
@@ -239,10 +239,20 @@ describe("metrics", () => {
     assert.equal(store.buckets("30d", 0).length, 0);
     assert.throws(() => metrics.setRetentionDays(0), RangeError);
     assert.throws(() => metrics.setRetentionDays(1.5), RangeError);
+    // Forever: nothing is deleted, however old.
+    const kept = metrics.begin({ provider: "claude", route: "/v1/messages", accountId: "a", client: "c", tapped: true });
+    kept.usage(usage({ output: 1 }), false, true);
+    kept.end(200);
+    metrics.setRetentionDays(null);
+    now += 400 * 86_400_000;
+    metrics.prune();
+    assert.equal(metrics.retentionDays(), null);
+    assert.equal(store.recentRequests(10).length, 1, "kept forever");
+    assert.deepEqual(pruned.slice(-2), [null, null]);
     metrics.close();
     store.close();
     const memory = new Metrics();
-    assert.equal(memory.retentionDays(), null);
+    assert.equal(memory.historyStored(), false);
     assert.deepEqual(memory.sessions(0), []);
   });
 

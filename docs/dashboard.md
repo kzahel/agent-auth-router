@@ -105,9 +105,9 @@ only: times, client name, account, pool, binding, the client's session id,
 provider, route, model, status, outcome, bytes and token figures. The last
 200 are listed again after a restart, and sessions are totalled from these
 rows on demand. It also keeps the last quota reading per account for display.
-History older than the retention (30 days by default, 1 to 3650 on the App
-tab) is deleted at startup, daily and when the setting changes. A corrupt or
-insecure database is logged and left alone; the router then charts live
+History older than the retention (30 days by default; 7 days to a year, or
+forever, in Settings) is deleted at startup, daily and when the setting
+changes. A corrupt or insecure database is logged and left alone; the router then charts live
 traffic only. Completed entries, quota observations and
 binding decisions also go to the [event log](events.md), which keeps full
 resolution where these tiers keep sums and last samples.

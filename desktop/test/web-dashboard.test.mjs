@@ -78,7 +78,7 @@ test("web dashboard signs in once, shows live traffic and keeps the access link 
   // The status banner appears only when something is wrong.
   await page.waitForFunction(() => document.getElementById("status").hidden);
   // Desktop-only controls are hidden in the browser.
-  await page.getByRole("tab", { name: "App", exact: true }).click();
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
   assert.equal(await page.getByText("Launch at login").isVisible(), false);
   assert.equal(await page.getByRole("button", { name: "Check for updates" }).isVisible(), false);
   await page.getByRole("tab", { name: "Dashboard", exact: true }).click();

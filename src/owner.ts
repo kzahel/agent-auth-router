@@ -290,7 +290,7 @@ export class OwnerService {
       if (!isScope(scope)) throw new ControlError(400, "invalid scope");
       const since = Date.now() - RANGES[range].count * RANGES[range].bucketMs;
       const filter = scope.startsWith("account:") ? { accountId: scope.slice(8) } : scope.startsWith("pool:") ? { poolId: scope.slice(5) } : {};
-      return { stored: this.metrics().retentionDays() !== null, sessions: this.metrics().sessions(since, filter) };
+      return { stored: this.metrics().historyStored(), sessions: this.metrics().sessions(since, filter) };
     }
     if (operation === "history/cost") {
       // Estimated cost at API rates of requests finished within the selected range and scope.
@@ -313,13 +313,15 @@ export class OwnerService {
       const saved = this.store.loadSettings().requestCompression;
       return { requestCompression: { claude: saved.claude ?? "off", codex: saved.codex ?? "off" }, choices: COMPRESSION_CHOICES };
     }
-    if (operation === "history/settings") return { retentionDays: this.metrics().retentionDays(), maxRetentionDays: MAX_RETENTION_DAYS };
+    // retentionDays null keeps history forever.
+    const retention = () => ({ stored: this.metrics().historyStored(), retentionDays: this.metrics().retentionDays(), maxRetentionDays: MAX_RETENTION_DAYS });
+    if (operation === "history/settings") return retention();
     if (operation === "history/set-retention") {
       const days = body.retentionDays;
-      if (!Number.isInteger(days) || (days as number) < 1 || (days as number) > MAX_RETENTION_DAYS) throw new ControlError(400, `retentionDays must be a whole number from 1 to ${MAX_RETENTION_DAYS}`);
-      if (this.metrics().retentionDays() === null) throw new ControlError(409, "history is not stored on this router");
-      this.metrics().setRetentionDays(days as number);
-      return { retentionDays: this.metrics().retentionDays(), maxRetentionDays: MAX_RETENTION_DAYS };
+      if (days !== null && (!Number.isInteger(days) || (days as number) < 1 || (days as number) > MAX_RETENTION_DAYS)) throw new ControlError(400, `retentionDays must be a whole number from 1 to ${MAX_RETENTION_DAYS}, or null to keep history forever`);
+      if (!this.metrics().historyStored()) throw new ControlError(409, "history is not stored on this router");
+      this.metrics().setRetentionDays(days as number | null);
+      return retention();
     }
     if (operation === "accounts/login-command") {
       const account = this.account(body);

@@ -44,6 +44,8 @@ describe("event log", () => {
     writeFileSync(join(dir, "notes.txt"), "keep", { mode: 0o600 });
     const log = new EventLog({ dir, now: () => now });
     assert.deepEqual(readdirSync(dir).sort(), ["2026-09-10.jsonl", "notes.txt"], "files older than 30 days go; others stay");
+    log.prune(null);
+    assert.deepEqual(readdirSync(dir).sort(), ["2026-09-10.jsonl", "notes.txt"], "forever deletes nothing");
     log.prune(20);
     assert.deepEqual(readdirSync(dir).sort(), ["notes.txt"], "a shorter retention applies at once");
     const target = join(dir, "elsewhere.jsonl");

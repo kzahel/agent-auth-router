@@ -228,9 +228,10 @@ test("web dashboard: exact host and origin, single-use codes, sessions and logou
 
   assert.equal((await ownerRequest(store, "dashboard/sessions")).sessions.length, 1);
   // History lives in the router's database; the UI reads sessions and sets retention.
-  assert.deepEqual(await ownerRequest(store, "history/settings"), { retentionDays: 30, maxRetentionDays: 3650 });
+  assert.deepEqual(await ownerRequest(store, "history/settings"), { stored: true, retentionDays: 30, maxRetentionDays: 3650 });
   await assert.rejects(ownerRequest(store, "history/set-retention", { retentionDays: 0 }), /whole number/);
   assert.equal((await ownerRequest(store, "history/set-retention", { retentionDays: 14 })).retentionDays, 14);
+  assert.equal((await ownerRequest(store, "history/set-retention", { retentionDays: null })).retentionDays, null, "forever");
   assert.deepEqual(await ownerRequest(store, "sessions/recent", { range: "24h", scope: "all" }), { stored: true, sessions: [] });
   const cost = await ownerRequest(store, "history/cost", { range: "24h", scope: "account:work" });
   assert.deepEqual(cost.summary, { cost: 0, low: 0, requests: 0, unpriced: 0, estimated: 0 });

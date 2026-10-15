@@ -206,8 +206,8 @@ export class Metrics {
   private readonly unsaved = new Map<string, number>();
   private seq = 0;
   private timers: NodeJS.Timeout[] = [];
-  /** Called after history is pruned, with the retention in days. */
-  onPrune?: (retentionDays: number) => void;
+  /** Called after history is pruned, with the retention in days, or null for forever. */
+  onPrune?: (retentionDays: number | null) => void;
   /** Changes when history restarts, so clients refetch instead of appending. */
   readonly epoch = randomUUID();
   constructor(options: { history?: HistoryStore; now?: () => number } = {}) {
@@ -392,8 +392,11 @@ export class Metrics {
   sessions(since: number, filter: { accountId?: string; poolId?: string } = {}): SessionSummary[] {
     return this.store?.sessions(since, filter) ?? [];
   }
+  /** Whether history is stored at all; without it there is no retention to set. */
+  historyStored(): boolean { return this.store !== undefined; }
+  /** Days of stored history kept, or null for forever (and without a store). */
   retentionDays(): number | null { return this.store?.retentionDays() ?? null; }
-  setRetentionDays(days: number): void {
+  setRetentionDays(days: number | null): void {
     if (!this.store) throw new Error("history is not stored");
     this.store.setRetentionDays(days);
     this.prune();

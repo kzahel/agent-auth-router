@@ -8,14 +8,14 @@ pools, grants and sessions live in the same default state directory as `aar`.
 
 ## Use
 
-The compact window has Dashboard, Accounts, Pools, Connections and App tabs.
+The compact window has Dashboard, Accounts, Pools, Connections and Settings tabs.
 **Dashboard** shows live traffic and history; see
 [the dashboard design](../docs/dashboard.md). The same UI also runs in a browser
 as `aar serve`'s web dashboard. Appearance
 follows the system's light/dark theme, including changes while the app is open.
 Accounts keep Sign in and Refresh usage visible; **More** holds sign-in checks,
 nickname editing and disable/remove actions. CLI setup help is under **Account
-setup**, and launch/update/stop controls are on **App**.
+setup**, and history, request compression, launch/update and stop controls are in **Settings**.
 
 The window talks to the core over a private `app.sock` in the state directory.
 The native shell authenticates with the owner credential and relays messages;

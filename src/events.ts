@@ -32,12 +32,12 @@ export class EventLog {
   private dropped = 0;
   private disabled = false;
   private timer: NodeJS.Timeout | undefined;
-  constructor(options: { dir: string; now?: () => number; retentionDays?: number }) {
+  constructor(options: { dir: string; now?: () => number; retentionDays?: number | null }) {
     this.dir = options.dir;
     this.now = options.now ?? Date.now;
     try {
       ensurePrivateDir(this.dir);
-      this.prune(options.retentionDays ?? EVENT_RETENTION_DAYS);
+      this.prune(options.retentionDays === undefined ? EVENT_RETENTION_DAYS : options.retentionDays);
     } catch (error) { this.disable("events.open_failed", error); }
     this.timer = setInterval(() => this.flush(), FLUSH_INTERVAL_MS);
     this.timer.unref();
@@ -79,8 +79,9 @@ export class EventLog {
     this.disabled = true;
     this.pending = [];
   }
-  /** Deletes day files older than the retention period. */
-  prune(retentionDays: number): void {
+  /** Deletes day files older than the retention period; null keeps them forever. */
+  prune(retentionDays: number | null): void {
+    if (retentionDays === null) return;
     mkdirSync(this.dir, { recursive: true });
     const cutoff = this.now() - retentionDays * 86_400_000;
     for (const name of readdirSync(this.dir)) {

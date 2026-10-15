@@ -225,7 +225,7 @@ test("management UI preserves typing while observations update, and offers owner
   assert.equal(await nickname.inputValue(), "Work account");
   await page.getByRole("button", { name: "Save nickname" }).click();
   await account.getByText("Work account", { exact: true }).waitFor();
-  await page.getByRole("tab", { name: "App", exact: true }).click();
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
   await page.locator("#terminal-presentation").selectOption("embedded");
   await page.getByRole("tab", { name: "Accounts", exact: true }).click();
   await account.getByRole("button", { name: "Sign in", exact: true }).click();
@@ -362,7 +362,7 @@ test("management UI preserves typing while observations update, and offers owner
       return original(command, args);
     };
   });
-  await page.getByRole("tab", { name: "App", exact: true }).click();
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Check for updates", exact: true }).click();
   const install = page.getByRole("button", { name: "Install update & relaunch", exact: true });
   const confirmation = page.getByRole("dialog", { name: "Confirm action", exact: true });

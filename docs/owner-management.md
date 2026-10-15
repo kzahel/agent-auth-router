@@ -38,7 +38,7 @@ Account IDs are stable and generated when omitted; nickname edits use the accoun
 revision and never change profile identity. Empty nicknames remove the label.
 
 The desktop opens the bundled `terminal-login <id>` CLI in macOS Terminal or
-a separate embedded xterm.js window, chosen at runtime in App settings. Both
+a separate embedded xterm.js window, chosen at runtime in Settings. Both
 use the same core login lease. The native PTY bridge binds input, output and resize
 to the calling sign-in window, which cannot invoke management commands. It has
 a 256 KiB unread-output ceiling, 4 KiB input-message bound and a disconnect

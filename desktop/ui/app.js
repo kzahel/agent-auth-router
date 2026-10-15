@@ -616,17 +616,25 @@ function selectTab(tab) {
     $(item.getAttribute("aria-controls")).hidden = !selected;
   }
   dashboard.show(tab.id === "tab-dashboard");
-  if (tab.id === "tab-app") { loadRetention(); loadCompression(); }
+  if (tab.id === "tab-settings") { loadRetention(); loadCompression(); }
 }
 
 // History retention is stored by the router, so the CLI, web and desktop share it.
 async function loadRetention() {
   try {
-    const { retentionDays, maxRetentionDays } = await api("history/settings");
-    $("retention").disabled = retentionDays === null;
-    $("retention").max = String(maxRetentionDays);
-    if (document.activeElement !== $("retention")) $("retention").value = retentionDays ?? "";
-    $("retention-status").textContent = retentionDays === null ? "History is not stored: the router could not open its database." : "";
+    const { stored, retentionDays } = await api("history/settings");
+    const select = $("retention"), value = retentionDays === null ? "forever" : String(retentionDays);
+    // A retention set elsewhere (CLI or an older version) stays selectable.
+    select.querySelector("option[data-custom]")?.remove();
+    if (![...select.options].some(o => o.value === value)) {
+      const custom = element("option", `${retentionDays} days`);
+      custom.value = value;
+      custom.dataset.custom = "";
+      select.prepend(custom);
+    }
+    select.value = value;
+    select.disabled = !stored;
+    $("retention-status").textContent = stored ? "" : "History is not stored: the router could not open its database.";
   } catch (failure) { $("retention-status").textContent = text(failure); }
 }
 // Request compression per provider; off sends bodies upstream as received.
@@ -641,15 +649,15 @@ for (const provider of ["claude", "codex"]) {
   $(`compress-${provider}`).onchange = async () => {
     try {
       await api("settings/request-compression", { provider, value: $(`compress-${provider}`).value });
-      $("compression-status").textContent = "Saved; applies to the next request.";
+      $("compression-status").textContent = "";
     } catch (failure) { $("compression-status").textContent = text(failure); void loadCompression(); }
   };
 }
 $("retention").onchange = async () => {
-  const days = Number($("retention").value);
+  const value = $("retention").value;
   try {
-    await api("history/set-retention", { retentionDays: days });
-    $("retention-status").textContent = `Keeping ${days} ${days === 1 ? "day" : "days"} of history.`;
+    await api("history/set-retention", { retentionDays: value === "forever" ? null : Number(value) });
+    $("retention-status").textContent = "";
   } catch (failure) { $("retention-status").textContent = text(failure); void loadRetention(); }
 };
 for (const tab of tabs) {

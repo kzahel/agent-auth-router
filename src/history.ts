@@ -163,13 +163,16 @@ export class HistoryStore {
     catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 
-  retentionDays(): number {
-    const days = Number(this.meta("retentionDays"));
+  /** Days of history kept, or null to keep it forever. */
+  retentionDays(): number | null {
+    const stored = this.meta("retentionDays");
+    if (stored === "forever") return null;
+    const days = Number(stored);
     return Number.isInteger(days) && days >= 1 && days <= MAX_RETENTION_DAYS ? days : DEFAULT_RETENTION_DAYS;
   }
-  setRetentionDays(days: number): void {
-    if (!Number.isInteger(days) || days < 1 || days > MAX_RETENTION_DAYS) throw new RangeError(`retention must be a whole number of days from 1 to ${MAX_RETENTION_DAYS}`);
-    this.setMeta("retentionDays", String(days));
+  setRetentionDays(days: number | null): void {
+    if (days !== null && (!Number.isInteger(days) || days < 1 || days > MAX_RETENTION_DAYS)) throw new RangeError(`retention must be a whole number of days from 1 to ${MAX_RETENTION_DAYS}, or forever`);
+    this.setMeta("retentionDays", days === null ? "forever" : String(days));
   }
 
   /** Persisted chart buckets newer than `after` (exclusive) for one tier. */
@@ -265,7 +268,9 @@ export class HistoryStore {
 
   /** Deletes history older than the retention period; `tiers` maps tier names to bucket length. */
   prune(now: number, tiers: Record<string, number>): void {
-    const cutoff = now - this.retentionDays() * 86_400_000;
+    const days = this.retentionDays();
+    if (days === null) return;
+    const cutoff = now - days * 86_400_000;
     this.transaction(() => {
       this.statement("DELETE FROM requests WHERE ended_at < ?").run(cutoff);
       this.statement("DELETE FROM quota_latest WHERE at < ?").run(cutoff);

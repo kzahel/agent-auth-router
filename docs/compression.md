@@ -54,7 +54,7 @@ shrink 3–4×.
   (gzip, deflate, br, zstd) no larger than the request body limit
   (`limits.maxBodyBytes`), so a small body cannot expand without bound; an
   unreadable body is still forwarded, without that metadata.
-- **Router compression (opt-in).** App → "Router compresses requests":
+- **Router compression (opt-in).** Settings → "Requests to providers":
   Claude gzip or Codex zstd instead of "Pass through", stored in
   `settings.json` in the state directory and applied from the next request. The router compresses bodies of
   at least 1 KB that the client did not compress itself, off the event loop,
