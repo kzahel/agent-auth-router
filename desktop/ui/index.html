@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Auth Router</title><link rel="stylesheet" href="style.css"></head>
 <body><main>
-<header><h1>Agent Auth Router</h1><div class="actions"><button id="logout" class="web-only">Log out</button></div></header>
+<header><h1>Agent Auth Router</h1></header>
 <div id="status" class="status-banner" role="status"><span id="status-text">Connecting to the router…</span><button id="start-router" class="desktop-only" hidden>Start router</button></div>
 <section id="signed-out" class="settings" hidden><h2>Sign in to the dashboard</h2><p id="signed-out-detail" class="hint"></p><p class="hint">Open the link that <code>aar serve</code> printed, or run <code>aar dashboard url</code> on this machine for a new one. Each link signs in one browser.</p></section>
 <div id="app-shell">
@@ -54,6 +54,8 @@
 <label class="setting-row">Launch at login<input id="startup" type="checkbox"></label>
 <div class="setting-row"><span>Updates</span><span class="actions"><button id="check-update">Check for updates</button><button id="install-update" hidden>Install update &amp; relaunch</button></span></div>
 <p id="update-status" role="status"></p><p class="hint">Closing the window keeps the router running in the menu bar; Quit stops it.</p></div>
+<div class="setting-group web-only"><h3>This browser</h3>
+<div class="setting-row"><span>Signed in to this router</span><button id="logout">Log out</button></div></div>
 <div class="setting-group"><h3>Router</h3>
 <div class="setting-row"><span>Stop routing</span><button id="stop" class="danger">Stop router</button></div>
 <p class="hint desktop-only">Start router in the status bar starts it again.</p><p class="hint web-only">Start it again with <code>aar serve</code>.</p></div>

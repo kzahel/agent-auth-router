@@ -712,7 +712,6 @@ if (!desktop) {
   const session = await port.authenticate();
   if (!session.authenticated) {
     $("app-shell").hidden = true;
-    $("logout").hidden = true;
     $("signed-out").hidden = false;
     $("signed-out-detail").textContent = session.error ?? "This browser is not signed in.";
     setStatus("");

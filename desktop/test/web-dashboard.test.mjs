@@ -137,7 +137,8 @@ test("web dashboard signs in once, shows live traffic and keeps the access link 
   await other.goto(link);
   await other.getByText("Access link expired or already used", { exact: false }).waitFor();
   assert.equal(await other.locator("#app-shell").isVisible(), false);
-  // Logging out ends the session on the server.
+  // Logging out, from Settings, ends the session on the server.
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Log out", exact: true }).click();
   await page.getByRole("heading", { name: "Sign in to the dashboard" }).waitFor();
   assert.deepEqual(errors, []);
