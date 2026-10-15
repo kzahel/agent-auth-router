@@ -228,6 +228,8 @@ export function createDashboard({ client, overview }) {
         `${duration.toFixed(duration < 10 ? 1 : 0)} s`,
         status,
       ]) row.append(element("td", text));
+      row.cells[1].title = row.cells[1].textContent;
+      row.cells[2].title = r.model ?? r.route;
       if (r.outcome === "error") row.classList.add("error");
       return row;
     }));
