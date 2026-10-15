@@ -35,7 +35,7 @@ export function createDashboard({ client, overview }) {
   let units = localStorage.getItem("dash-units") === "bytes" ? "bytes" : "tokens";
   let activity = localStorage.getItem("dash-activity") === "sessions" ? "sessions" : "requests";
   let live, requests = [], visible = false, lastEvent = 0;
-  let sessions = [], sessionsStored = true, sessionsTimer;
+  let sessions, sessionsStored = true, sessionsTimer;
   const sparklines = new Map();
   const stop = [];
 
@@ -90,6 +90,8 @@ export function createDashboard({ client, overview }) {
     stop.push(client.subscribe("live", {}, (message) => {
       if (message.type === "error") return;
       lastEvent = Date.now();
+      // Snapshots repeat after a reconnect, such as a router restart.
+      if (message.type === "snapshot") loadSessions(0);
       live = message.data;
       recordSparklines();
       renderLive();
@@ -220,9 +222,10 @@ export function createDashboard({ client, overview }) {
   }
 
   // Sessions are totalled by the router from stored requests: fetched for the
-  // selected range and scope, and again shortly after each request finishes.
+  // selected range and scope, and again shortly after each request finishes,
+  // in either view so switching to Sessions shows them at once.
   function loadSessions(delay = 1000) {
-    if (!visible || activity !== "sessions") return;
+    if (!visible) return;
     clearTimeout(sessionsTimer);
     sessionsTimer = setTimeout(async () => {
       try {
@@ -230,16 +233,16 @@ export function createDashboard({ client, overview }) {
         sessions = result.sessions;
         sessionsStored = result.stored;
         renderSessions();
-      } catch { /* The next finished request or control change retries. */ }
+      } catch { loadSessions(3000); }
     }, delay);
   }
 
   function renderSessions() {
     const shown = activity === "sessions";
-    $("dash-sessions-empty").textContent = sessionsStored ? "No sessions in this range." : "Sessions need the router's history database, which could not be opened.";
-    $("dash-sessions-empty").hidden = !shown || sessions.length > 0;
-    $("dash-sessions").hidden = !shown || !sessions.length;
-    if (!shown) return;
+    $("dash-sessions-empty").textContent = !sessions ? "Loading sessions…" : sessionsStored ? "No sessions in this range." : "Sessions need the router's history database, which could not be opened.";
+    $("dash-sessions-empty").hidden = !shown || sessions?.length > 0;
+    $("dash-sessions").hidden = !shown || !sessions?.length;
+    if (!shown || !sessions) return;
     const streaming = new Set(requests.filter(r => r.outcome === "active" && r.sessionId).map(r => r.sessionId));
     $("dash-sessions").tBodies[0].replaceChildren(...sessions.slice(0, 25).map(s => {
       const row = element("tr");
@@ -351,6 +354,9 @@ export function createDashboard({ client, overview }) {
   $("dash-scope").onchange = () => { scope = $("dash-scope").value; localStorage.setItem("dash-scope", scope); renderAccounts(); renderRequests(); subscribe(); };
   for (const button of $("dash-activity").children) {
     button.onclick = () => {
+      // Hold the section's height so a shorter view does not pull the page up.
+      const body = $("dash-activity-body");
+      body.style.minHeight = `${Math.max(body.offsetHeight, parseFloat(body.style.minHeight) || 0)}px`;
       activity = button.dataset.view;
       localStorage.setItem("dash-activity", activity);
       renderActivity();
