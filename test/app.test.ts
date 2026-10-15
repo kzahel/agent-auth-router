@@ -155,9 +155,12 @@ test("desktop pipe: owner hello, core-side policy, subscriptions and change even
   assert.equal(done.data.model, "claude-fixture");
   assert.deepEqual(done.data.usage, { input: 7, cacheRead: 70, cacheWrite: 0, output: 33, reasoning: 0, cacheWrite1h: 0, webSearches: 0 });
   assert.ok(app.messages.some((m) => m.sub === 4 && m.data.outcome === "active"));
-  const append = await app.next((m) => m.sub === 5 && m.data.series.output.some((v: number | null) => v), 4000);
-  assert.ok(append.data.start > history.completeThrough);
-  assert.equal(append.data.series.output.reduce((a: number, b: number | null) => a + (b ?? 0), 0), 33);
+  // The live estimate and the provider's final figure can land in adjacent one-second
+  // buckets, so the output may arrive over more than one append.
+  const outputIn = (m: { data: { series: { output: (number | null)[] } } }) => m.data.series.output.reduce((a: number, b: number | null) => a + (b ?? 0), 0);
+  const appended = () => app.messages.filter((m) => m.sub === 5 && m.event === "history");
+  await app.next(() => appended().reduce((total, m) => total + outputIn(m), 0) === 33, 4000);
+  assert.ok(appended().every((m) => m.data.start > history.completeThrough));
 
   // Registry edits from any owner surface notify connected UIs.
   await ownerRequest(store, "pools/save", { id: randomUUID(), revision: 0, name: "Work", provider: "claude", policy: "manual", accountIds: ["work"] });
@@ -232,6 +235,12 @@ test("web dashboard: exact host and origin, single-use codes, sessions and logou
   const cost = await ownerRequest(store, "history/cost", { range: "24h", scope: "account:work" });
   assert.deepEqual(cost.summary, { cost: 0, low: 0, requests: 0, unpriced: 0, estimated: 0 });
   assert.match(cost.prices.commit, /^[0-9a-f]{40}$/);
+  // Request compression is off (passthrough) until set, per provider, to an encoding that upstream accepts.
+  assert.deepEqual((await ownerRequest(store, "settings/request-compression")).requestCompression, { claude: "off", codex: "off" });
+  await assert.rejects(ownerRequest(store, "settings/request-compression", { provider: "claude", value: "zstd" }), /one of off, gzip/);
+  assert.deepEqual((await ownerRequest(store, "settings/request-compression", { provider: "claude", value: "gzip" })).requestCompression, { claude: "gzip", codex: "off" });
+  assert.equal(statSync(join(store.dir, "settings.json")).mode & 0o777, 0o600);
+  assert.deepEqual(store.loadSettings().requestCompression, { claude: "gzip" });
   await assert.rejects(ownerRequest(store, "sessions/recent", { range: "1y" }), /invalid range/);
   assert.equal(statSync(join(store.dir, "history.db")).mode & 0o777, 0o600);
   const logout = await httpRequest(origin, "/auth/logout", { method: "POST", headers: { host, cookie, origin, "content-type": "application/json" }, body: "{}" });
