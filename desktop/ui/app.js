@@ -187,7 +187,8 @@ async function reload(start = false) {
   if (generation !== observationGeneration) return;
   snapshot = next;
   dashboard.refresh();
-  $("version").textContent = next.build?.version ?? "development";
+  // Unbundled routers (run from source) have no version to show.
+  $("version").textContent = next.build?.source === "unbundled" ? "" : next.build?.version ?? "";
   $("status").textContent =
     `Router running · ${next.activeRequests} active request${next.activeRequests === 1 ? "" : "s"}`;
   $("accounts").replaceChildren();

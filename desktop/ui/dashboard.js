@@ -392,29 +392,32 @@ const QUOTA_STALE_MS = 15 * 60_000;
 // One meter per window: label, used bar with a tick where usage would be on
 // an even pace, and the rounded percent. Elements are reused so values glide
 // instead of the row reflowing on every update. A reading kept from before a
-// restart, or not refreshed lately, is faded with its age until a probe lands.
+// restart, or not refreshed lately, is faded with its age until a probe lands;
+// the age sits over the bars so the row never changes height.
 function renderQuota(cell, windows, { at, checking, error }) {
   const shown = (windows ?? []).filter(w => w.usedPercent != null);
   if (!shown.length) {
     const text = checking ? "checking…" : error ? "check failed" : "not checked";
-    if (cell.textContent !== text || cell.firstElementChild) cell.replaceChildren(text);
+    if (cell.textContent !== text || !cell.firstElementChild?.classList.contains("quota-empty")) cell.replaceChildren(element("div", text, "quota-empty"));
     cell.title = !checking && error ? error : "";
     return;
   }
-  let list = cell.firstElementChild;
-  if (!list?.classList.contains("meters")) {
-    list = element("div", undefined, "meters");
-    cell.replaceChildren(list, element("div", undefined, "meter-note"));
+  let wrapper = cell.firstElementChild;
+  if (!wrapper?.classList.contains("quota-cell")) {
+    wrapper = element("div", undefined, "quota-cell");
+    wrapper.append(element("div", undefined, "meters"), element("span", undefined, "meter-note"));
+    cell.replaceChildren(wrapper);
     cell.title = "";
   }
+  const [list, noteElement] = wrapper.children;
   const existing = new Map([...list.children].map(m => [m.dataset.bucket, m]));
   if ([...existing.keys()].join() !== shown.map(w => w.bucket).join()) list.replaceChildren(...shown.map(w => existing.get(w.bucket) ?? meter(w.bucket)));
   shown.forEach((w, i) => updateMeter(list.children[i], w));
   const stale = !(Date.now() - at < QUOTA_STALE_MS);
   list.classList.toggle("stale", stale);
   const note = checking ? "checking…" : stale ? (Number.isFinite(at) ? `as of ${ago(at)}` : "age unknown") : "";
-  cell.lastChild.textContent = note;
-  cell.lastChild.hidden = !note;
+  noteElement.textContent = note;
+  noteElement.hidden = !note;
 }
 
 function meter(bucket) {

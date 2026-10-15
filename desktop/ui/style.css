@@ -245,4 +245,8 @@ canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   #dash-accounts th:nth-child(6) { width: 76px; }
 }
 .meters.stale { opacity: .5; }
-.meter-note { color: var(--muted); font-size: 11px; margin-top: 2px; }
+/* Over the faded bars, between the labels and the percentages, so it adds no height. */
+.quota-cell { position: relative; }
+/* As tall as the usual two meters, so the first reading does not grow the row. */
+.quota-empty { min-height: 35px; display: flex; align-items: center; }
+.meter-note { position: absolute; top: 50%; left: 56px; right: 40px; transform: translateY(-50%); text-align: center; color: var(--muted); font-size: 11px; line-height: 16px; background: color-mix(in srgb, var(--surface) 88%, transparent); border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
