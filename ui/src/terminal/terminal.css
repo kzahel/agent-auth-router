@@ -3,7 +3,7 @@ html, body { height: 100%; overflow: hidden; }
 .terminal-window header { flex-shrink: 0; align-items: flex-start; }
 .terminal-window header div { min-width: 0; }
 .terminal-window h1 { font-size: 15px; margin: 0 0 4px; }
-.terminal-window .profile-path { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.terminal-window .profile-path { margin: 0; font-family: ui-monospace, monospace; font-size: 12px; overflow-wrap: anywhere; }
 #terminal { flex: 1; min-height: 0; min-width: 0; }
 .terminal-window footer { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; }
 #terminal-status { font-size: 12px; }

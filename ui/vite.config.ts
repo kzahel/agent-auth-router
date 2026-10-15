@@ -7,12 +7,13 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 
 const require = createRequire(import.meta.url);
 // Bundled packages whose license notices ship with the build.
-const LICENSED = ["@xterm/xterm", "@xterm/addon-fit"];
+const LICENSED = ["react", "react-dom", "scheduler", "@xterm/xterm", "@xterm/addon-fit"];
 
 function licenses(): Plugin {
   return {
@@ -31,12 +32,12 @@ function licenses(): Plugin {
 
 export default defineConfig({
   base: "./",
-  plugins: [licenses()],
+  plugins: [react(), licenses()],
   build: {
     manifest: true,
     // The desktop WebView and current browsers support module preloading.
     modulePreload: { polyfill: false },
     rollupOptions: { input: { index: "index.html", terminal: "terminal.html" } },
   },
-  test: { environment: "jsdom" },
+  test: { environment: "jsdom", setupFiles: ["src/test/setup.ts"] },
 });

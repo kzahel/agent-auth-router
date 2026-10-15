@@ -1,0 +1,2 @@
+.actions { justify-content: flex-end; }
+.actions .danger { color: var(--danger); border-color: var(--danger); }

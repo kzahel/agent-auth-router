@@ -1,0 +1,27 @@
+/* Pieces shared by several components. */
+.hint, .badge { color: var(--muted); font-size: 12px; }
+.danger { color: var(--danger); }
+.unknown { color: var(--warning); font-size: 12px; }
+.actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
+.sectionHeading { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
+.cards { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.cards > p { padding: 10px 12px; }
+.card { min-width: 0; padding: 10px 12px; display: grid; gap: 5px; }
+.card + .card { border-top: 1px solid var(--border); }
+.profilePath { overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 12px; }
+/* A checkbox and its label on one line. */
+.check { display: flex; align-items: center; gap: 7px; overflow-wrap: anywhere; font-size: inherit; }
+.check input { width: 14px; height: 14px; margin: 0; flex-shrink: 0; accent-color: var(--accent); }
+.check + .check { margin-top: 6px; }
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; background: var(--surface); }
+.segmented button { border: 0; border-radius: 0; min-height: 26px; padding: 3px 9px; font-size: 12px; }
+.segmented button + button { border-left: 1px solid var(--border); }
+.segmented button[aria-pressed="true"] { background: var(--hover); color: var(--accent); }
+.dataTable { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; margin-top: 8px; }
+.dataTable th, .dataTable td { text-align: left; padding: 5px 8px; border-top: 1px solid var(--border); white-space: nowrap; }
+.dataTable thead th { border-top: 0; color: var(--muted); font-weight: 500; }
+.dataTable td { font-variant-numeric: tabular-nums; }
+.dataTable th[scope="row"] { font-weight: 500; }
+.tableScroll { overflow-x: auto; }
+.visuallyHidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }

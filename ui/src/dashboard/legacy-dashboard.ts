@@ -2,11 +2,11 @@
 // recent requests. Everything here is provider-reported metadata; output
 // marked "~" includes a live estimate the provider has not yet replaced.
 
-import { TrafficGraph, sparkline, type GraphMessage, type GraphPane } from "./chart/traffic-graph.ts";
-import { COST_ESTIMATED, ago, costTitle, formatBytes, formatCost, formatNumber } from "./lib/format.ts";
-import { QUOTA_STALE_MS, elapsedPercent, quotaLabel, tenth } from "./lib/quota.ts";
-import type { AppClient } from "./protocol/client.ts";
-import type { ActivityData, Counter, LiveSnapshot, Overview, QuotaWindow, RangeCost, RangeName, RequestEntry, ScopeRates, SessionSummary } from "./protocol/types.ts";
+import { TrafficGraph, sparkline, type GraphMessage, type GraphPane } from "../chart/traffic-graph.ts";
+import { COST_ESTIMATED, ago, costTitle, formatBytes, formatCost, formatNumber } from "../lib/format.ts";
+import { QUOTA_STALE_MS, elapsedPercent, quotaLabel, tenth } from "../lib/quota.ts";
+import type { AppClient } from "../protocol/client.ts";
+import type { ActivityData, Counter, LiveSnapshot, Overview, QuotaWindow, RangeCost, RangeName, RequestEntry, ScopeRates, SessionSummary } from "../protocol/types.ts";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {

@@ -7,6 +7,11 @@ import { chromium } from "@playwright/test";
 
 const dist = resolve(import.meta.dirname, "../../ui/dist");
 
+// Opens an account's More actions; they stay open across refreshes.
+async function more(account) {
+  if (!await account.locator("details[open]").count()) await account.getByText("More", { exact: true }).click();
+}
+
 // The window refreshes on the router's change events, as it does after an
 // edit made elsewhere; tests send one and wait for the overview it fetches.
 async function refresh(page) {
@@ -212,7 +217,7 @@ test("management UI preserves typing while observations update, and offers owner
   assert.equal(await page.locator("#accounts article").nth(1).getByRole("progressbar").getAttribute("value"), "0");
   assert.equal(await page.locator("#accounts article").nth(2).getByRole("progressbar").getAttribute("value"), "100");
   assert.equal(await page.locator("#accounts article").nth(3).getByRole("progressbar").getAttribute("value"), null);
-  await account.getByText("More", { exact: true }).click();
+  await more(account);
   await account.getByRole("button", { name: "Edit nickname" }).click();
   const nickname = page.locator("#nickname-form input[name=nickname]");
   await nickname.fill("Work account");
@@ -226,11 +231,11 @@ test("management UI preserves typing while observations update, and offers owner
   await account.getByRole("button", { name: "Sign in", exact: true }).click();
   assert.ok((await page.evaluate(() => window.operations)).some(o => o.operation === "accounts/terminal-login" && o.body.id === "work-1" && o.body.presentation === "embedded"));
   assert.ok(!(await page.evaluate(() => window.operations)).some(o => o.operation === "accounts/login"));
-  await account.getByText("More", { exact: true }).click();
+  await more(account);
   await account.getByRole("button", { name: "Edit nickname" }).click();
   await nickname.fill("");
   await page.getByRole("button", { name: "Save nickname" }).click();
-  await page.waitForFunction(() => !document.querySelector("#accounts .nickname"));
+  await account.getByText("Work account", { exact: true }).waitFor({ state: "detached" });
   await page.getByText("Add account", { exact: true }).first().click();
   await page.locator("#account-form button[type=submit]").click();
   const enrollment = (await page.evaluate(() => window.operations)).find(o => o.operation === "accounts/add");
@@ -300,7 +305,7 @@ test("management UI preserves typing while observations update, and offers owner
   assert.notEqual(colors[0], colors[1], "palette follows system color scheme without reload");
   // Confirmation defaults to preserving files; cancellation and Escape do not mutate.
   assert.equal(await page.getByRole("button", { name: "Retire", exact: true }).count(), 0);
-  await account.getByText("More", { exact: true }).click();
+  await more(account);
   await account.getByRole("button", { name: "Remove", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Remove account?", exact: true });
   const deletion = dialog.getByRole("checkbox", { name: "Also delete the profile folder" });
@@ -311,6 +316,7 @@ test("management UI preserves typing while observations update, and offers owner
   await page.keyboard.press("Escape");
   assert.equal(await dialog.isVisible(), false);
   assert.equal((await page.evaluate(() => window.operations)).filter(o => o.operation === "accounts/remove").length, 0);
+  await more(account);
   await account.getByRole("button", { name: "Remove", exact: true }).click();
   assert.equal(await deletion.isChecked(), false, "reopening never preserves deletion consent");
   await page.evaluate(() => { window.removalFailure = true; });
@@ -337,7 +343,7 @@ test("management UI preserves typing while observations update, and offers owner
   assert.equal(destroy.body.deleteIdentity, "1:fixture");
   await page.evaluate(() => { window.fixtureState.accounts[0].imported = true; });
   await refresh(page);
-  await account.getByText("More", { exact: true }).click();
+  await more(account);
   await account.getByRole("button", { name: "Remove", exact: true }).click();
   assert.equal(await deletion.isChecked(), false);
   assert.equal(await deletion.isDisabled(), true);

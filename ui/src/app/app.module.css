@@ -1,0 +1,5 @@
+/* Shown only when the router is not connected and running. */
+.statusBanner { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 7px 10px; font-size: 12px; color: var(--warning); background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--warning); border-radius: 5px; }
+.statusBanner button { margin-left: auto; }
+.error { position: sticky; top: 8px; z-index: 2; background: var(--surface); color: var(--danger); border: 1px solid var(--danger); border-radius: 5px; padding: 8px 10px; font-size: 12px; overflow-wrap: anywhere; }
+.signedOut { margin-top: 24px; display: grid; gap: 8px; }

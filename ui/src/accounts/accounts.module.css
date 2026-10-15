@@ -1,0 +1,24 @@
+.help { font-size: 12px; margin: 8px 0; }
+.helpText { margin: 6px 0; }
+.providerStatus:empty { display: none; }
+.nickname { font-weight: 500; font-size: 12px; }
+.quota {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  align-items: center;
+  gap: 2px 12px;
+  font-size: 12px;
+  padding: 3px 0;
+}
+.quota small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
+.more { margin: 0; }
+.more summary { padding: 5px 7px; min-height: 28px; font-size: 12px; }
+.more[open] { flex-basis: 100%; }
+.more > div { margin-top: 4px; }
+.loginCommand { display: grid; gap: 4px; }
+.loginCommand pre { margin: 0; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
+.loginCommand button { justify-self: start; }
+.candidates { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 560px) {
+  .quota { grid-template-columns: minmax(0, 1fr) 90px; }
+}

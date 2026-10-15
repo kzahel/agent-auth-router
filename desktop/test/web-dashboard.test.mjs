@@ -127,8 +127,9 @@ test("web dashboard signs in once, shows live traffic and keeps the access link 
 
   // A browser cannot open a terminal on the router's machine: Sign in shows the official command.
   await page.getByRole("tab", { name: "Accounts", exact: true }).click();
-  await page.locator("#accounts article").first().getByRole("button", { name: "Sign in", exact: true }).click();
-  const command = await page.locator(".login-command pre").textContent();
+  const card = page.locator("#accounts article").first();
+  await card.getByRole("button", { name: "Sign in", exact: true }).click();
+  const command = await card.locator("pre").textContent();
   assert.match(command, /CLAUDE_CONFIG_DIR=.*profiles\/work.* claude auth login --claudeai/);
   await page.getByRole("tab", { name: "Dashboard", exact: true }).click();
 

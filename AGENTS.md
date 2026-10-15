@@ -13,6 +13,9 @@ balancing or YA integration. Those features are planned, not implemented here.
 
 - Keep the core headless and independent of any desktop shell.
 - Prefer a small Node.js/TypeScript implementation and narrow dependencies.
+  The management UI in `ui/` is the deliberate exception: React, Vite and
+  their test tools, bundled into a static build that the core serves. The
+  core itself keeps no runtime dependencies.
 - Official CLI ownership of OAuth is the approach to test. Do not silently
   replace it with router-owned token exchange, refresh or credential copying.
 - Do not read real credentials or invoke paid inference to validate a claim
