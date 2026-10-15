@@ -71,8 +71,10 @@ function runs(length, covered) {
 }
 
 /**
- * panes: [{ title, series: [{ key, label, color }], stacked, direction: "up" | "down",
+ * panes: [{ title, series: [{ key, label, color }], context?: [{ key, label }], stacked,
  *           format(value), unit, maximum? }]
+ * Stacked panes draw solid bands; others draw lines. Context series are not
+ * drawn but are listed in the tooltip.
  */
 export class TrafficGraph {
   #canvas;
@@ -214,9 +216,8 @@ export class TrafficGraph {
       }
       const scale = this.#scale(pane, index, maximum, now);
       settling ||= scale.settling;
-      const down = pane.direction === "down";
-      const baseline = down ? area.top : area.bottom;
-      const y = (v) => down ? area.top + (v / scale.value) * area.height : area.bottom - (v / scale.value) * area.height;
+      const baseline = area.bottom;
+      const y = (v) => area.bottom - (v / scale.value) * area.height;
       // Title and recessive hairline grid.
       ctx.fillStyle = text;
       ctx.textAlign = "left";
@@ -240,27 +241,37 @@ export class TrafficGraph {
       ctx.rect(left, area.top - 1, right - left, area.height + 2);
       ctx.clip();
       for (const run of runs(length, covered)) {
+        const edges = pane.series.map((_, k) => run.map(i => ({ x: x(i), y: y(stacks[k][i]) })));
         pane.series.forEach((s, k) => {
-          const top = run.map(i => ({ x: x(i), y: y(stacks[k][i]) }));
-          const below = run.map(i => ({ x: x(i), y: pane.stacked && k ? y(stacks[k - 1][i]) : baseline }));
-          if (pane.fill !== false) {
-            ctx.beginPath();
-            trace(ctx, top);
-            if (pane.stacked && k) trace(ctx, below, true, false);
-            else { ctx.lineTo(top.at(-1).x, baseline); ctx.lineTo(top[0].x, baseline); }
-            ctx.closePath();
-            ctx.globalAlpha = 0.28;
+          const top = edges[k];
+          ctx.beginPath();
+          if (top.length === 1) {
+            ctx.arc(top[0].x, top[0].y, 1.5, 0, Math.PI * 2);
             ctx.fillStyle = s.color;
             ctx.fill();
-            ctx.globalAlpha = 1;
+          } else if (pane.stacked) {
+            // A line per layer would sit on the band above it, so bands are solid.
+            trace(ctx, top);
+            if (k) trace(ctx, edges[k - 1], true, false);
+            else { ctx.lineTo(top.at(-1).x, baseline); ctx.lineTo(top[0].x, baseline); }
+            ctx.closePath();
+            ctx.fillStyle = s.color;
+            ctx.fill();
+          } else {
+            trace(ctx, top);
+            ctx.strokeStyle = s.color;
+            ctx.lineWidth = 2;
+            ctx.stroke();
           }
-          ctx.beginPath();
-          if (top.length === 1) ctx.arc(top[0].x, top[0].y, 1.5, 0, Math.PI * 2);
-          else trace(ctx, top);
-          ctx.strokeStyle = s.color;
-          ctx.lineWidth = 2;
-          ctx.stroke();
         });
+        // A hairline of surface between stacked bands.
+        if (pane.stacked && run.length > 1) for (const edge of edges.slice(0, -1)) {
+          ctx.beginPath();
+          trace(ctx, edge);
+          ctx.strokeStyle = surface;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
       }
       ctx.restore();
       // Cursor hairline and markers.
@@ -333,9 +344,9 @@ export class TrafficGraph {
       : data.bucketMs >= 60_000 ? at.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
       : at.toLocaleTimeString();
     const rows = [];
-    for (const pane of this.#panes) for (const s of pane.series) {
+    for (const pane of this.#panes) for (const s of [...pane.series, ...(pane.context ?? [])]) {
       const v = this.value(s.key, this.#cursor);
-      rows.push(`<div class="tooltip-row"><span class="swatch" style="background:${s.color}"></span>${escape(s.label)}<b>${v === null ? "no data" : `${pane.format(v)}${pane.unit ?? ""}`}</b></div>`);
+      rows.push(`<div class="tooltip-row"><span class="swatch"${s.color ? ` style="background:${s.color}"` : ""}></span>${escape(s.label)}<b>${v === null ? "no data" : `${pane.format(v)}${pane.unit ?? ""}`}</b></div>`);
     }
     tooltip.innerHTML = `<div class="tooltip-time">${escape(time)}</div>${rows.join("")}`;
     tooltip.hidden = false;

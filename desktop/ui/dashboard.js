@@ -39,15 +39,18 @@ export function createDashboard({ client, overview }) {
 
   const panes = () => units === "tokens"
     ? [
-      { title: "Sent to model · tokens/s", series: ["cacheRead", "cacheWrite", "input"], stacked: true, direction: "up", format: formatNumber, unit: "/s" },
-      { title: "Generated · est. tokens/s", series: ["output"], direction: "down", format: formatNumber, unit: "/s" },
+      // Cache reads are nearly all of what is sent and cost little, so they
+      // would flatten the tokens that matter; they stay in the tooltip and table.
+      { title: "New input · tokens/s", series: ["cacheWrite", "input"], context: ["cacheRead"], stacked: true, format: formatNumber, unit: "/s" },
+      { title: "Generated · est. tokens/s", series: ["output"], format: formatNumber, unit: "/s" },
     ]
     : [
-      { title: "Uploaded · per second", series: ["bytesUp"], direction: "up", format: formatBytes, unit: "/s" },
-      { title: "Downloaded · per second", series: ["bytesDown"], direction: "down", format: formatBytes, unit: "/s" },
+      { title: "Uploaded · per second", series: ["bytesUp"], format: formatBytes, unit: "/s" },
+      { title: "Downloaded · per second", series: ["bytesDown"], format: formatBytes, unit: "/s" },
     ];
   const configure = () => {
-    graph.configure(panes().map(p => ({ ...p, series: p.series.map(key => ({ key, label: SERIES[key].label, color: color(SERIES[key].slot) })) })), { live: LIVE_RANGES.has(range) });
+    graph.configure(panes().map(p => ({ ...p, series: p.series.map(key => ({ key, label: SERIES[key].label, color: color(SERIES[key].slot) })),
+      context: (p.context ?? []).map(key => ({ key, label: SERIES[key].label })) })), { live: LIVE_RANGES.has(range) });
     renderLegend();
   };
   function renderLegend() {
@@ -100,7 +103,7 @@ export function createDashboard({ client, overview }) {
         const keys = Object.keys(quotaGraph.data.series).filter(k => k.startsWith("quota:")).sort();
         $("dash-quota-empty").hidden = keys.some(k => quotaGraph.data.series[k].some(v => v !== null));
         quotaGraph.configure([{ title: "Quota used · %", series: keys.slice(0, 4).map((key, i) => ({ key, label: quotaLabel({ bucket: key.slice(6) }), color: color(i + 1) })),
-          direction: "up", fill: false, maximum: 100, format: (v) => `${Math.round(v)}%`, unit: "" }], { live: LIVE_RANGES.has(range), rate: false });
+          maximum: 100, format: (v) => `${Math.round(v)}%`, unit: "" }], { live: LIVE_RANGES.has(range), rate: false });
       }));
     }
   }
@@ -221,14 +224,15 @@ export function createDashboard({ client, overview }) {
     if (!data) return;
     const length = data.completeThrough - data.start + 1, perSecond = data.bucketMs / 1000;
     const format = units === "tokens" ? formatNumber : formatBytes;
-    body.replaceChildren(...panes().flatMap(p => p.series).map(key => {
+    const drawn = new Set(panes().flatMap(p => p.series));
+    body.replaceChildren(...panes().flatMap(p => [...p.series, ...(p.context ?? [])]).map(key => {
       const values = [];
       for (let i = 0; i < length; i++) { const v = data.series[key]?.[i]; if (v !== null && v !== undefined) values.push(v); }
       const total = values.reduce((a, b) => a + b, 0);
       const row = element("tr");
       const name = element("th"), label = element("span", undefined, "legend-item");
       const swatch = element("span", undefined, "swatch");
-      swatch.style.background = color(SERIES[key].slot);
+      if (drawn.has(key)) swatch.style.background = color(SERIES[key].slot);
       label.append(swatch, document.createTextNode(SERIES[key].label));
       name.append(label);
       name.scope = "row";

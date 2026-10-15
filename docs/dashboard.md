@@ -255,17 +255,19 @@ no accounts it links to Accounts.
 - **Summary tiles:** active streams, sent and generated tokens per second,
   one-minute cache hit ratio, requests and errors.
 - **Traffic graph:** two panes on a shared time axis, each with its own
-  labelled scale. "Sent to model" stacks cache read, cache write and uncached
-  input upward. "Generated" draws output downward. Cache reads can exceed
-  output by two orders of magnitude, so a shared axis would flatten output.
-  The two panes are separate scales, not a dual-axis chart. Bytes mode shows
-  uploaded and downloaded the same way.
+  labelled scale. "New input" stacks cache write and uncached input as solid
+  bands; "Generated" is a line of estimated output. Cache reads are left out
+  of the drawing and listed in the tooltip and table: agent sessions resend
+  their whole context each turn, so cache reads are typically over 99% of
+  what is sent and would flatten the costlier tokens to a hairline. The two
+  panes are separate scales, not a dual-axis chart. Bytes mode draws uploaded
+  and downloaded as lines.
 - **Value table:** last, average, peak and total for each series over the
   visible range. It doubles as the accessible table view, and as relief for
   two light-mode colours below 3:1 contrast.
 - **Quota graph** (account scope): used percent per window, holding the last
   sample until the next one.
-- **Accounts table:** live sent/generated rates, streams, latest quota, time
+- **Accounts table:** live sent/generated rates, streams, quota meters, time
   since the last request and a two-minute sparkline. Selecting a row scopes
   the graph to that account.
 - **Recent requests:** time, client → account, model, sent tokens with the
