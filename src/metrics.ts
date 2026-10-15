@@ -294,10 +294,10 @@ export class Metrics {
   }
   scopeKeys(): string[] { return [...this.scopes.keys()]; }
   /**
-   * Tokens per second (sent and output) per account over one tier's complete
+   * Per account, the per-second sum of `metrics` over one tier's complete
    * buckets, for the accounts table; null marks buckets the router was not running.
    */
-  activity(range: RangeName) {
+  activity(range: RangeName, metrics: readonly Counter[]) {
     const { bucketMs, count } = RANGES[range], perSecond = bucketMs / 1000;
     const head = Math.floor(this.now() / bucketMs), completeThrough = head - 1, start = completeThrough - count + 1;
     const accounts: Record<string, (number | null)[]> = {};
@@ -307,12 +307,12 @@ export class Metrics {
       tier.advance(this.now());
       const column: (number | null)[] = [];
       for (let b = start; b <= completeThrough; b++) {
-        const parts = (["input", "cacheRead", "cacheWrite", "output"] as const).map(m => tier.value(m, b));
+        const parts = metrics.map(m => tier.value(m, b));
         column.push(parts.every(v => v === null) ? null : parts.reduce<number>((sum, v) => sum + (v ?? 0), 0) / perSecond);
       }
       accounts[key.slice(8)] = column;
     }
-    return { range, bucketMs, count, start, completeThrough, accounts };
+    return { range, metrics: [...metrics], bucketMs, count, start, completeThrough, accounts };
   }
   history(range: RangeName, scopeKey: string, metrics: readonly string[] = COUNTERS, after?: number) {
     const tier = this.scope(scopeKey)[range];

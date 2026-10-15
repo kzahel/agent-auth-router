@@ -8,7 +8,7 @@ import { existsSync, lstatSync, chmodSync, unlinkSync } from "node:fs";
 import net from "node:net";
 import { ControlError } from "./control.ts";
 import { errorText, log } from "./log.ts";
-import { COUNTERS, isMetric, isRange, isScope, RANGES, type Metrics, type RangeName } from "./metrics.ts";
+import { COUNTERS, isMetric, isRange, isScope, RANGES, type Counter, type Metrics, type RangeName } from "./metrics.ts";
 import type { OwnerService } from "./owner.ts";
 
 export const APP_PROTOCOL = 1;
@@ -41,7 +41,7 @@ type Subscription =
   | { kind: "live" }
   | { kind: "requests" }
   | { kind: "history"; range: RangeName; scope: string; metrics: string[]; completeThrough: number }
-  | { kind: "activity"; range: RangeName; completeThrough: number };
+  | { kind: "activity"; range: RangeName; metrics: Counter[]; completeThrough: number };
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -117,7 +117,7 @@ export class AppHub {
     this.owner.refreshStaleQuota(() => this.notifyChange());
   }
   history(range: RangeName, scope: string, metrics: string[], after?: number) { return this.metrics.history(range, scope, metrics, after); }
-  activity(range: RangeName) { return this.metrics.activity(range); }
+  activity(range: RangeName, metrics: readonly Counter[]) { return this.metrics.activity(range, metrics); }
   recent() { return this.metrics.recentRequests(); }
   /** One shared timer while any session holds a periodic subscription. */
   schedule(): void {
@@ -240,11 +240,12 @@ export class AppSession {
       this.subscriptions.set(id, { kind: "history", range, scope, metrics: metrics as string[], completeThrough: snapshot.completeThrough });
       this.send({ id, result: snapshot });
     } else if (kind === "activity") {
-      // Per-account sparklines: the whole window again whenever a bucket completes.
-      const range = body.range ?? "2m";
-      if (!isRange(range)) { this.fail(id, 400, "invalid activity subscription"); return; }
-      const snapshot = this.hub.activity(range);
-      this.subscriptions.set(id, { kind: "activity", range, completeThrough: snapshot.completeThrough });
+      // Per-account sparklines of the series the chart shows: the whole window
+      // again whenever a bucket completes.
+      const range = body.range ?? "2m", metrics = body.metrics ?? ["cacheWrite", "input", "output"];
+      if (!isRange(range) || !Array.isArray(metrics) || metrics.some(m => !(COUNTERS as readonly unknown[]).includes(m))) { this.fail(id, 400, "invalid activity subscription"); return; }
+      const snapshot = this.hub.activity(range, metrics as Counter[]);
+      this.subscriptions.set(id, { kind: "activity", range, metrics: [...new Set(metrics as Counter[])], completeThrough: snapshot.completeThrough });
       this.send({ id, result: snapshot });
     } else { this.fail(id, 400, "unknown subscription"); return; }
     this.hub.schedule();
@@ -259,7 +260,7 @@ export class AppSession {
         sub.completeThrough = data.completeThrough;
         this.send({ sub: id, event: "history", data });
       } else if (sub.kind === "activity" && Math.floor(live.at / RANGES[sub.range].bucketMs) - 1 > sub.completeThrough) {
-        const data = this.hub.activity(sub.range);
+        const data = this.hub.activity(sub.range, sub.metrics);
         sub.completeThrough = data.completeThrough;
         this.send({ sub: id, event: "activity", data });
       }

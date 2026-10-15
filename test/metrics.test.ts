@@ -66,7 +66,7 @@ describe("metrics", () => {
     assert.deepEqual(metrics.recentRequests(1).map((e) => e.id), [2]);
   });
 
-  test("account activity is tokens per second per complete bucket, for every account", () => {
+  test("account activity sums the chosen series per second per complete bucket, for every account", () => {
     let now = 2_100_000_000_000;
     const metrics = new Metrics({ now: () => now });
     const handle = metrics.begin({ provider: "claude", route: "/v1/messages", accountId: "a", client: "c", tapped: true });
@@ -74,13 +74,14 @@ describe("metrics", () => {
     handle.end(200);
     metrics.begin({ provider: "claude", route: "/v1/messages", accountId: "b", client: "c", tapped: true }).end(200);
     now += 10_000;
-    const minute = metrics.activity("10m");
+    const minute = metrics.activity("10m", ["input", "cacheRead", "cacheWrite", "output"]);
     assert.equal(minute.bucketMs, 5000);
     assert.equal(minute.accounts.a!.length, 120);
     assert.equal(minute.accounts.a!.filter((v) => v !== null && v > 0).length, 1);
     assert.equal(minute.accounts.a!.find((v) => v !== null && v > 0), 4000 / 5, "sent and output, per second of a five-second bucket");
     assert.ok(minute.accounts.b!.every((v) => v === null || v === 0), "an account with requests but no tokens is flat");
     assert.equal(minute.accounts.all, undefined, "only accounts");
+    assert.equal(metrics.activity("10m", ["cacheWrite", "output"]).accounts.a!.find((v) => v !== null && v > 0), 990 / 5, "only the chosen series");
   });
 
   test("active sessions count each client session once per scope, for a minute after its last request", () => {

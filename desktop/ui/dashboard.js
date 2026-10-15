@@ -47,8 +47,18 @@ export function createDashboard({ client, overview }) {
     && activity === DEFAULT_VIEW.activity && [...hidden].sort().join() === [...DEFAULT_VIEW.hidden].sort().join();
   let live, requests = [], visible = false, lastEvent = 0;
   let sessions, sessionsStored = true, sessionsTimer;
-  // Per-account tokens per second over the selected range, from the router's history.
-  let accountTraffic;
+  // Per account, the chart's shown series per second over the selected range,
+  // from the router's history; resubscribed when the legend changes.
+  let accountTraffic, stopActivity;
+  const shownSeries = () => panes().flatMap(p => p.series).filter(key => !hidden.has(key));
+  function subscribeActivity() {
+    stopActivity?.();
+    stopActivity = visible ? client.subscribe("activity", { range, metrics: shownSeries() }, (message) => {
+      if (message.type === "error") return;
+      accountTraffic = message.data;
+      renderAccounts();
+    }) : undefined;
+  }
   const stop = [];
 
   // Tokens share one axis: new input and output are of similar size. Bytes keep
@@ -75,7 +85,11 @@ export function createDashboard({ client, overview }) {
   // on or off; the full values table sits collapsed under the chart.
   function renderLegend() {
     const span = rangeSpan();
-    $("dash-spark-head").textContent = `Tokens/s · last ${span}`;
+    const series = shownSeries().map(key => SERIES[key].label.toLowerCase());
+    $("dash-spark-head").textContent = `${units === "tokens" ? "Tokens" : "Bytes"}/s · last ${span}`;
+    $("dash-spark-head").title = series.length
+      ? `Per second for each account, on one scale shared by every row: ${series.join(", ")}, as shown in the chart`
+      : "No series is shown in the chart";
     $("dash-legend").replaceChildren(element("span", `Last ${span}:`, "legend-range"), ...panes().flatMap(p => p.series).map(key => {
       const item = element("button", undefined, "legend-item");
       item.type = "button";
@@ -89,6 +103,7 @@ export function createDashboard({ client, overview }) {
         if (hidden.has(key)) hidden.delete(key); else hidden.add(key);
         localStorage.setItem("dash-hidden", JSON.stringify([...hidden]));
         configure();
+        subscribeActivity();
         renderSummary();
       };
       return item;
@@ -97,6 +112,8 @@ export function createDashboard({ client, overview }) {
 
   function subscribe() {
     for (const off of stop.splice(0)) off();
+    stopActivity?.();
+    stopActivity = undefined;
     if (!visible) return;
     configure();
     loadSessions(0);
@@ -116,11 +133,7 @@ export function createDashboard({ client, overview }) {
       live = message.data;
       renderLive();
     }));
-    stop.push(client.subscribe("activity", { range }, (message) => {
-      if (message.type === "error") return;
-      accountTraffic = message.data;
-      renderAccounts();
-    }));
+    subscribeActivity();
     stop.push(client.subscribe("requests", {}, (message) => {
       if (message.type === "snapshot") requests = message.data.requests;
       else if (message.type === "request") {
@@ -222,7 +235,8 @@ export function createDashboard({ client, overview }) {
       const values = accountTraffic?.accounts[a.id] ?? [];
       const total = values.reduce((sum, v) => sum + (v ?? 0), 0) * (accountTraffic?.bucketMs ?? 0) / 1000;
       sparkline(row.cells[5].firstChild, values, getComputedStyle(document.documentElement).getPropertyValue("--muted").trim(), trafficPeak);
-      row.cells[5].title = accountTraffic ? `${accountLabel(a.id)}: ${formatNumber(total)} tokens, peak ${formatNumber(Math.max(0, ...values.map(v => v ?? 0)))}/s, in the last ${rangeSpan()}` : "";
+      const format = units === "tokens" ? formatNumber : formatBytes, unit = units === "tokens" ? " tokens" : "";
+      row.cells[5].title = accountTraffic ? `${accountLabel(a.id)}: ${format(total)}${unit}, peak ${format(Math.max(0, ...values.map(v => v ?? 0)))}/s, in the last ${rangeSpan()} (${shownSeries().map(key => SERIES[key].label.toLowerCase()).join(", ") || "no series shown"})` : "";
       return row;
     });
     if (ordered.some((row, i) => body.rows[i] !== row) || body.rows.length !== ordered.length) body.replaceChildren(...ordered);
