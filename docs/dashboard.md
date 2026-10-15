@@ -284,11 +284,18 @@ no accounts it links to Accounts.
 - **Quota graph** (account scope): used percent per window, holding the last
   sample until the next one.
 - **Accounts table:** live sent/output rates, streams, quota meters, time
-  since the last request and a two-minute sparkline. Selecting a row scopes
-  the graph to that account.
-- **Recent requests:** time, client → account, model, sent tokens with the
-  cache share, output (`~` while estimated), duration and status. Active
-  requests read "streaming".
+  since the last request, and a sparkline of tokens per second (sent and output)
+  over the selected range from the router's history, on one scale shared by
+  every row; its header names the range, and hovering shows the account's
+  total and peak. Rows are not interactive; the accounts in the chosen
+  scope are tinted.
+- **Recent requests or sessions:** a toggle between the two, both following
+  the scope. Requests show time, client → account, model, sent tokens with
+  the cache share, output (`~` while estimated), duration and status; active
+  requests read "streaming". Sessions show one row per client session active
+  in the selected range, with its accounts, model, request count, sent tokens
+  with cache share, output and last activity, totalled over every stored
+  request of the session.
 
 Rendering follows rstorrent's `SpeedPanel.tsx` and `speed-geometry.ts`:
 

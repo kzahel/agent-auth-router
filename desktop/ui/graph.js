@@ -376,8 +376,8 @@ function spanLabel(ms) {
 
 const escape = (value) => String(value).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-/** Small single-series line for table rows. */
-export function sparkline(canvas, values, color) {
+/** Small single-series line for table rows; `max` lets rows share a scale. Gaps draw as zero. */
+export function sparkline(canvas, values, color, max = Math.max(1, ...values.map(v => v ?? 0))) {
   const width = canvas.clientWidth, height = canvas.clientHeight;
   if (!width || !height) return;
   const ratio = Math.min(devicePixelRatio || 1, 3);
@@ -386,8 +386,7 @@ export function sparkline(canvas, values, color) {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  const max = Math.max(1, ...values);
-  const points = values.map((v, i) => ({ x: (i / Math.max(1, values.length - 1)) * (width - 2) + 1, y: height - 2 - (v / max) * (height - 4) }));
+  const points = values.map((v, i) => ({ x: (i / Math.max(1, values.length - 1)) * (width - 2) + 1, y: height - 2 - ((v ?? 0) / max) * (height - 4) }));
   if (points.length < 2) return;
   ctx.beginPath();
   trace(ctx, points);

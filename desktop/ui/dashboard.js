@@ -47,7 +47,8 @@ export function createDashboard({ client, overview }) {
     && activity === DEFAULT_VIEW.activity && [...hidden].sort().join() === [...DEFAULT_VIEW.hidden].sort().join();
   let live, requests = [], visible = false, lastEvent = 0;
   let sessions, sessionsStored = true, sessionsTimer;
-  const sparklines = new Map();
+  // Per-account tokens per second over the selected range, from the router's history.
+  let accountTraffic;
   const stop = [];
 
   // Tokens share one axis: new input and output are of similar size. Bytes keep
@@ -68,11 +69,13 @@ export function createDashboard({ client, overview }) {
       context: p.series.filter(key => hidden.has(key)).map(key => ({ key, label: SERIES[key].label })) })), { live: LIVE_RANGES.has(range) });
     renderLegend();
   };
+  const rangeSpan = () => RANGES.find(([key]) => key === range)[1].replace(/^1 /, "");
   // Every series with its total for the selected range, which leads the legend
   // so the totals are not read as running counts. Each entry switches its series
   // on or off; the full values table sits collapsed under the chart.
   function renderLegend() {
-    const span = RANGES.find(([key]) => key === range)[1].replace(/^1 /, "");
+    const span = rangeSpan();
+    $("dash-spark-head").textContent = `Tokens/s · last ${span}`;
     $("dash-legend").replaceChildren(element("span", `Last ${span}:`, "legend-range"), ...panes().flatMap(p => p.series).map(key => {
       const item = element("button", undefined, "legend-item");
       item.type = "button";
@@ -111,8 +114,12 @@ export function createDashboard({ client, overview }) {
       // Snapshots repeat after a reconnect, such as a router restart.
       if (message.type === "snapshot") loadSessions(0);
       live = message.data;
-      recordSparklines();
       renderLive();
+    }));
+    stop.push(client.subscribe("activity", { range }, (message) => {
+      if (message.type === "error") return;
+      accountTraffic = message.data;
+      renderAccounts();
     }));
     stop.push(client.subscribe("requests", {}, (message) => {
       if (message.type === "snapshot") requests = message.data.requests;
@@ -183,22 +190,13 @@ export function createDashboard({ client, overview }) {
     graph.stale = Date.now() - lastEvent > 3000;
   }
 
-  function recordSparklines() {
-    for (const [key, s] of Object.entries(live?.scopes ?? {})) {
-      if (!key.startsWith("account:")) continue;
-      const values = sparklines.get(key) ?? [];
-      values.push(sent(s.rate) + s.rate.output);
-      if (values.length > 120) values.shift();
-      sparklines.set(key, values);
-    }
-  }
-
   function renderAccounts() {
     const body = $("dash-accounts").tBodies[0], snapshot = overview();
     const accounts = snapshot?.accounts ?? [];
     $("dash-accounts-empty").hidden = accounts.length > 0;
     $("dash-accounts").hidden = !accounts.length;
     const rows = new Map([...body.rows].map(r => [r.dataset.id, r]));
+    const trafficPeak = Math.max(1, ...Object.values(accountTraffic?.accounts ?? {}).flat().map(v => v ?? 0));
     const ordered = accounts.map(a => {
       let row = rows.get(a.id);
       if (!row) {
@@ -220,7 +218,11 @@ export function createDashboard({ client, overview }) {
       renderQuota(row.cells[3], recent ?? a.windows, { at: recent ? live.quotaAt?.[a.id] : Date.parse(a.quota?.observedAt ?? ""),
         checking: live?.quotaChecking?.includes(a.id), error: a.error });
       row.cells[4].textContent = last ? ago(last.startedAt) : "–";
-      sparkline(row.cells[5].firstChild, sparklines.get(`account:${a.id}`) ?? [], color(1));
+      // One scale for every row, so line heights compare across accounts.
+      const values = accountTraffic?.accounts[a.id] ?? [];
+      const total = values.reduce((sum, v) => sum + (v ?? 0), 0) * (accountTraffic?.bucketMs ?? 0) / 1000;
+      sparkline(row.cells[5].firstChild, values, getComputedStyle(document.documentElement).getPropertyValue("--muted").trim(), trafficPeak);
+      row.cells[5].title = accountTraffic ? `${accountLabel(a.id)}: ${formatNumber(total)} tokens, peak ${formatNumber(Math.max(0, ...values.map(v => v ?? 0)))}/s, in the last ${rangeSpan()}` : "";
       return row;
     });
     if (ordered.some((row, i) => body.rows[i] !== row) || body.rows.length !== ordered.length) body.replaceChildren(...ordered);

@@ -40,7 +40,8 @@ export interface AppTransport {
 type Subscription =
   | { kind: "live" }
   | { kind: "requests" }
-  | { kind: "history"; range: RangeName; scope: string; metrics: string[]; completeThrough: number };
+  | { kind: "history"; range: RangeName; scope: string; metrics: string[]; completeThrough: number }
+  | { kind: "activity"; range: RangeName; completeThrough: number };
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -116,6 +117,7 @@ export class AppHub {
     this.owner.refreshStaleQuota(() => this.notifyChange());
   }
   history(range: RangeName, scope: string, metrics: string[], after?: number) { return this.metrics.history(range, scope, metrics, after); }
+  activity(range: RangeName) { return this.metrics.activity(range); }
   recent() { return this.metrics.recentRequests(); }
   /** One shared timer while any session holds a periodic subscription. */
   schedule(): void {
@@ -237,6 +239,13 @@ export class AppSession {
       const snapshot = this.hub.history(range, scope, metrics as string[]);
       this.subscriptions.set(id, { kind: "history", range, scope, metrics: metrics as string[], completeThrough: snapshot.completeThrough });
       this.send({ id, result: snapshot });
+    } else if (kind === "activity") {
+      // Per-account sparklines: the whole window again whenever a bucket completes.
+      const range = body.range ?? "2m";
+      if (!isRange(range)) { this.fail(id, 400, "invalid activity subscription"); return; }
+      const snapshot = this.hub.activity(range);
+      this.subscriptions.set(id, { kind: "activity", range, completeThrough: snapshot.completeThrough });
+      this.send({ id, result: snapshot });
     } else { this.fail(id, 400, "unknown subscription"); return; }
     this.hub.schedule();
   }
@@ -249,6 +258,10 @@ export class AppSession {
         const data = this.hub.history(sub.range, sub.scope, sub.metrics, sub.completeThrough);
         sub.completeThrough = data.completeThrough;
         this.send({ sub: id, event: "history", data });
+      } else if (sub.kind === "activity" && Math.floor(live.at / RANGES[sub.range].bucketMs) - 1 > sub.completeThrough) {
+        const data = this.hub.activity(sub.range);
+        sub.completeThrough = data.completeThrough;
+        this.send({ sub: id, event: "activity", data });
       }
     }
   }
