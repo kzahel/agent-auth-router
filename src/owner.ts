@@ -121,6 +121,8 @@ export interface OwnerLifecycle {
 /** A requested restart waits for this long with no work of any kind. */
 export const RESTART_QUIET_MS = 5_000;
 const RESTART_POLL_MS = 500;
+/** An open dashboard reprobes an account's quota at most this often. */
+export const DISPLAY_QUOTA_STALE_MS = 15 * 60_000;
 
 export class OwnerService {
   /** Optional services attached after construction by the runtime. */
@@ -134,6 +136,8 @@ export class OwnerService {
   private readonly origin: string;
   private readonly lifecycle: OwnerLifecycle;
   private restartTimer: NodeJS.Timeout | undefined;
+  private displayRefresh: Promise<void> | undefined;
+  private displayChecking: string | undefined;
   private readonly terminals = new Map<string, TerminalLogin>();
   private readonly logins = new Map<
     string,
@@ -636,6 +640,34 @@ export class OwnerService {
       return { pending: true, quietSeconds: quietMs / 1000 };
     }
     throw new ControlError(404, "unknown owner operation");
+  }
+  /**
+   * Dashboard demand: probes enabled accounts whose quota is unknown or was
+   * last observed or attempted DISPLAY_QUOTA_STALE_MS ago, one at a time. A
+   * failed attempt counts, so an open dashboard costs at most one probe per
+   * account per interval. Routing never waits on this; admission refreshes
+   * what it needs itself.
+   */
+  refreshStaleQuota(settled: () => void): void {
+    if (this.displayRefresh) return;
+    const enabled = () => this.store.loadAccounts().filter(a => a.enabled !== false && !a.retired);
+    const due = enabled().filter(a => this.quotaStale(a.id)).map(a => a.id);
+    if (!due.length) return;
+    this.displayRefresh = (async () => {
+      for (const id of due) {
+        if (!enabled().some(a => a.id === id) || !this.quotaStale(id)) continue;
+        this.displayChecking = id;
+        await this.evidence.refresh(id).catch(() => undefined);
+        settled();
+      }
+    })().finally(() => { this.displayRefresh = this.displayChecking = undefined; });
+  }
+  /** The account a dashboard-driven probe is reading now, if any. */
+  quotaChecking(): string[] { return this.displayChecking ? [this.displayChecking] : []; }
+  private quotaStale(id: string): boolean {
+    const o = this.evidence.get(id);
+    const last = Math.max(Date.parse(o.quota?.observedAt ?? "") || 0, Date.parse(o.attemptedAt ?? "") || 0);
+    return Date.now() - last >= DISPLAY_QUOTA_STALE_MS;
   }
   /** Requests, usage and catalog reads, renewals, sign-ins and terminal logins. */
   private busy(excludingCaller: boolean): boolean {

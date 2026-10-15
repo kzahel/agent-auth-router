@@ -62,7 +62,9 @@ Official CLI helpers -- login / refresh --> isolated credential stores
 - Pools are single-provider. Sessions are pinned to an account. Quota is read
   on demand from each provider's usage endpoint, and recorded from the
   rate-limit headers of every proxied response. Nothing polls in the
-  background.
+  background; while a dashboard is open, the router reads each enabled
+  account whose quota is unknown or more than 15 minutes old, one at a time.
+  The last reading is kept across restarts for display, not for routing.
 - Token usage is read passively from each relayed response (numbers and the
   model name only), so the dashboard can graph traffic without changing the
   stream.

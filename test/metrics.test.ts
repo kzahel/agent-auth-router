@@ -88,8 +88,17 @@ describe("metrics", () => {
     const lastCovered = covered.lastIndexOf(true);
     assert.ok(lastCovered < values.length - 20, "the two hours offline are gaps");
     assert.equal(day.series["quota:five_hour"]!.filter((v) => v === 42).length, 1);
+    assert.deepEqual(second.snapshot().quota.work?.map((w) => w.usedPercent), [42], "the last reading is kept for display");
+    assert.equal(second.snapshot().quotaAt.work, 3_000_000_000_000, "with the time it was observed");
     assert.equal(second.history("2m", "account:work", ["cacheRead"]).series.cacheRead!.every((v) => v === null || v === 0), true, "short tiers are not persisted");
     second.close();
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    saved.quota.other = { at: now, windows: [{ bucket: "bad/bucket", windowMinutes: null, usedPercent: 1, remainingPercent: 99, resetsAt: null }] };
+    saved.quota.future = { at: now + 1, windows: saved.quota.work.windows };
+    writeFileSync(path, JSON.stringify(saved));
+    const third = new Metrics({ path, now: () => now });
+    assert.deepEqual(Object.keys(third.snapshot().quota), ["work"], "malformed or future readings are dropped");
+    third.close();
     const logs = captureLogs();
     writeFileSync(path, "{ not json");
     assert.doesNotThrow(() => new Metrics({ path, now: () => now }).close(), "a corrupt file is logged, not fatal");

@@ -182,7 +182,9 @@ export function createDashboard({ client, overview }) {
       row.cells[0].textContent = `${accountLabel(a.id)} · ${a.provider}${a.enabled ? "" : " · disabled"}`;
       row.cells[1].textContent = s ? `${formatNumber(sent(s.rate))} / ${formatNumber(s.rate.output)}` : "0 / 0";
       row.cells[2].textContent = s ? String(s.active) : "0";
-      renderQuota(row.cells[3], live?.quota?.[a.id] ?? a.windows);
+      const recent = live?.quota?.[a.id];
+      renderQuota(row.cells[3], recent ?? a.windows, { at: recent ? live.quotaAt?.[a.id] : Date.parse(a.quota?.observedAt ?? ""),
+        checking: live?.quotaChecking?.includes(a.id), error: a.error });
       row.cells[4].textContent = last ? ago(last.startedAt) : "–";
       sparkline(row.cells[5].firstChild, sparklines.get(`account:${a.id}`) ?? [], color(1));
       return row;
@@ -285,20 +287,36 @@ export function createDashboard({ client, overview }) {
   };
 }
 
+// Matches the router's DISPLAY_QUOTA_STALE_MS: an open dashboard has it
+// reprobe readings this old, so older ones are drawn as last known.
+const QUOTA_STALE_MS = 15 * 60_000;
+
 // One meter per window: label, used bar with a tick where usage would be on
 // an even pace, and the rounded percent. Elements are reused so values glide
-// instead of the row reflowing on every update.
-function renderQuota(cell, windows) {
+// instead of the row reflowing on every update. A reading kept from before a
+// restart, or not refreshed lately, is faded with its age until a probe lands.
+function renderQuota(cell, windows, { at, checking, error }) {
   const shown = (windows ?? []).filter(w => w.usedPercent != null);
   if (!shown.length) {
-    if (cell.textContent !== "not checked" || cell.firstElementChild) cell.replaceChildren("not checked");
+    const text = checking ? "checking…" : error ? "check failed" : "not checked";
+    if (cell.textContent !== text || cell.firstElementChild) cell.replaceChildren(text);
+    cell.title = !checking && error ? error : "";
     return;
   }
   let list = cell.firstElementChild;
-  if (!list?.classList.contains("meters")) { list = element("div", undefined, "meters"); cell.replaceChildren(list); }
+  if (!list?.classList.contains("meters")) {
+    list = element("div", undefined, "meters");
+    cell.replaceChildren(list, element("div", undefined, "meter-note"));
+    cell.title = "";
+  }
   const existing = new Map([...list.children].map(m => [m.dataset.bucket, m]));
   if ([...existing.keys()].join() !== shown.map(w => w.bucket).join()) list.replaceChildren(...shown.map(w => existing.get(w.bucket) ?? meter(w.bucket)));
   shown.forEach((w, i) => updateMeter(list.children[i], w));
+  const stale = !(Date.now() - at < QUOTA_STALE_MS);
+  list.classList.toggle("stale", stale);
+  const note = checking ? "checking…" : stale ? (Number.isFinite(at) ? `as of ${ago(at)}` : "age unknown") : "";
+  cell.lastChild.textContent = note;
+  cell.lastChild.hidden = !note;
 }
 
 function meter(bucket) {

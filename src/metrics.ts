@@ -160,13 +160,26 @@ export interface RequestHandle {
 export type MetricsEvent = { type: "request"; entry: RequestEntry };
 
 interface PersistedTier { head: number; covered: [number, number][]; series: Record<string, [number, number][]> }
-interface PersistedMetrics { version: 1; savedAt: number; scopes: Record<string, Partial<Record<RangeName, PersistedTier>>> }
+interface PersistedMetrics { version: 1; savedAt: number; scopes: Record<string, Partial<Record<RangeName, PersistedTier>>>; quota?: Record<string, LatestQuota> }
+/** The last windows seen per account, kept across restarts for display only; pool evidence never reads it. */
+interface LatestQuota { at: number; windows: QuotaWindow[] }
+const MAX_LATEST_QUOTA = 256;
+
+function persistedWindow(value: unknown): QuotaWindow | null {
+  const w = value as Record<string, unknown> | null;
+  const percent = (v: unknown) => v === null || (typeof v === "number" && Number.isFinite(v));
+  if (!w || typeof w !== "object" || typeof w.bucket !== "string" || !/^[a-zA-Z0-9_.:-]{1,80}$/.test(w.bucket)
+    || !percent(w.windowMinutes) || !percent(w.usedPercent) || !percent(w.remainingPercent)
+    || !(w.resetsAt === null || (typeof w.resetsAt === "string" && Number.isFinite(Date.parse(w.resetsAt))))) return null;
+  return { bucket: w.bucket, windowMinutes: w.windowMinutes as number | null, usedPercent: w.usedPercent as number | null,
+    remainingPercent: w.remainingPercent as number | null, resetsAt: w.resetsAt as string | null };
+}
 
 export class Metrics {
   private readonly scopes = new Map<string, Scope>();
   private readonly active = new Map<string, number>();
   private readonly recent: RequestEntry[] = [];
-  private readonly latestQuota = new Map<string, QuotaWindow[]>();
+  private readonly latestQuota = new Map<string, LatestQuota>();
   private readonly listeners = new Set<(event: MetricsEvent) => void>();
   private readonly now: () => number;
   private readonly path: string | undefined;
@@ -252,7 +265,12 @@ export class Metrics {
   /** Records used-percent quota samples, per account only. */
   quota(accountId: string, windows: readonly QuotaWindow[]): void {
     const now = this.now(), scope = this.scope(`account:${accountId}`);
-    if (windows.length) this.latestQuota.set(accountId, windows.map(w => ({ ...w })));
+    if (windows.length) {
+      this.latestQuota.delete(accountId);
+      this.latestQuota.set(accountId, { at: now, windows: windows.map(w => ({ ...w })) });
+      if (this.latestQuota.size > MAX_LATEST_QUOTA) this.latestQuota.delete(this.latestQuota.keys().next().value!);
+      this.dirty = true;
+    }
     for (const w of windows) {
       if (w.usedPercent === null || !Number.isFinite(w.usedPercent)) continue;
       const metric = `quota:${w.bucket}`;
@@ -279,7 +297,9 @@ export class Metrics {
       for (const metric of COUNTERS) { rate[metric] = tier.sum(metric, 5) / 5; minute[metric] = tier.sum(metric, 60); }
       scopes[key] = { active: this.active.get(key) ?? 0, rate, minute };
     }
-    return { at: now, epoch: this.epoch, scopes, quota: Object.fromEntries(this.latestQuota), activeRequests: this.recent.filter(e => e.outcome === "active").map(e => structuredClone(e)) };
+    const quota: Record<string, QuotaWindow[]> = {}, quotaAt: Record<string, number> = {};
+    for (const [id, latest] of this.latestQuota) { quota[id] = latest.windows.map(w => ({ ...w })); quotaAt[id] = latest.at; }
+    return { at: now, epoch: this.epoch, scopes, quota, quotaAt, activeRequests: this.recent.filter(e => e.outcome === "active").map(e => structuredClone(e)) };
   }
   recentRequests(after = 0): RequestEntry[] {
     return this.recent.filter(e => e.id > after).reverse().map(e => structuredClone(e));
@@ -315,6 +335,11 @@ export class Metrics {
         tier.advance(now, false);
       }
     }
+    for (const [id, saved] of Object.entries(value.quota ?? {}).slice(-MAX_LATEST_QUOTA)) {
+      if (id.length > 200 || !saved || !Number.isSafeInteger(saved.at) || saved.at > now || !Array.isArray(saved.windows)) continue;
+      const windows = saved.windows.slice(0, 32).map(persistedWindow).filter(w => w !== null);
+      if (windows.length) this.latestQuota.set(id, { at: saved.at, windows });
+    }
   }
   save(): void {
     if (!this.path || !this.dirty) return;
@@ -344,7 +369,7 @@ export class Metrics {
       scopes[key] = ranges;
     }
     try {
-      writePrivateJson(this.path, { version: 1, savedAt: this.now(), scopes } satisfies PersistedMetrics);
+      writePrivateJson(this.path, { version: 1, savedAt: this.now(), scopes, quota: Object.fromEntries(this.latestQuota) } satisfies PersistedMetrics);
       this.dirty = false;
     } catch (error) { log("metrics.save_failed", { error: errorText(error) }); }
   }

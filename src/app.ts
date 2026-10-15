@@ -29,6 +29,7 @@ const DESKTOP_OPERATIONS: ReadonlySet<string> = new Set([...UI_OPERATIONS, "shut
 const MAX_INFLIGHT = 16;
 const MAX_SUBSCRIPTIONS = 16;
 const HELLO_TIMEOUT_MS = 5_000;
+const QUOTA_DEMAND_INTERVAL_MS = 30_000;
 export const MAX_MESSAGE_CHARS = 1024 * 1024;
 
 export interface AppTransport {
@@ -54,6 +55,7 @@ export class AppHub {
   private lastChange = 0;
   private tick: NodeJS.Timeout | undefined;
   private calls = 0;
+  private lastQuotaDemand = 0;
   private readonly unsubscribeMetrics: () => void;
   constructor(owner: OwnerService, metrics: Metrics, routerId: () => string) {
     this.owner = owner;
@@ -105,7 +107,14 @@ export class AppHub {
     try { return await this.owner.operation(operation, adjust(kind, operation, structuredClone(input))); }
     finally { this.calls--; }
   }
-  snapshot() { return this.metrics.snapshot(); }
+  snapshot() { return { ...this.metrics.snapshot(), quotaChecking: this.owner.quotaChecking() }; }
+  /** Live dashboards ask for stale quota; the owner bounds how often it probes. */
+  demandQuota(force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastQuotaDemand < QUOTA_DEMAND_INTERVAL_MS) return;
+    this.lastQuotaDemand = now;
+    this.owner.refreshStaleQuota(() => this.notifyChange());
+  }
   history(range: RangeName, scope: string, metrics: string[], after?: number) { return this.metrics.history(range, scope, metrics, after); }
   recent() { return this.metrics.recentRequests(); }
   /** One shared timer while any session holds a periodic subscription. */
@@ -113,8 +122,9 @@ export class AppHub {
     const needed = [...this.sessions].some(s => s.periodic());
     if (needed && !this.tick) {
       this.tick = setInterval(() => {
-        const live = this.metrics.snapshot();
+        const live = this.snapshot();
         for (const session of this.sessions) session.periodicTick(live);
+        if ([...this.sessions].some(s => s.watchesLive())) this.demandQuota();
       }, 1000);
       this.tick.unref();
     } else if (!needed && this.tick) {
@@ -214,6 +224,7 @@ export class AppSession {
     if (kind === "live") {
       this.subscriptions.set(id, { kind: "live" });
       this.send({ id, result: this.hub.snapshot() });
+      this.hub.demandQuota(true);
     } else if (kind === "requests") {
       this.subscriptions.set(id, { kind: "requests" });
       this.send({ id, result: { requests: this.hub.recent() } });
@@ -229,6 +240,7 @@ export class AppSession {
     } else { this.fail(id, 400, "unknown subscription"); return; }
     this.hub.schedule();
   }
+  watchesLive(): boolean { return [...this.subscriptions.values()].some(s => s.kind === "live"); }
   periodic(): boolean { return [...this.subscriptions.values()].some(s => s.kind !== "requests"); }
   periodicTick(live: ReturnType<AppHub["snapshot"]>): void {
     for (const [id, sub] of this.subscriptions) {

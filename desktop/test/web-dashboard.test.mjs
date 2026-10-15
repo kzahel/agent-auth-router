@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -50,7 +50,13 @@ test("web dashboard signs in once, shows live traffic and keeps the access link 
   writeFileSync(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "SYNTHETIC-ACCESS", refreshToken: "SYNTHETIC-REFRESH", expiresAt: Date.now() + 3600_000, scopes: ["user:inference"] } }));
   const token = aar("client", "add", "laptop", "--claude", "work").match(/aar_[A-Za-z0-9_-]+/)[0];
 
-  const router = spawn(process.execPath, [cli, "--state", state, "serve"], { stdio: ["ignore", "pipe", "pipe"] });
+  // An open dashboard probes the account's quota through the official CLI;
+  // a fake on PATH keeps that synthetic.
+  const bin = join(state, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(root, "test/fixtures/fake-claude-cli.ts")}" ok\n`);
+  chmodSync(join(bin, "claude"), 0o755);
+  const router = spawn(process.execPath, [cli, "--state", state, "serve"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
   t.after(() => router.kill("SIGTERM"));
   let stdout = "", stderr = "";
   router.stdout.on("data", (c) => { stdout += c; });
@@ -96,12 +102,16 @@ test("web dashboard signs in once, shows live traffic and keeps the access link 
   const summary = await page.locator("#dash-summary").textContent();
   assert.match(summary, /Output.*633/s, "three responses × 211 output tokens");
   assert.match(summary, /Cache read.*27k/s);
-  const snapshot = await (await fetch(`${new URL(link).origin}/v1/app/metrics/snapshot`, { method: "POST", headers: { authorization: `Bearer ${(await import("node:fs")).readFileSync(join(state, "owner.key"), "utf8")}`, "content-type": "application/json" }, body: "{}" })).json();
+  const snapshot = await (await fetch(`${new URL(link).origin}/v1/app/metrics/snapshot`, { method: "POST", headers: { authorization: `Bearer ${readFileSync(join(state, "owner.key"), "utf8")}`, "content-type": "application/json" }, body: "{}" })).json();
   assert.equal(snapshot.result.scopes["account:work"].minute.output, 633);
   // Scoping to the account adds its quota history from the rate-limit headers.
   await page.locator("#dash-scope").selectOption("account:work");
   await page.locator("#dash-quota canvas").waitFor();
   await page.waitForFunction(() => document.querySelector("#dash-quota-empty")?.hidden === true);
+  // Opening the dashboard probed the unknown quota once; later views reuse it.
+  await page.waitForFunction(() => document.querySelector("#dash-accounts tbody td:nth-child(4) .meter") !== null);
+  const probes = readFileSync(join(home, "cli-log.jsonl"), "utf8").split("\n").filter((l) => l.includes('"event":"start"'));
+  assert.equal(probes.length, 1);
   await page.locator("#dash-graph").hover({ position: { x: 600, y: 60 } });
 
   const captures = process.env.AAR_UI_CAPTURE_DIR;

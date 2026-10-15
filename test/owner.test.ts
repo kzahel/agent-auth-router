@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ControlRegistry } from "../src/control.ts";
 import { hashGatewayToken, generateGatewayToken } from "../src/gateway-auth.ts";
-import { ownerRequest } from "../src/owner.ts";
+import { DISPLAY_QUOTA_STALE_MS, OwnerService, ownerRequest } from "../src/owner.ts";
 import { PoolEvidence } from "../src/pools.ts";
 import { startRouter } from "../src/runtime.ts";
 import { StateStore, writePrivateJson } from "../src/state.ts";
@@ -175,6 +175,46 @@ test("late evidence is discarded when an account changes", async () => {
   await pending;
   assert.equal(evidence.get("a").quota, null);
   assert.deepEqual(evidence.get("a").models, []);
+});
+
+test("an open dashboard probes unknown or stale quota once per interval, one account at a time", async () => {
+  const store = new StateStore(tempDir("owner-"));
+  store.init();
+  store.saveAccounts(["fresh", "unknown", "failing", "off"].map((id) => ({ id, provider: "claude" as const,
+    home: join(store.profilesDir, id), ...(id === "off" ? { enabled: false } : {}) })));
+  const probes: string[] = [];
+  let running = 0, overlapped = false;
+  const evidence = new PoolEvidence(async () => [], async (accountId) => {
+    probes.push(accountId);
+    overlapped ||= ++running > 1;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    running--;
+    const failing = accountId === "failing";
+    return { accountId, provider: "claude" as const, status: failing ? "unavailable" as const : "ok" as const,
+      observedAt: new Date().toISOString(), windows: [], ...(failing ? { error: "usage unavailable" } : {}) };
+  });
+  evidence.observe("fresh", "claude", { "anthropic-ratelimit-unified-5h-utilization": "0.2" });
+  const owner = new OwnerService(store, new ControlRegistry(store), new Map(), evidence, () => {}, "http://127.0.0.1",
+    { active: () => 0, stop: () => {} });
+  const wait = async () => { while (owner.quotaChecking().length) await new Promise((resolve) => setTimeout(resolve, 2)); };
+  let settled = 0;
+  owner.refreshStaleQuota(() => settled++);
+  owner.refreshStaleQuota(() => settled++);
+  assert.deepEqual(owner.quotaChecking(), ["unknown"]);
+  await wait();
+  assert.deepEqual(probes, ["unknown", "failing"], "recent inference evidence and disabled accounts are skipped; a second call joins the first");
+  assert.equal(overlapped, false);
+  assert.equal(settled, 2);
+  owner.refreshStaleQuota(() => settled++);
+  await wait();
+  assert.equal(probes.length, 2, "a failed attempt also waits out the interval");
+  const realNow = Date.now;
+  Date.now = () => realNow() + DISPLAY_QUOTA_STALE_MS;
+  try {
+    owner.refreshStaleQuota(() => settled++);
+    await wait();
+  } finally { Date.now = realNow; }
+  assert.deepEqual(probes.slice(2).sort(), ["failing", "fresh", "unknown"]);
 });
 
 test("private owner enrollment and grants take effect without restart or re-pair; busy stop refuses", {
