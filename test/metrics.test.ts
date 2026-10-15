@@ -66,6 +66,28 @@ describe("metrics", () => {
     assert.deepEqual(metrics.recentRequests(1).map((e) => e.id), [2]);
   });
 
+  test("active sessions count each client session once per scope, for a minute after its last request", () => {
+    let now = 2_000_000_000_000;
+    const metrics = new Metrics({ now: () => now });
+    const start = (accountId: string, sessionId?: string) =>
+      metrics.begin({ provider: "claude", route: "/v1/messages", accountId, client: "c", sessionId, tapped: true });
+    // Two requests of one session in parallel, as subagents run, count once.
+    const parent = start("a", "s-1"), subagent = start("a", "s-1");
+    const other = start("b", "s-2");
+    start("b");
+    assert.equal(metrics.snapshot().scopes.all!.sessions, 2, "requests without a session id are not sessions");
+    assert.equal(metrics.snapshot().scopes["account:a"]!.sessions, 1);
+    subagent.end(200);
+    other.end(200);
+    now += 61_000;
+    assert.deepEqual([metrics.snapshot().scopes.all!.sessions, metrics.snapshot().scopes["account:b"]!.sessions], [1, 0],
+      "a session with a request still running stays active; an idle one lapses after a minute");
+    parent.end(200);
+    assert.equal(metrics.snapshot().scopes.all!.sessions, 1, "the end of a request counts as activity");
+    now += 61_000;
+    assert.equal(metrics.snapshot().scopes.all!.sessions, 0);
+  });
+
   test("stored tiers, quota readings and recent requests survive a restart; downtime stays a gap", () => {
     const dir = tempDir();
     const path = join(dir, "history.db");

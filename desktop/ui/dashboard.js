@@ -148,7 +148,8 @@ export function createDashboard({ client, overview }) {
     const stats = [
       // Every tile names its window. Rates average the last minute: a request
       // uploads its context in about a second, so a 5-second rate mostly read 0.
-      ["Streams · now", s ? String(s.active) : "0"],
+      // Sessions count conversations, however many requests each runs at once.
+      ["Sessions · 1 min", s ? String(s.sessions ?? 0) : "0"],
       ["Sent · 1 min", s ? `${formatNumber(sent(s.minute) / 60)}/s` : "0/s"],
       ["Output · 1 min", s ? `${formatNumber(s.minute.output / 60)}/s` : "0/s"],
       ["Cache hit · 1 min", s && sent(s.minute) ? `${Math.round((s.minute.cacheRead / sent(s.minute)) * 100)}%` : "–"],

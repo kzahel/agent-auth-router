@@ -258,9 +258,13 @@ no accounts it links to Accounts.
 
 - **Controls:** scope (All traffic, each pool, each account), range (2 min to
   30 days) and units (tokens or bytes), remembered per browser.
-- **Summary tiles:** active streams now; then over the last minute, sent
-  and output tokens per second, cache hit ratio, requests and errors. Each
-  tile names its window. They follow the scope, not the selected range.
+- **Summary tiles:** over the last minute, active sessions (distinct client
+  session ids with a request running or finished within the minute; a
+  session's parallel requests count once), sent and output tokens per
+  second, cache hit ratio, requests and errors. Each tile names its window,
+  and the tiles follow the scope, not the selected range. Requests in flight
+  show as streams in the Accounts table and as "streaming" in Recent
+  requests.
 - **Traffic graph:** two panes on a shared time axis, each with its own
   labelled scale. "New input" stacks cache write and uncached input as solid
   bands; "Output" is a line of output tokens, estimated live until the

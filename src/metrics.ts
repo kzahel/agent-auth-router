@@ -31,6 +31,9 @@ const METRIC = /^(requests|errors|input|cacheRead|cacheWrite|output|reasoning|by
 export const isMetric = (value: unknown): value is string => typeof value === "string" && METRIC.test(value);
 const RECENT_LIMIT = 200;
 const SAVE_INTERVAL_MS = 60_000;
+/** A session counts as active while a request runs and for this long after. */
+const SESSION_ACTIVE_MS = 60_000;
+const MAX_TRACKED_SESSIONS = 10_000;
 const PRUNE_INTERVAL_MS = 86_400_000;
 const PERSISTED = Object.entries(RANGES).filter(([, r]) => r.persist) as [RangeName, (typeof RANGES)[RangeName]][];
 
@@ -177,6 +180,8 @@ function persistedWindow(value: unknown): QuotaWindow | null {
 export class Metrics {
   private readonly scopes = new Map<string, Scope>();
   private readonly active = new Map<string, number>();
+  /** Per scope and client session id: requests in flight and the last start or end. */
+  private readonly sessionActivity = new Map<string, { scope: string; inFlight: number; at: number }>();
   private readonly recent: RequestEntry[] = [];
   private readonly latestQuota = new Map<string, LatestQuota>();
   private readonly listeners = new Set<(event: MetricsEvent) => void>();
@@ -228,6 +233,7 @@ export class Metrics {
     const scopes = ["all", `account:${start.accountId}`, ...(start.poolId ? [`pool:${start.poolId}`] : [])];
     for (const key of scopes) this.active.set(key, (this.active.get(key) ?? 0) + 1);
     this.add(scopes, "requests", 1);
+    if (start.sessionId) this.touchSessions(scopes, start.sessionId, 1);
     const entry: RequestEntry = {
       id: ++this.seq, requestId: start.requestId ?? randomUUID(), startedAt: this.now(), endedAt: null, client: start.client, accountId: start.accountId, provider: start.provider,
       poolId: start.poolId ?? null, bindingId: start.bindingId ?? null, sessionId: start.sessionId ?? null,
@@ -255,6 +261,7 @@ export class Metrics {
           const next = (this.active.get(key) ?? 1) - 1;
           if (next > 0) this.active.set(key, next); else this.active.delete(key);
         }
+        if (start.sessionId) this.touchSessions(scopes, start.sessionId, -1);
         if (status >= 400) this.add(scopes, "errors", 1);
         if (start.tapped && status >= 200 && status < 300 && !final) this.add(scopes, "unreported", 1);
         entry.endedAt = this.now();
@@ -293,15 +300,35 @@ export class Metrics {
     const rows = tier.rows([...metrics.filter(m => m !== "quota"), ...quotaMetrics], after);
     return { range, scope: scopeKey, bucketMs: tier.bucketMs, count: tier.count, epoch: this.epoch, ...rows };
   }
-  /** Current gauges and rates over the last five complete seconds. */
+  private touchSessions(scopes: readonly string[], sessionId: string, change: 1 | -1): void {
+    const now = this.now();
+    for (const scope of scopes) {
+      const key = `${scope}\n${sessionId}`, entry = this.sessionActivity.get(key) ?? { scope, inFlight: 0, at: now };
+      entry.inFlight = Math.max(0, entry.inFlight + change);
+      entry.at = now;
+      this.sessionActivity.set(key, entry);
+    }
+    if (this.sessionActivity.size > MAX_TRACKED_SESSIONS) this.sessionCounts(now);
+  }
+  /** Distinct client sessions per scope with a request running or within the last minute; forgets the rest. */
+  private sessionCounts(now: number): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const [key, entry] of this.sessionActivity) {
+      if (entry.inFlight === 0 && now - entry.at > SESSION_ACTIVE_MS) { this.sessionActivity.delete(key); continue; }
+      counts.set(entry.scope, (counts.get(entry.scope) ?? 0) + 1);
+    }
+    return counts;
+  }
+  /** Current gauges, rates over the last five complete seconds and one-minute sums. */
   snapshot() {
-    const now = this.now(), scopes: Record<string, { active: number; rate: Record<Counter, number>; minute: Record<Counter, number> }> = {};
+    const now = this.now(), sessions = this.sessionCounts(now);
+    const scopes: Record<string, { active: number; sessions: number; rate: Record<Counter, number>; minute: Record<Counter, number> }> = {};
     for (const [key, scope] of this.scopes) {
       const tier = scope["2m"];
       tier.advance(now);
       const rate = {} as Record<Counter, number>, minute = {} as Record<Counter, number>;
       for (const metric of COUNTERS) { rate[metric] = tier.sum(metric, 5) / 5; minute[metric] = tier.sum(metric, 60); }
-      scopes[key] = { active: this.active.get(key) ?? 0, rate, minute };
+      scopes[key] = { active: this.active.get(key) ?? 0, sessions: sessions.get(key) ?? 0, rate, minute };
     }
     const quota: Record<string, QuotaWindow[]> = {}, quotaAt: Record<string, number> = {};
     for (const [id, latest] of this.latestQuota) { quota[id] = latest.windows.map(w => ({ ...w })); quotaAt[id] = latest.at; }
