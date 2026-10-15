@@ -1,7 +1,9 @@
 # Agent guided setup and diagnostics
 
-Status: implemented in source with synthetic acceptance, 2026-10-15.
-Supervised real Claude/Codex login acceptance remains pending. The current
+Status: implemented in source; supervised real Claude/Codex login and metadata
+reads completed on 2026-10-15. Browser-choice and conversational guidance were
+corrected after that acceptance; link-mode browser suppression has synthetic
+regression coverage and installed-Claude source evidence. The current
 contract and commands are in [diagnostics](diagnostics.md); this document
 retains the implementation direction and live acceptance criteria. It replaces
 the earlier conversational proposal for a structured provider-login parser
@@ -240,8 +242,8 @@ codes and credentials. This proves the observed setup interaction and
 persistence on those versions. It does not prove future CLI compatibility,
 every login method/platform, inference compatibility or durable token renewal.
 
-The live acceptance remains pending until both supervised exercises finish.
 Only synthetic credentials were used during implementation and rehearsal.
+The separately supervised real-login acceptance is recorded below.
 
 ### Implementation evidence
 
@@ -259,10 +261,25 @@ also exercised managed cancellation (cancelled/signed-out status and runner
 exit), followed by a successful retry. The owned terminal resources and router
 were stopped afterwards. No provider was contacted by that rehearsal.
 
-The skill metadata validator and reference-link checks pass. These results
-establish fixture and observed agent interaction behavior, not real-provider
-login or renewal. A new supervised YA session will exercise the skill with a
-separate state directory and user-completed official authentication.
+The skill metadata validator and reference-link checks pass.
+
+The user then completed one real Claude login (Claude Code 2.1.291,
+profile-specific macOS Keychain) and one real Codex login (0.160.0, device
+authentication and file storage) in a separate YA session using this skill.
+The agent reported persisted sign-in and successful usage metadata checks for
+both. No inference test or forced renewal was requested. This records the
+observed setup flow on those versions, not durable renewal.
+
+The session also exposed two setup defects: selecting Claude subscription
+login opened the default browser before asking the user, and the agent's
+preflight/status messages exposed excessive implementation detail. The skill
+now asks link-versus-open before starting login and keeps ordinary progress
+messages short. The terminal runner has an explicit browser choice with
+link-only default, covered by fake-CLI opener regression tests. Inspection of
+the installed macOS Claude browser helper found that it invokes the command
+selected by `BROWSER`; link mode supplies `/usr/bin/true`. This source evidence
+does not substitute for a future live check of link mode; the completed real
+Claude acceptance above used the original automatic-browser behavior.
 
 ## Implementation sequence
 

@@ -15,6 +15,18 @@ export function loginArgs(provider: AccountConfig["provider"], choice: string): 
   if (provider === "claude" && choice === "2") return ["auth", "login", "--claudeai", "--sso"];
   throw new Error("Choose 1 or 2, or press Ctrl-C to cancel.");
 }
+export type LoginBrowser = "link" | "open";
+
+/** The official CLI still owns login. Suppress its opener for link-only use.
+ * Claude's installed browser helper honors BROWSER; Codex has a device flow
+ * that does not need to launch a browser on the router's computer. */
+export function terminalLoginOptions(account: AccountConfig, args: string[], browser: LoginBrowser) {
+  const env = { ...accountEnv(account), TERM: process.env.TERM ?? "xterm-256color" };
+  return {
+    args: account.provider === "codex" && browser === "link" ? ["login", "--device-auth"] : args,
+    env: browser === "link" ? { ...env, BROWSER: "/usr/bin/true" } : env,
+  };
+}
 function alive(pid: number | undefined): boolean {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -77,7 +89,8 @@ export class TerminalLogin {
   }
 }
 
-export async function terminalLogin(store: StateStore, id: string): Promise<void> {
+export async function terminalLogin(store: StateStore, id: string, browser?: string): Promise<void> {
+  if (browser !== undefined && browser !== "link" && browser !== "open") throw new Error("--browser must be link or open");
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("Sign-in requires an interactive terminal");
   const account = store.loadAccounts().find(a => a.id === id);
   if (!account) throw new Error("Account not found");
@@ -106,12 +119,21 @@ export async function terminalLogin(store: StateStore, id: string): Promise<void
       try { args = loginArgs(account.provider, (await input.question("Choose [1/2]: ", { signal: abort.signal })).trim() || "1"); }
       catch (error) { if (!cancelled) process.stdout.write(`${(error as Error).message}\n`); }
     }
+    while (!cancelled && !browser) {
+      process.stdout.write("\n1. Show a sign-in link (default)\n2. Open a browser on this computer\n");
+      try {
+        const choice = (await input.question("Browser [1/2]: ", { signal: abort.signal })).trim() || "1";
+        if (!["1", "2"].includes(choice)) { process.stdout.write("Choose 1 or 2, or press Ctrl-C to cancel.\n"); continue; }
+        browser = choice === "2" ? "open" : "link";
+      } catch { if (!cancelled) throw new Error("Browser choice could not be read"); }
+    }
     choosing = false;
     input.close();
-    if (cancelled || !args) return;
+    if (cancelled || !args || !browser) return;
+    const options = terminalLoginOptions(account, args, browser as LoginBrowser);
     // Keep the official CLI in Terminal's foreground process group with real TTY fds.
-    child = spawn(providerExecutable(account.provider), args, {
-      env: { ...accountEnv(account), TERM: process.env.TERM ?? "xterm-256color" },
+    child = spawn(providerExecutable(account.provider), options.args, {
+      env: options.env,
       cwd: account.home, stdio: "inherit", shell: false,
     });
     const done = new Promise<number | null>((resolve) => {

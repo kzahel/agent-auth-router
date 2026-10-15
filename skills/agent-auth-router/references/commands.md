@@ -27,7 +27,10 @@ code. Read command output before constructing a dependent request.
 
 `aar --state /absolute/state account add work --provider claude
 --credential-store claude-keychain` is a convenient dedicated-profile command.
-`aar --state /absolute/state terminal-login work` is the interactive runner.
+`aar --state /absolute/state terminal-login work --browser link` is the
+interactive runner for a user who chose to open their own link. Use
+`--browser open` only after an explicit request to open a browser here. If
+omitted, the runner asks, and Enter chooses a link.
 There is no required JSON login-dialogue parser or machine-readable device-code
 protocol; inspect the tmux pane for official CLI instructions.
 

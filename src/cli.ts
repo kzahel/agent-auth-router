@@ -35,7 +35,8 @@ const USAGE = `usage: aar [--state DIR] <command>
   doctor [--account ID] [--check-login] [--refresh-usage] [--json]
                                          diagnose without changing state; explicit checks
                                          require an account; no inference is requested
-  terminal-login <id>                    interactive official login in a real TTY (e.g. tmux)
+  terminal-login <id> [--browser link|open]
+                                         interactive login; asks before opening a browser
   client add <name> [--claude ACCT|--claude-pool POOL] [--codex ACCT|--codex-pool POOL]
                                          POOL is a pool id or name: each client session
                                          is pinned to the member the pool's policy picks
@@ -130,6 +131,7 @@ async function main(argv: string[]): Promise<void> {
       "check-login": { type: "boolean" },
       "refresh-usage": { type: "boolean" },
       json: { type: "boolean" },
+      browser: { type: "string" },
     },
   });
   const [command, sub, arg] = positionals;
@@ -221,7 +223,7 @@ async function main(argv: string[]): Promise<void> {
     }
     case "terminal-login":
       if (!sub) fail("terminal-login requires an account id");
-      await terminalLogin(store, sub);
+      await terminalLogin(store, sub, values.browser);
       return;
     case "owner-request":
     case "owner": {

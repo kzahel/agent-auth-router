@@ -10,6 +10,24 @@ owns authentication and credential persistence. You watch its terminal,
 interpret the current prompt, and choose each next action. The user completes
 browser authentication, account selection, MFA and consent.
 
+## Talk to the user
+
+Keep setup conversational and brief. Do the technical checks quietly; tell the
+user what they need to choose or do next. Don't narrate shell errors you can
+fix, file permissions, ports, credential-store internals, JSON findings or
+process lifecycle. Give those details when requested or when they explain a
+problem the user needs to resolve. Suggest simple account labels rather than
+making the user design directory names or choose storage backends.
+
+For example: "Everything's ready. Let's sign in to Claude first. Would you
+like a link to open yourself, or should I open it on this computer?" After
+sign-in: "Claude is connected. Let's do Codex next." At the end: "Both
+accounts are signed in, and I could check their usage."
+
+Keep precise verification evidence in diagnostics/notes. Don't recite caveats
+about renewal or inference after each successful step. If a check fails,
+explain its practical effect and one next action in ordinary language.
+
 ## Establish the target
 
 Identify the intended machine, AAR command and state directory before writing.
@@ -63,6 +81,22 @@ per-account login lease; do not bypass it by spawning a raw provider CLI with
 inherited gateway configuration. If the runner refuses the profile, diagnose
 the configuration rather than weakening that boundary.
 
+**Ask the user whether they want a link or an automatically opened browser
+before starting login.** This applies to browser openings caused by the CLI
+as well as ones you perform yourself. "Ready", permission bypass mode and
+approval to sign in do not choose a browser. If the user chooses a link,
+carry `--browser link` on the terminal-login command; if they explicitly ask
+to open it here, use `--browser open`. Reuse a stated preference for the rest
+of this setup unless the user changes it. Without an answer, wait. Never
+select a CLI option that might open a browser to discover what it does.
+
+Link mode uses the official Codex device flow and suppresses Claude's browser
+opener while keeping its printed URL. The runner also asks for this choice if
+the flag is omitted, defaulting to a link on Enter. Avoid the legacy headless
+login API or printed raw CLI login command for this flow: they do not carry
+this browser choice. If an installed CLI no longer honors link mode, stop and
+diagnose it; do not fall back to opening a browser without consent.
+
 Use a unique tmux session name and retain the exact pane ID returned by
 `tmux new-session ... -P -F '#{pane_id}'`. A user attach instruction should name
 that session. Always address the explicit pane; never use an unrelated active
@@ -115,8 +149,8 @@ directly to the intended private configuration or a mode-0600 local handoff
 file; do not print it into the agent transcript or final answer. Enrollment
 alone grants no client access. A standalone login exercise needs no pairing.
 
-Finish with provider/profile label, sign-in evidence, metadata-check result,
-requested access and unresolved action. Reuse successful steps on retry.
+Finish with which accounts connected and anything the user still needs to do.
+Include access configuration only if it was part of their request. Reuse successful steps on retry.
 Keep successful profiles unless their removal was requested. Stop a temporary
 router only if you started it and no further verification needs it. Avoid raw
 terminal dumps, account emails, OAuth URLs/codes and credentials in saved

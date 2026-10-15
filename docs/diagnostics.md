@@ -71,11 +71,23 @@ directory, preserving an existing installation. The skill includes its own
 command and migration references and creates no login-driving script.
 
 The workflow requires tmux on macOS/Linux. The agent opens the existing
-`aar --state /absolute/state terminal-login work` runner in an owned pane,
+`aar --state /absolute/state terminal-login work --browser link` runner in an owned pane,
 observes the actual prompts and sends each next input deliberately. The
 runner maintains profile/environment isolation and its login lease. The user
 completes browser account selection, authentication and consent. The agent
 verifies persisted local status afterwards with a fresh doctor invocation.
+
+Before starting login, the agent asks whether the user wants a link or wants
+a browser opened on this computer. `--browser link` suppresses Claude's
+browser opener and selects the official Codex device flow. `--browser open`
+is explicit opt-in to the CLI's usual browser behavior. If omitted, the
+runner asks and Enter chooses a link. This affects the managed terminal
+runner; the legacy headless login API and raw printed CLI command do not
+carry this choice and are not used by the setup skill.
+
+The agent reports setup progress in ordinary language. Technical findings,
+paths and storage details stay in diagnostics unless needed to explain a
+problem or requested by the user.
 
 For standalone verification, use a private state directory outside checkouts,
 not the normal router's state or normal CLI profile. A private `config.json`

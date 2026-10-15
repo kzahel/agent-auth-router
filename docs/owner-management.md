@@ -52,6 +52,13 @@ the renewal/lifecycle exclusion until the child has exited, cancels on runner
 loss or a ten-minute deadline, and escalates termination after three seconds.
 The earlier headless `accounts/login` API remains available to CLI callers.
 
+The terminal runner asks whether to show a sign-in link (Enter's default) or
+open a browser here. Agents carry the user's choice as `--browser link|open`;
+they must ask before selecting `open`. Link mode uses Codex device login and
+sets Claude's supported `BROWSER` opener override to `/usr/bin/true`, retaining
+the CLI's printed URL without opening a browser. The override is scoped to
+that login child and is not inherited from arbitrary caller environment.
+
 All use bounded JSON bodies and the same running mutation authority.
 
 `aar owner <operation>` reads JSON from stdin. It contacts the running router,
