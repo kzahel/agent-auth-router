@@ -121,7 +121,8 @@ details > .hint { margin: 6px 0; }
 .retention span { display: flex; align-items: center; gap: 6px; }
 .retention input { width: 80px; }
 #retention-status:empty { display: none; }
-footer { font-size: 11px; margin-top: 14px; }
+footer { font-size: 11px; margin-top: 14px; display: flex; gap: 12px; }
+footer a { color: var(--muted); }
 #error { position: sticky; top: 8px; z-index: 2; background: var(--surface); color: var(--danger); border: 1px solid var(--danger); border-radius: 5px; padding: 8px 10px; font-size: 12px; overflow-wrap: anywhere; }
 [hidden] { display: none !important; }
 @media (max-width: 560px) {

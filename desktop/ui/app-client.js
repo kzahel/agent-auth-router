@@ -27,6 +27,7 @@ export async function tauriPort() {
       native: true,
       terminalLogin: (id, presentation) => invoke("terminal_login", { id, presentation }),
       startup: (enabled) => invoke("startup", { enabled }),
+      openProject: () => invoke("open_project"),
       checkUpdate: () => invoke("check_update"),
       installUpdate: (version) => invoke("install_update", { version }),
       onLifecycleError: (handler) => tauri.event.listen("router-lifecycle-error", ({ payload }) => handler(payload)),

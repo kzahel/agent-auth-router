@@ -654,6 +654,8 @@ for (const tab of tabs) {
 $("terminal-presentation").value = localStorage.getItem("terminal-presentation") === "embedded" ? "embedded" : "external";
 $("terminal-presentation").onchange = () => localStorage.setItem("terminal-presentation", $("terminal-presentation").value);
 
+// The desktop WebView would navigate itself; the shell opens the browser instead.
+if (shell.native) $("project-link").onclick = (event) => { event.preventDefault(); shell.openProject().catch(error); };
 if (shell.native) void shell.onLifecycleError((payload) => { error(payload); setStatus("Router could not stop"); });
 
 // Registry changes (pairing, CLI edits, sign-in progress) arrive as change

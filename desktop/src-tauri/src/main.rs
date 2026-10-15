@@ -395,6 +395,21 @@ async fn terminal_login(
     .await
     .map_err(|_| "Router task failed")?
 }
+/// The project page opens in the default browser; the WebView never navigates away.
+const PROJECT_URL: &str = "https://github.com/kzahel/agent-auth-router";
+
+#[tauri::command]
+fn open_project(window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Owner window required".into());
+    }
+    Command::new("/usr/bin/open")
+        .arg(PROJECT_URL)
+        .status()
+        .map_err(|_| "Could not open the project page".to_string())
+        .and_then(|status| if status.success() { Ok(()) } else { Err("Could not open the project page".into()) })
+}
+
 #[tauri::command]
 fn startup(
     app: tauri::AppHandle,
@@ -592,6 +607,7 @@ fn main() {
             app_call,
             terminal_login,
             startup,
+            open_project,
             check_update,
             install_update,
             terminal::terminal,
@@ -606,6 +622,7 @@ fn main() {
         app_send,
         terminal_login,
         startup,
+        open_project,
         check_update,
         install_update,
         terminal::terminal
