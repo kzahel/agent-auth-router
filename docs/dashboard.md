@@ -258,8 +258,9 @@ no accounts it links to Accounts.
 
 - **Controls:** scope (All traffic, each pool, each account), range (2 min to
   30 days) and units (tokens or bytes), remembered per browser.
-- **Summary tiles:** active streams, sent and output tokens per second,
-  one-minute cache hit ratio, requests and errors.
+- **Summary tiles:** active streams now; then over the last minute, sent
+  and output tokens per second, cache hit ratio, requests and errors. Each
+  tile names its window. They follow the scope, not the selected range.
 - **Traffic graph:** two panes on a shared time axis, each with its own
   labelled scale. "New input" stacks cache write and uncached input as solid
   bands; "Output" is a line of output tokens, estimated live until the

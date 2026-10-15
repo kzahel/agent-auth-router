@@ -146,9 +146,11 @@ export function createDashboard({ client, overview }) {
   function renderLive() {
     const s = scopeRate(scope);
     const stats = [
-      ["Active streams", s ? String(s.active) : "0"],
-      ["Sent", s ? `${formatNumber(sent(s.rate))}/s` : "0/s"],
-      ["Output", s ? `${formatNumber(s.rate.output)}/s` : "0/s"],
+      // Every tile names its window. Rates average the last minute: a request
+      // uploads its context in about a second, so a 5-second rate mostly read 0.
+      ["Streams · now", s ? String(s.active) : "0"],
+      ["Sent · 1 min", s ? `${formatNumber(sent(s.minute) / 60)}/s` : "0/s"],
+      ["Output · 1 min", s ? `${formatNumber(s.minute.output / 60)}/s` : "0/s"],
       ["Cache hit · 1 min", s && sent(s.minute) ? `${Math.round((s.minute.cacheRead / sent(s.minute)) * 100)}%` : "–"],
       ["Requests · 1 min", s ? String(s.minute.requests) : "0"],
       ["Errors · 1 min", s ? String(s.minute.errors) : "0"],
