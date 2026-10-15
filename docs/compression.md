@@ -30,7 +30,10 @@ compresses streaming request bodies with zstd when signed in with ChatGPT
 against its built-in OpenAI provider (`Feature::EnableRequestCompression`,
 default on, `codex-rs/core/src/client.rs` `responses_request_compression`,
 rust-v0.162.1), and pi does the same
-(`packages/ai/src/api/openai-codex-responses.ts`). Not probed here.
+(`packages/ai/src/api/openai-codex-responses.ts`). Not probed here. Codex
+configured for the router as a custom provider (`aar`, as `aar client add`
+prints) sends uncompressed bodies, so its traffic is compressed only when the
+router setting says zstd.
 
 ## Compression ratio
 
@@ -51,9 +54,9 @@ shrink 3–4×.
   (gzip, deflate, br, zstd) no larger than the request body limit
   (`limits.maxBodyBytes`), so a small body cannot expand without bound; an
   unreadable body is still forwarded, without that metadata.
-- **Router compression (opt-in).** App → "Compress requests to Claude"
-  (gzip) or "to Codex" (zstd), stored in `settings.json` in the state
-  directory and applied from the next request. The router compresses bodies of
+- **Router compression (opt-in).** App → "Router compresses requests":
+  Claude gzip or Codex zstd instead of "Pass through", stored in
+  `settings.json` in the state directory and applied from the next request. The router compresses bodies of
   at least 1 KB that the client did not compress itself, off the event loop,
   and keeps the plain body when compression would not make it smaller.
 - **Metering.** Uploaded counts request bytes received from clients; Sent
