@@ -1,0 +1,16 @@
+.diagnostics { max-width: 560px; padding: 10px 0; border-top: 1px solid var(--border); }
+.diagnostics h3 { margin-bottom: 6px; }
+.diagnostics > p { margin: 6px 0; }
+.account, .filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.account select { min-width: 180px; max-width: 100%; }
+.filter input { flex: 1; min-width: 100px; }
+.findings { list-style: none; padding: 0; margin: 10px 0; }
+.findings li { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 8px; border-top: 1px solid var(--border); padding: 10px 0; font-size: 13px; }
+.findings p { margin: 4px 0; }
+.findings button { display: block; margin-top: 6px; }
+.subject { overflow-wrap: anywhere; color: var(--muted); }
+.error { color: var(--danger); }
+.warning { color: var(--warning); }
+.unknown, .skipped { color: var(--muted); }
+.ok { color: var(--text); }
+@media (max-width: 420px) { .findings li { grid-template-columns: 1fr; gap: 4px; } }

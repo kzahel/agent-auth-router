@@ -1,4 +1,4 @@
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
 .tabs button { border-color: transparent; background: transparent; padding: 5px 12px; }
 .tabs button:hover { background: var(--hover); }
 .tabs button[aria-selected="true"] { background: var(--hover); color: var(--accent); }

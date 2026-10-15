@@ -3,6 +3,15 @@
 // src/history.ts); only fields the UI uses are listed.
 
 export type Provider = "claude" | "codex";
+export interface DiagnosticReport {
+  version: 1;
+  at: string;
+  mode: "passive" | "check-login" | "refresh-usage";
+  accountId?: string;
+  findings: { code: string; status: "ok" | "warning" | "error" | "unknown" | "skipped"; subject: string; observedAt: string; message: string; action?: "accounts" | "pools" | "integrations" | "install-cli" | "start-router" }[];
+  exitCode: 0 | 1 | 2;
+  copyText: string;
+}
 export type PoolPolicy = "manual" | "round-robin" | "most-remaining" | "weekly-pace";
 
 export interface QuotaWindow {

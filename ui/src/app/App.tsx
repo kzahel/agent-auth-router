@@ -47,7 +47,7 @@ export function App({ signedOut }: { signedOut?: string | undefined }) {
             {panel("accounts", <AccountsTab presentation={presentation} />)}
             {panel("pools", <PoolsTab />)}
             {panel("integrations", <ConnectionsTab />)}
-            {panel("settings", <SettingsTab visible={tab === "settings"} presentation={presentation} onPresentation={setPresentation} />)}
+            {panel("settings", <SettingsTab visible={tab === "settings"} presentation={presentation} onPresentation={setPresentation} onNavigate={setTab} />)}
           </div>
         )}
         <footer>

@@ -7,20 +7,24 @@ import { errorText } from "../lib/format.ts";
 import type { RequestCompression } from "../protocol/types.ts";
 import ui from "../styles/ui.module.css";
 import styles from "./settings.module.css";
+import { Diagnostics } from "./Diagnostics.tsx";
+import type { TabId } from "../app/Tabs.tsx";
 
 export type TerminalPresentation = "external" | "embedded";
 const RETENTION = [["7", "7 days"], ["30", "30 days"], ["90", "90 days"], ["365", "1 year"], ["forever", "Forever"]];
 
-export function SettingsTab({ visible, presentation, onPresentation }: {
+export function SettingsTab({ visible, presentation, onPresentation, onNavigate }: {
   visible: boolean;
   presentation: TerminalPresentation;
   onPresentation(value: TerminalPresentation): void;
+  onNavigate(tab: TabId): void;
 }) {
   const { native, web } = useApp();
   return (
     <div className={styles.settings}>
       <HistorySettings visible={visible} />
       <CompressionSettings visible={visible} />
+      <Diagnostics onNavigate={onNavigate} />
       {native && <AppSettings presentation={presentation} onPresentation={onPresentation} />}
       {web && (
         <div className={styles.group}>

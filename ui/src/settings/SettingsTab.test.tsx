@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fakeApp, overview } from "../test/fake-app.tsx";
 import { SettingsTab } from "./SettingsTab.tsx";
 
-const settings = { presentation: "external" as const, onPresentation: () => {} };
+const settings = { presentation: "external" as const, onPresentation: () => {}, onNavigate: () => {} };
 
 describe("SettingsTab", () => {
   it("loads settings when shown, keeps a retention set elsewhere selectable, and saves forever as null", async () => {
