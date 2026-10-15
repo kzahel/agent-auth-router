@@ -87,7 +87,7 @@ export function createDashboard({ client, overview }) {
     const span = rangeSpan();
     const series = shownSeries().map(key => SERIES[key].label.toLowerCase());
     $("dash-spark-head").textContent = `${units === "tokens" ? "Tokens" : "Bytes"}/s · last ${span}`;
-    $("dash-rate-head").textContent = units === "tokens" ? "Sent / output per s" : "Uploaded / downloaded per s";
+    $("dash-rate-head").textContent = units === "tokens" ? "Input / output per s" : "Uploaded / downloaded per s";
     $("dash-spark-head").title = series.length
       ? `Per second for each account, on one scale shared by every row: ${series.join(", ")}, as shown in the chart`
       : "No series is shown in the chart";
@@ -191,7 +191,7 @@ export function createDashboard({ client, overview }) {
       ["Sessions · 1 min", s ? String(s.sessions ?? 0) : "0"],
       // The two traffic tiles follow Tokens/Bytes; cache hit is a token measure either way.
       ...(units === "tokens" ? [
-        ["Sent · 1 min", s ? `${formatNumber(sent(s.minute) / 60)}/s` : "0/s"],
+        ["Input · 1 min", s ? `${formatNumber(sent(s.minute) / 60)}/s` : "0/s"],
         ["Output · 1 min", s ? `${formatNumber(s.minute.output / 60)}/s` : "0/s"],
       ] : [
         ["Uploaded · 1 min", `${formatBytes(s ? s.minute.bytesUp / 60 : 0)}/s`],

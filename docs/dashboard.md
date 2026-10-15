@@ -262,7 +262,7 @@ no accounts it links to Accounts.
   of these to the defaults; it is disabled while they already are.
 - **Summary tiles:** over the last minute, active sessions (distinct client
   session ids with a request running or finished within the minute; a
-  session's parallel requests count once), sent and output tokens per
+  session's parallel requests count once), input and output tokens per
   second (uploaded and downloaded bytes in Bytes mode), cache hit ratio,
   requests and errors. Each tile names its window,
   and the tiles follow the scope, not the selected range. Requests in flight
@@ -270,12 +270,12 @@ no accounts it links to Accounts.
   requests.
 - **Traffic graph:** tokens per second in one pane: cache read, cache write
   and uncached input stack as solid bands, and output (estimated live until
-  the provider reports its count) is a line on top. New input and output are
-  of similar size, so they share an axis. Each legend entry gives the
+  the provider reports its count) is a line on top. Cache writes, uncached input
+  and output are of similar size, so they share an axis. Each legend entry gives the
   series' total for the selected range and switches the series on or off;
   choices are kept per browser. Cache reads start off: agent sessions resend
   their whole context each turn, so cache reads are typically over 99% of
-  what is sent and would flatten the costlier tokens to a hairline. Bytes
+  all input and would flatten the costlier tokens to a hairline. Bytes
   mode keeps uploaded and downloaded in separate panes, each with its own
   scale, since uploads run about a hundred times downloads; a pane whose
   series are all off is left out.
@@ -284,17 +284,17 @@ no accounts it links to Accounts.
   table view, and as relief for two light-mode colours below 3:1 contrast.
 - **Quota graph** (account scope): used percent per window, holding the last
   sample until the next one.
-- **Accounts table:** live sent/output rates (uploaded/downloaded in Bytes mode), streams, quota meters, time
-  since the last request, and a sparkline of tokens per second (sent and output)
-  over the selected range from the router's history, on one scale shared by
+- **Accounts table:** live input/output rates (uploaded/downloaded in Bytes mode), streams, quota meters, time
+  since the last request, and a sparkline per second of the series the chart
+  shows, over the selected range from the router's history, on one scale shared by
   every row; its header names the range, and hovering shows the account's
   total and peak. Rows are not interactive; the accounts in the chosen
   scope are tinted.
 - **Recent requests or sessions:** a toggle between the two, both following
-  the scope. Requests show time, client → account, model, sent tokens with
+  the scope. Requests show time, client → account, model, input tokens with
   the cache share, output (`~` while estimated), duration and status; active
   requests read "streaming". Sessions show one row per client session active
-  in the selected range, with its accounts, model, request count, sent tokens
+  in the selected range, with its accounts, model, request count, input tokens
   with cache share, output and last activity, totalled over every stored
   request of the session.
 
