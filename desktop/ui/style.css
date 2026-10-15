@@ -201,7 +201,7 @@ canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .meter-value { text-align: right; }
 .meter-track { position: relative; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--series-1) 16%, var(--surface)); }
 .meter-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--series-1); transition: width .4s ease-out; }
-.meter-pace { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1px var(--surface); transition: left .4s ease-out; }
+.meter-pace { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--chart-muted); box-shadow: 0 0 0 1px var(--surface); transition: left .4s ease-out; }
 .meter[data-level="warning"] .meter-fill { background: var(--warning); }
 .meter[data-level="critical"] .meter-fill { background: var(--danger); }
 .meter[data-level="warning"] .meter-value { color: var(--warning); font-weight: 600; }
