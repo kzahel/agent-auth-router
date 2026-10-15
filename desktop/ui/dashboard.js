@@ -40,7 +40,7 @@ export function createDashboard({ client, overview }) {
   const panes = () => units === "tokens"
     ? [
       { title: "Sent to model · tokens/s", series: ["cacheRead", "cacheWrite", "input"], stacked: true, direction: "up", format: formatNumber, unit: "/s" },
-      { title: "Generated · tokens/s", series: ["output"], direction: "down", format: formatNumber, unit: "/s" },
+      { title: "Generated · est. tokens/s", series: ["output"], direction: "down", format: formatNumber, unit: "/s" },
     ]
     : [
       { title: "Uploaded · per second", series: ["bytesUp"], direction: "up", format: formatBytes, unit: "/s" },

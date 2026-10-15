@@ -11,8 +11,8 @@
 <div id="dash-range" class="segmented" role="group" aria-label="Time range"></div>
 <div id="dash-units" class="segmented" role="group" aria-label="Units"><button type="button" data-units="tokens">Tokens</button><button type="button" data-units="bytes">Bytes</button></div></div>
 <div id="dash-stats" class="stats" aria-live="off"></div>
-<figure class="chart"><div id="dash-legend" class="legend"></div><div class="chart-frame"><canvas id="dash-graph" tabindex="0" role="img" aria-label="Traffic over time. Use the arrow keys to read exact values; the table below lists the same series."></canvas><div id="dash-tooltip" class="chart-tooltip" role="status" hidden></div></div>
-<figcaption class="hint">Rates are per second from complete buckets. Output is a coarse live estimate (about four characters per token) until the provider reports its count.</figcaption></figure>
+<figure class="chart" title="Per-second rates from complete buckets. Generated tokens are a live estimate (about four characters per token) until the provider reports its count."><div id="dash-legend" class="legend"></div><div class="chart-frame"><canvas id="dash-graph" tabindex="0" role="img" aria-label="Traffic over time. Use the arrow keys to read exact values; the table below lists the same series."></canvas><div id="dash-tooltip" class="chart-tooltip" role="status" hidden></div></div>
+</figure>
 <table id="dash-summary" class="data-table"><caption class="visually-hidden">Series values for the visible range</caption><thead><tr><th scope="col">Series</th><th scope="col">Last</th><th scope="col">Average</th><th scope="col">Peak</th><th scope="col">Total</th></tr></thead><tbody></tbody></table>
 <div id="dash-quota" hidden><div class="chart-frame quota-frame"><canvas id="dash-quota-graph" tabindex="0" role="img" aria-label="Quota used over time"></canvas><div id="dash-quota-tooltip" class="chart-tooltip" role="status" hidden></div></div><p id="dash-quota-empty" class="hint">No quota samples in this range yet. Samples come from usage refreshes and proxied responses.</p></div>
 <h2 class="dash-heading">Accounts</h2>
