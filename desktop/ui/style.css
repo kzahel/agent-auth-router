@@ -17,6 +17,7 @@
   --series-2: #eb6834;
   --series-3: #1baf7a;
   --series-4: #eda100;
+  --series-neutral: #b4bcb7;
   --chart-grid: #e8ebe9;
   --chart-muted: #7d8780;
   color: var(--text);
@@ -37,6 +38,7 @@
     --series-2: #d95926;
     --series-3: #199e70;
     --series-4: #c98500;
+    --series-neutral: #5d6660;
     --chart-grid: #383d39;
     --chart-muted: #949e97;
   }

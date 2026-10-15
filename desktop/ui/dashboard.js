@@ -14,12 +14,14 @@ const element = (tag, text, className) => {
 
 const RANGES = [["2m", "2 min"], ["10m", "10 min"], ["1h", "1 hour"], ["24h", "24 hours"], ["30d", "30 days"]];
 const LIVE_RANGES = new Set(["2m", "10m", "1h"]);
-// Fixed categorical order, validated for adjacency in light and dark modes.
+// Output is drawn over the input bands, so the three token series take the
+// palette's first three slots, which validate as distinct in every pairing in
+// both modes. Cache read is background volume, off by default, in a neutral.
 const SERIES = {
-  cacheRead: { label: "Cache read", slot: 1 },
+  cacheRead: { label: "Cache read", slot: "neutral" },
   cacheWrite: { label: "Cache write", slot: 2 },
   input: { label: "Uncached input", slot: 3 },
-  output: { label: "Output", slot: 4 },
+  output: { label: "Output", slot: 1 },
   bytesUp: { label: "Uploaded", slot: 1 },
   bytesDown: { label: "Downloaded", slot: 4 },
 };
