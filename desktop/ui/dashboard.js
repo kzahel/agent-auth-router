@@ -46,7 +46,7 @@ export function createDashboard({ client, overview }) {
   const isDefaultView = () => range === DEFAULT_VIEW.range && scope === DEFAULT_VIEW.scope && units === DEFAULT_VIEW.units
     && activity === DEFAULT_VIEW.activity && [...hidden].sort().join() === [...DEFAULT_VIEW.hidden].sort().join();
   let live, requests = [], visible = false, lastEvent = 0;
-  let sessions, sessionsStored = true, sessionsTimer;
+  let sessions, sessionsStored = true, sessionsTimer, rangeCost;
   // Per account, the chart's shown series per second over the selected range,
   // from the router's history; resubscribed when the legend changes.
   let accountTraffic, stopActivity;
@@ -108,7 +108,8 @@ export function createDashboard({ client, overview }) {
         renderSummary();
       };
       return item;
-    }));
+    }), element("span", undefined, "legend-cost"));
+    renderCost();
   }
 
   function subscribe() {
@@ -116,8 +117,10 @@ export function createDashboard({ client, overview }) {
     stopActivity?.();
     stopActivity = undefined;
     if (!visible) return;
+    // The previous range's cost would be wrong for the new one until it loads.
+    rangeCost = undefined;
     configure();
-    loadSessions(0);
+    loadStored(0);
     const metrics = units === "tokens" ? ["cacheRead", "cacheWrite", "input", "output"] : ["bytesUp", "bytesDown"];
     const history = { range, scope, metrics };
     stop.push(client.subscribe("history", history, (message) => {
@@ -130,7 +133,7 @@ export function createDashboard({ client, overview }) {
       if (message.type === "error") return;
       lastEvent = Date.now();
       // Snapshots repeat after a reconnect, such as a router restart.
-      if (message.type === "snapshot") loadSessions(0);
+      if (message.type === "snapshot") loadStored(0);
       live = message.data;
       renderLive();
     }));
@@ -142,7 +145,7 @@ export function createDashboard({ client, overview }) {
         if (index >= 0) requests[index] = message.data; else requests.unshift(message.data);
         // As many as the router keeps, so a scoped view still has history.
         requests = requests.slice(0, 200);
-        if (message.data.outcome !== "active") loadSessions();
+        if (message.data.outcome !== "active") loadStored();
       }
       renderRequests();
       renderSessions();
@@ -271,20 +274,38 @@ export function createDashboard({ client, overview }) {
     renderSessions();
   }
 
-  // Sessions are totalled by the router from stored requests: fetched for the
-  // selected range and scope, and again shortly after each request finishes,
-  // in either view so switching to Sessions shows them at once.
-  function loadSessions(delay = 1000) {
+  // Sessions and the range's cost are totalled by the router from stored
+  // requests: fetched for the selected range and scope, and again shortly after
+  // each request finishes, in either view so switching to Sessions is instant.
+  function loadStored(delay = 1000) {
     if (!visible) return;
     clearTimeout(sessionsTimer);
     sessionsTimer = setTimeout(async () => {
       try {
-        const result = await client.call("sessions/recent", { range, scope });
+        const [result, cost] = await Promise.all([client.call("sessions/recent", { range, scope }), client.call("history/cost", { range, scope })]);
         sessions = result.sessions;
         sessionsStored = result.stored;
+        rangeCost = cost;
         renderSessions();
-      } catch { loadSessions(3000); }
+        renderCost();
+      } catch { loadStored(3000); }
     }, delay);
+  }
+
+  // Legend total: what the selected range's traffic would cost at API list prices.
+  function renderCost() {
+    const target = $("dash-legend").querySelector(".legend-cost");
+    if (!target) return;
+    const summary = rangeCost?.summary;
+    target.hidden = !summary || !summary.requests;
+    if (!summary) return;
+    const range = summary.high - summary.cost >= 0.005;
+    target.textContent = range ? `${formatCost(summary.cost)}–${formatCost(summary.high)} at API rates` : `${summary.estimated ? "≈ " : ""}${formatCost(summary.cost)} at API rates`;
+    target.title = [`Estimated cost of these ${summary.requests} requests at the providers' published API prices (genai-prices ${rangeCost.prices.date}).`,
+      "Subscription accounts are not billed these amounts.",
+      ...(range ? [`The range is cache writes recorded before the router noted their duration: ${formatCost(summary.cost)} if all were 5-minute, ${formatCost(summary.high)} if all were 1-hour.`] : []),
+      ...(summary.estimated ? [`${summary.estimated} partly estimated: cache writes of unknown duration, or output never reported.`] : []),
+      ...(summary.unpriced ? [`${summary.unpriced} unpriced: no price for their model.`] : [])].join(" ");
   }
 
   function renderSessions() {
@@ -306,12 +327,14 @@ export function createDashboard({ client, overview }) {
         String(s.requests),
         input ? `${formatNumber(input)} (${cached}% cached)` : "–",
         `${s.estimated ? "~" : ""}${formatNumber(s.usage.output)}`,
+        s.cost.requests > s.cost.unpriced ? `${s.cost.estimated ? "~" : ""}${formatCost(s.cost.cost)}` : "–",
         active ? "streaming" : ago(s.lastAt),
       ]) row.append(element("td", text));
       row.cells[0].title = s.sessionId;
       row.cells[1].title = row.cells[1].textContent;
       row.cells[2].title = s.model ?? "";
       row.cells[3].title = `${s.requests} requests${s.errors ? `, ${s.errors} failed` : ""} since ${new Date(s.firstAt).toLocaleString()}`;
+      row.cells[6].title = costTitle(s.cost.estimated > 0, s.cost.unpriced, s.cost.cost, s.cost.high);
       if (s.errors) row.cells[3].classList.add("danger");
       // Idle past the provider's five-minute prompt cache.
       row.classList.toggle("idle", !active && Date.now() - s.lastAt > 5 * 60_000);
@@ -337,11 +360,13 @@ export function createDashboard({ client, overview }) {
         r.model ?? r.route,
         input ? `${formatNumber(input)} (${cached}% cached)` : "–",
         r.usage.output || r.outcome !== "active" ? `${r.estimated ? "~" : ""}${formatNumber(r.usage.output)}` : "–",
+        r.cost === null || r.cost === undefined ? "–" : `${r.costFlags & COST_ESTIMATED ? "~" : ""}${formatCost(r.cost)}`,
         `${duration.toFixed(duration < 10 ? 1 : 0)} s`,
         status,
       ]) row.append(element("td", text));
       row.cells[1].title = row.cells[1].textContent;
       row.cells[2].title = r.model ?? r.route;
+      row.cells[5].title = r.outcome === "active" ? "Priced when the response ends" : r.cost === null || r.cost === undefined ? "No price for this model" : costTitle(r.costFlags & COST_ESTIMATED, 0, r.cost, r.costHigh);
       if (r.outcome === "error") row.classList.add("error");
       return row;
     }));
@@ -420,7 +445,7 @@ export function createDashboard({ client, overview }) {
       activity = button.dataset.view;
       localStorage.setItem("dash-activity", activity);
       renderActivity();
-      loadSessions(0);
+      loadStored(0);
     };
   }
   renderActivity();
@@ -519,6 +544,20 @@ function elapsedPercent(w) {
   if (!w.windowMinutes || !w.resetsAt) return null;
   const elapsed = 1 - (Date.parse(w.resetsAt) - Date.now()) / (w.windowMinutes * 60_000);
   return elapsed >= 0 && elapsed <= 1 ? elapsed * 100 : null;
+}
+
+// history.ts COST_* bits that make a cost partly estimated.
+const COST_ESTIMATED = 1 | 2 | 8;
+function formatCost(value) {
+  if (value >= 100) return `$${Math.round(value).toLocaleString()}`;
+  if (value >= 0.01 || value === 0) return `$${value.toFixed(2)}`;
+  return "<$0.01";
+}
+function costTitle(estimated, unpriced, cost, high) {
+  return ["At the providers' published API prices; subscription accounts are not billed this.",
+    ...(high - cost >= 0.005 ? [`Up to ${formatCost(high)} if its cache writes, recorded before their duration was, were 1-hour rather than 5-minute.`] : []),
+    ...(estimated ? ["Partly estimated: cache writes of unknown duration, or output never reported."] : []),
+    ...(unpriced ? [`${unpriced} requests have no price for their model.`] : [])].join(" ");
 }
 
 function ago(at) {

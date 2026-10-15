@@ -12,7 +12,11 @@ import type { UsageFigures } from "./usage.ts";
 
 export const DEFAULT_RETENTION_DAYS = 30;
 export const MAX_RETENTION_DAYS = 3650;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 3;
+
+/** `cost_flags` bits. */
+export const COST_ESTIMATED_CACHE = 1, COST_ESTIMATED_OUTPUT = 2, COST_UNPRICED = 4, COST_ESTIMATED_MODE = 8;
+const COST_ESTIMATED = COST_ESTIMATED_CACHE | COST_ESTIMATED_OUTPUT | COST_ESTIMATED_MODE;
 
 /** A finished request as stored; `RequestEntry` without the session-local id. */
 export interface StoredRequest {
@@ -33,6 +37,29 @@ export interface StoredRequest {
   bytesDown: number;
   usage: UsageFigures;
   estimated: boolean;
+  /** False when the provider did not split cache writes; usage.cacheWrite1h is then unknown. */
+  cacheSplit: boolean;
+  speed: string | null;
+  inferenceGeo: string | null;
+  serviceTier: string | null;
+}
+
+/**
+ * A request's estimated cost at API rates; null cost means its model has no
+ * price. `high` is the cost if every cache write of unknown duration was
+ * one-hour; it equals `cost` when the duration is known.
+ */
+export interface RequestCost { cost: number | null; flags: number; high: number | null }
+
+export interface CostSummary {
+  /** Sum over priced requests, in USD. */
+  cost: number;
+  /** As `cost`, with cache writes of unknown duration priced as one-hour. */
+  high: number;
+  requests: number;
+  unpriced: number;
+  /** Priced requests whose cost is partly estimated. */
+  estimated: number;
 }
 
 export interface SessionSummary {
@@ -49,9 +76,20 @@ export interface SessionSummary {
   usage: UsageFigures;
   /** Some output figures are live estimates the provider never replaced. */
   estimated: boolean;
+  cost: CostSummary;
 }
 
 export interface BucketRow { scope: string; tier: string; bucket: number; metric: string; value: number }
+
+// Request columns added after version 1, by version. cache_write_1h is null
+// when the provider did not split cache writes by duration (every request
+// stored before version 2); cost_high_usd is the cost if those writes were all
+// one-hour, and equals cost_usd when nothing is unknown.
+const REQUEST_COLUMNS: Record<number, string[]> = {
+  2: ["cache_write_1h INTEGER", "web_searches INTEGER NOT NULL DEFAULT 0", "speed TEXT", "inference_geo TEXT",
+    "service_tier TEXT", "cost_usd REAL", "cost_flags INTEGER NOT NULL DEFAULT 0"],
+  3: ["cost_high_usd REAL"],
+};
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
@@ -67,7 +105,7 @@ CREATE TABLE IF NOT EXISTS requests (
   client TEXT NOT NULL, account_id TEXT NOT NULL, provider TEXT NOT NULL, pool_id TEXT, binding_id TEXT, session_id TEXT,
   route TEXT NOT NULL, model TEXT, status INTEGER, outcome TEXT NOT NULL, bytes_up INTEGER NOT NULL, bytes_down INTEGER NOT NULL,
   input INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, output INTEGER NOT NULL, reasoning INTEGER NOT NULL,
-  estimated INTEGER NOT NULL);
+  estimated INTEGER NOT NULL, ${Object.values(REQUEST_COLUMNS).flat().join(", ")});
 CREATE INDEX IF NOT EXISTS requests_ended ON requests (ended_at);
 CREATE INDEX IF NOT EXISTS requests_session ON requests (session_id, ended_at) WHERE session_id IS NOT NULL;
 `;
@@ -92,7 +130,11 @@ export class HistoryStore {
       this.db.exec(SCHEMA);
       const version = this.meta("schema");
       if (version !== null && Number(version) > SCHEMA_VERSION) throw new Error("history database is from a newer router");
-      if (version === null) this.setMeta("schema", String(SCHEMA_VERSION));
+      // A fresh database already has every column; an older one gains the later ones.
+      if (version !== null) this.transaction(() => {
+        for (let next = Number(version) + 1; next <= SCHEMA_VERSION; next++) for (const column of REQUEST_COLUMNS[next] ?? []) this.db.exec(`ALTER TABLE requests ADD COLUMN ${column}`);
+      });
+      if (version !== String(SCHEMA_VERSION)) this.setMeta("schema", String(SCHEMA_VERSION));
       // The WAL and shared-memory files exist once the first write above ran.
       if (process.platform !== "win32") for (const file of [path, `${path}-wal`, `${path}-shm`]) if (existsSync(file)) chmodSync(file, 0o600);
     } catch (error) { this.db.close(); throw error; }
@@ -151,17 +193,40 @@ export class HistoryStore {
       .run(accountId, at, JSON.stringify(windows));
   }
 
-  putRequest(r: StoredRequest): void {
+  putRequest(r: StoredRequest, cost: RequestCost): void {
     this.statement(`INSERT OR REPLACE INTO requests (request_id, started_at, ended_at, client, account_id, provider, pool_id, binding_id, session_id,
-      route, model, status, outcome, bytes_up, bytes_down, input, cache_read, cache_write, output, reasoning, estimated)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      route, model, status, outcome, bytes_up, bytes_down, input, cache_read, cache_write, output, reasoning, estimated,
+      cache_write_1h, web_searches, speed, inference_geo, service_tier, cost_usd, cost_flags, cost_high_usd)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       r.requestId, r.startedAt, r.endedAt, r.client, r.accountId, r.provider, r.poolId, r.bindingId, r.sessionId,
       r.route, r.model, r.status, r.outcome, r.bytesUp, r.bytesDown,
-      r.usage.input, r.usage.cacheRead, r.usage.cacheWrite, r.usage.output, r.usage.reasoning, r.estimated ? 1 : 0);
+      r.usage.input, r.usage.cacheRead, r.usage.cacheWrite, r.usage.output, r.usage.reasoning, r.estimated ? 1 : 0,
+      r.cacheSplit ? r.usage.cacheWrite1h : null, r.usage.webSearches, r.speed, r.inferenceGeo, r.serviceTier, cost.cost, cost.flags, cost.high);
+  }
+  /** The price-table version the stored costs were computed with, if any. */
+  pricesVersion(): string | null { return this.meta("pricesVersion"); }
+  /** Recomputes every stored cost, as when the price table changes. */
+  reprice(price: (r: StoredRequest) => RequestCost, version: string): number {
+    const rows = this.statement("SELECT * FROM requests").all().map(requestOf);
+    const update = this.statement("UPDATE requests SET cost_usd = ?, cost_flags = ?, cost_high_usd = ? WHERE request_id = ?");
+    this.transaction(() => {
+      for (const r of rows) { const { cost, flags, high } = price(r); update.run(cost, flags, high, r.requestId); }
+      this.setMeta("pricesVersion", version);
+    });
+    return rows.length;
+  }
+  /** Cost of requests ending at or after `since`, narrowed by account or pool. */
+  costSummary(since: number, filter: { accountId?: string; poolId?: string } = {}): CostSummary {
+    const where = filter.accountId ? "AND account_id = ?" : filter.poolId ? "AND pool_id = ?" : "";
+    const row = this.statement(`SELECT ${COST_COLUMNS} FROM requests WHERE ended_at >= ? ${where}`)
+      .get(since, ...(filter.accountId ? [filter.accountId] : filter.poolId ? [filter.poolId] : []));
+    return costOf(row ?? {});
   }
   /** Most recent finished requests by start time, newest first, as the live list orders them. */
-  recentRequests(limit: number): StoredRequest[] {
-    return this.statement("SELECT * FROM requests ORDER BY started_at DESC LIMIT ?").all(limit).map(requestOf);
+  recentRequests(limit: number): (StoredRequest & { cost: number | null; costFlags: number; costHigh: number | null })[] {
+    return this.statement("SELECT * FROM requests ORDER BY started_at DESC LIMIT ?").all(limit)
+      .map((r: Row) => ({ ...requestOf(r), cost: r.cost_usd === null ? null : num(r.cost_usd), costFlags: num(r.cost_flags),
+        costHigh: r.cost_high_usd === null ? null : num(r.cost_high_usd) }));
   }
 
   /**
@@ -178,6 +243,7 @@ export class HistoryStore {
       SELECT r.session_id, max(r.client) AS client, max(r.provider) AS provider, min(r.started_at) AS first_at, max(r.ended_at) AS last_at,
         count(*) AS requests, sum(r.outcome = 'error') AS errors, sum(r.input) AS input, sum(r.cache_read) AS cache_read,
         sum(r.cache_write) AS cache_write, sum(r.output) AS output, sum(r.reasoning) AS reasoning, max(r.estimated) AS estimated,
+        sum(r.cache_write_1h) AS cache_write_1h, sum(r.web_searches) AS web_searches, ${COST_COLUMNS},
         (SELECT json_group_array(account_id) FROM (SELECT account_id, max(ended_at) AS last FROM requests
            WHERE session_id = r.session_id GROUP BY account_id ORDER BY last DESC)) AS accounts,
         (SELECT model FROM requests WHERE session_id = r.session_id AND model IS NOT NULL ORDER BY ended_at DESC LIMIT 1) AS model
@@ -186,8 +252,9 @@ export class HistoryStore {
       sessionId: String(r.session_id), client: String(r.client), provider: String(r.provider),
       accountIds: JSON.parse(String(r.accounts)) as string[], model: str(r.model),
       firstAt: num(r.first_at), lastAt: num(r.last_at), requests: num(r.requests), errors: num(r.errors),
-      usage: { input: num(r.input), cacheRead: num(r.cache_read), cacheWrite: num(r.cache_write), output: num(r.output), reasoning: num(r.reasoning) },
+      usage: usageOf(r),
       estimated: num(r.estimated) > 0,
+      cost: costOf(r),
     }));
   }
 
@@ -213,7 +280,16 @@ function requestOf(r: Row): StoredRequest {
     accountId: String(r.account_id), provider: String(r.provider) as Provider, poolId: str(r.pool_id), bindingId: str(r.binding_id),
     sessionId: str(r.session_id), route: String(r.route), model: str(r.model), status: r.status === null ? null : num(r.status),
     outcome: String(r.outcome) as StoredRequest["outcome"], bytesUp: num(r.bytes_up), bytesDown: num(r.bytes_down),
-    usage: { input: num(r.input), cacheRead: num(r.cache_read), cacheWrite: num(r.cache_write), output: num(r.output), reasoning: num(r.reasoning) },
+    usage: usageOf(r),
     estimated: num(r.estimated) > 0,
+    cacheSplit: r.cache_write_1h !== null && r.cache_write_1h !== undefined,
+    speed: str(r.speed), inferenceGeo: str(r.inference_geo), serviceTier: str(r.service_tier),
   };
 }
+
+const usageOf = (r: Row): UsageFigures => ({ input: num(r.input), cacheRead: num(r.cache_read), cacheWrite: num(r.cache_write), output: num(r.output),
+  reasoning: num(r.reasoning), cacheWrite1h: num(r.cache_write_1h), webSearches: num(r.web_searches) });
+
+const COST_COLUMNS = `sum(cost_usd) AS cost_total, sum(cost_high_usd) AS cost_high, count(*) AS cost_requests, sum(cost_usd IS NULL) AS cost_unpriced,
+  sum(cost_usd IS NOT NULL AND (cost_flags & ${COST_ESTIMATED}) != 0) AS cost_estimated`;
+const costOf = (r: Row): CostSummary => ({ cost: num(r.cost_total), high: num(r.cost_high), requests: num(r.cost_requests), unpriced: num(r.cost_unpriced), estimated: num(r.cost_estimated) });

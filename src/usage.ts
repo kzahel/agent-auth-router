@@ -15,10 +15,28 @@ export interface UsageFigures {
   output: number;
   /** Reasoning output; a subset of output. */
   reasoning: number;
+  /** One-hour cache writes; a subset of cacheWrite, the rest are five-minute writes. */
+  cacheWrite1h: number;
+  /** Server-side web searches the provider bills per request. */
+  webSearches: number;
 }
 
-export const USAGE_FIELDS = ["input", "cacheRead", "cacheWrite", "output", "reasoning"] as const;
-export const zeroUsage = (): UsageFigures => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 });
+export const USAGE_FIELDS = ["input", "cacheRead", "cacheWrite", "output", "reasoning", "cacheWrite1h", "webSearches"] as const;
+export const zeroUsage = (): UsageFigures => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, cacheWrite1h: 0, webSearches: 0 });
+
+/**
+ * Per-request pricing context reported beside the counts. `cacheSplit` is
+ * true once the provider broke cache writes into five-minute and one-hour.
+ */
+export interface UsageAttributes {
+  cacheSplit?: boolean;
+  /** Anthropic `usage.speed`: "fast" or "standard". */
+  speed?: string;
+  /** Anthropic `usage.inference_geo`, e.g. "global" or "us". */
+  inferenceGeo?: string;
+  /** OpenAI `service_tier`, e.g. "default", "priority", "flex". */
+  serviceTier?: string;
+}
 
 /** Coarse live estimate for streamed output; replaced by provider figures. */
 export const CHARS_PER_TOKEN = 4;
@@ -29,6 +47,8 @@ const HEAD_CHARS = 512;
 
 export interface UsageSink {
   model(model: string): void;
+  /** Pricing context; fields arrive as the provider reports them. */
+  attributes?(values: UsageAttributes): void;
   /** Change since the previous call; output may be negative when a provider figure corrects the estimate. */
   delta(change: UsageFigures): void;
 }
@@ -77,17 +97,45 @@ const obj = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const str = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
 
-/** Claude reports input excluding cache; cache reads and writes are separate. */
+/**
+ * Claude reports input excluding cache; cache reads and writes are separate.
+ * `message_start` also splits cache writes by duration; `message_delta`
+ * repeats the totals without the split, so an absent split keeps the last one.
+ */
 export function claudeUsage(raw: unknown): Partial<UsageFigures> | undefined {
   const usage = obj(raw);
   if (!usage) return undefined;
   const values: Partial<UsageFigures> = {};
   const input = num(usage.input_tokens), read = num(usage.cache_read_input_tokens), write = num(usage.cache_creation_input_tokens), output = num(usage.output_tokens);
+  const hour = num(obj(usage.cache_creation)?.ephemeral_1h_input_tokens), searches = num(obj(usage.server_tool_use)?.web_search_requests);
   if (input !== undefined) values.input = input;
   if (read !== undefined) values.cacheRead = read;
   if (write !== undefined) values.cacheWrite = write;
   if (output !== undefined) values.output = output;
+  if (hour !== undefined) values.cacheWrite1h = hour;
+  if (searches !== undefined) values.webSearches = searches;
   return values;
+}
+
+const label = (value: unknown): string | undefined => {
+  const text = str(value);
+  return text && /^[A-Za-z0-9_.-]{1,32}$/.test(text) ? text : undefined;
+};
+
+export function claudeAttributes(raw: unknown): UsageAttributes | undefined {
+  const usage = obj(raw);
+  if (!usage) return undefined;
+  const values: UsageAttributes = {};
+  if (obj(usage.cache_creation)) values.cacheSplit = true;
+  const speed = label(usage.speed), geo = label(usage.inference_geo);
+  if (speed) values.speed = speed;
+  if (geo) values.inferenceGeo = geo;
+  return values;
+}
+
+export function codexAttributes(raw: unknown): UsageAttributes | undefined {
+  const tier = label(obj(raw)?.service_tier);
+  return tier ? { serviceTier: tier } : undefined;
 }
 
 /** Responses API input includes cached tokens, and output includes reasoning. */
@@ -225,6 +273,9 @@ export class UsageTap {
     } catch { /* Unknown or malformed events are ignored. */ }
   }
   private emit(change: UsageFigures): void { if (!isZero(change)) this.sink.delta(change); }
+  private attributes(values: UsageAttributes | undefined): void {
+    if (values && Object.keys(values).length) this.sink.attributes?.(values);
+  }
   private report(values: Partial<UsageFigures> | undefined, final: boolean): void {
     if (values) this.emit(this.accumulator.report(values, final));
   }
@@ -235,8 +286,10 @@ export class UsageTap {
   private oversized(head: string, tail: string): void {
     const type = head.match(/"type"\s*:\s*"([a-z_.]+)"/)?.[1];
     const usage = usageFromTail(tail);
-    if (this.provider === "claude") this.report(claudeUsage(usage), type === "message_delta" || type === "message");
-    else this.report(codexUsage(usage), type !== undefined && type.startsWith("response.") ? FINAL_CODEX.has(type) : true);
+    if (this.provider === "claude") {
+      this.attributes(claudeAttributes(usage));
+      this.report(claudeUsage(usage), type === "message_delta" || type === "message");
+    } else this.report(codexUsage(usage), type !== undefined && type.startsWith("response.") ? FINAL_CODEX.has(type) : true);
   }
   private event(value: unknown): void {
     const event = obj(value);
@@ -247,22 +300,24 @@ export class UsageTap {
         const message = obj(event.message);
         this.model(message?.model);
         // message_start's output count is a placeholder, not the final figure.
+        this.attributes(claudeAttributes(message?.usage));
         this.report(claudeUsage(message?.usage), false);
       } else if (type === "content_block_delta") {
         const delta = obj(event.delta);
         const text = str(delta?.text) ?? str(delta?.thinking) ?? str(delta?.partial_json);
         if (text) this.emit(this.accumulator.text(text.length));
-      } else if (type === "message_delta") this.report(claudeUsage(event.usage), true);
-      else if (type === "message" || (!type && event.usage)) { this.model(event.model); this.report(claudeUsage(event.usage), true); }
+      } else if (type === "message_delta") { this.attributes(claudeAttributes(event.usage)); this.report(claudeUsage(event.usage), true); }
+      else if (type === "message" || (!type && event.usage)) { this.model(event.model); this.attributes(claudeAttributes(event.usage)); this.report(claudeUsage(event.usage), true); }
       return;
     }
     if (type === "response.created" || type === "response.in_progress") this.model(obj(event.response)?.model);
-    else if (type && FINAL_CODEX.has(type)) { const response = obj(event.response); this.model(response?.model); this.report(codexUsage(response?.usage), true); }
+    else if (type && FINAL_CODEX.has(type)) { const response = obj(event.response); this.model(response?.model); this.attributes(codexAttributes(response)); this.report(codexUsage(response?.usage), true); }
     else if (type && type.endsWith(".delta")) { const delta = str(event.delta); if (delta) this.emit(this.accumulator.text(delta.length)); }
     else if (!type || type === "response") {
       // Non-streaming JSON: a response object, possibly wrapped.
       const response = obj(event.response) ?? event;
       this.model(response.model);
+      this.attributes(codexAttributes(response));
       this.report(codexUsage(response.usage), true);
     }
   }

@@ -317,6 +317,7 @@ function observe(upstreamRes: IncomingMessage, observed: RequestHandle, provider
   if (status >= 200 && status < 300 && tapsUsage(provider, route)) {
     const created: UsageTap = new UsageTap(provider, typeof header === "string" ? header : undefined, {
       model: (model) => observed.model(model),
+      attributes: (values) => observed.attributes(values),
       delta: (change) => observed.usage(change, created.accumulator.estimated, created.accumulator.final),
     });
     tap = created;

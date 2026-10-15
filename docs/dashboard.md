@@ -279,6 +279,11 @@ no accounts it links to Accounts.
   mode keeps uploaded and downloaded in separate panes, each with its own
   scale, since uploads run about a hundred times downloads; a pane whose
   series are all off is left out.
+- **Cost at API rates:** the legend ends with the selected range's and
+  scope's cost at the providers' published API prices, `≈` when part of it is
+  estimated; requests and sessions have a Cost column (`~` when estimated).
+  Subscription accounts are not billed these amounts. See
+  [pricing](pricing.md).
 - **Values table:** last, average, peak and total for each series over the
   visible range, collapsed under the chart. It doubles as the accessible
   table view, and as relief for two light-mode colours below 3:1 contrast.

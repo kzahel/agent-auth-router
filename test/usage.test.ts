@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { MAX_EVENT_CHARS, USAGE_FIELDS, UsageTap, usageFromTail, zeroUsage, type UsageFigures } from "../src/usage.ts";
+import { MAX_EVENT_CHARS, USAGE_FIELDS, UsageTap, usageFromTail, zeroUsage, type UsageAttributes, type UsageFigures } from "../src/usage.ts";
 import type { Provider } from "../src/types.ts";
 
 function run(provider: Provider, contentType: string, chunks: (string | Buffer)[]) {
-  const totals = zeroUsage(), deltas: UsageFigures[] = [], models: string[] = [];
+  const totals = zeroUsage(), deltas: UsageFigures[] = [], models: string[] = [], attributes: UsageAttributes = {};
   const tap = new UsageTap(provider, contentType, {
     model: (model) => models.push(model),
+    attributes: (values) => Object.assign(attributes, values),
     delta: (change) => { deltas.push(change); for (const f of USAGE_FIELDS) totals[f] += change[f]; },
   });
   for (const chunk of chunks) tap.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   tap.end();
-  return { totals, deltas, models, tap };
+  return { totals, deltas, models, tap, attributes };
 }
 
 const sse = (events: object[], newline = "\n") =>
@@ -29,7 +30,7 @@ describe("usage tap", () => {
   test("Claude streams: provider figures win over the estimate at any chunk boundary", () => {
     const text = sse(claudeEvents);
     const whole = run("claude", "text/event-stream", [text]);
-    assert.deepEqual(whole.totals, { input: 12, cacheRead: 900, cacheWrite: 30, output: 77, reasoning: 0 });
+    assert.deepEqual(whole.totals, { input: 12, cacheRead: 900, cacheWrite: 30, output: 77, reasoning: 0, cacheWrite1h: 0, webSearches: 0 });
     assert.deepEqual(whole.models, ["claude-x"]);
     assert.equal(whole.tap.accumulator.final, true);
     assert.equal(whole.tap.accumulator.estimated, false);
@@ -40,7 +41,7 @@ describe("usage tap", () => {
     const bytes = Buffer.from(sse([{ ...claudeEvents[0]!, message: { model: "claude-é", usage: { input_tokens: 5 } } }, claudeEvents[3]!]));
     for (let at = 1; at < bytes.length; at += 7) {
       const split = run("claude", "text/event-stream", [bytes.subarray(0, at), bytes.subarray(at)]);
-      assert.deepEqual(split.totals, { input: 5, cacheRead: 0, cacheWrite: 0, output: 77, reasoning: 0 }, `split at ${at}`);
+      assert.deepEqual(split.totals, { input: 5, cacheRead: 0, cacheWrite: 0, output: 77, reasoning: 0, cacheWrite1h: 0, webSearches: 0 }, `split at ${at}`);
       assert.deepEqual(split.models, ["claude-é"]);
     }
     const single = run("claude", "text/event-stream", [...bytes].map((b) => Buffer.from([b])));
@@ -63,8 +64,26 @@ describe("usage tap", () => {
       { type: "response.completed", response: { model: "gpt-x", usage: { input_tokens: 1000, input_tokens_details: { cached_tokens: 800 }, output_tokens: 50, output_tokens_details: { reasoning_tokens: 20 } } } },
     ];
     const result = run("codex", "text/event-stream", [sse(events)]);
-    assert.deepEqual(result.totals, { input: 200, cacheRead: 800, cacheWrite: 0, output: 50, reasoning: 20 });
+    assert.deepEqual(result.totals, { input: 200, cacheRead: 800, cacheWrite: 0, output: 50, reasoning: 20, cacheWrite1h: 0, webSearches: 0 });
     assert.deepEqual(result.models, ["gpt-x", "gpt-x"]);
+  });
+
+  test("Claude pricing context: the cache-write split, speed, inference geography and web searches", () => {
+    // message_start carries the split; message_delta repeats cumulative totals without it.
+    const events = [
+      { type: "message_start", message: { model: "claude-opus-5-5", usage: { input_tokens: 4, cache_creation_input_tokens: 300, cache_read_input_tokens: 9000,
+        cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 200 }, output_tokens: 1, speed: "fast", inference_geo: "us", service_tier: "standard" } } },
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { cache_creation_input_tokens: 300, output_tokens: 40, server_tool_use: { web_search_requests: 2 } } },
+    ];
+    const result = run("claude", "text/event-stream", [sse(events)]);
+    assert.deepEqual(result.totals, { input: 4, cacheRead: 9000, cacheWrite: 300, output: 40, reasoning: 0, cacheWrite1h: 200, webSearches: 2 });
+    assert.deepEqual(result.attributes, { cacheSplit: true, speed: "fast", inferenceGeo: "us" });
+    const unsplit = run("claude", "text/event-stream", [sse(claudeEvents)]);
+    assert.deepEqual(unsplit.attributes, {}, "no split reported, so none is assumed");
+    const odd = run("claude", "text/event-stream", [sse([{ type: "message_start", message: { usage: { speed: "x".repeat(40), inference_geo: "u s\n" } } }])]);
+    assert.deepEqual(odd.attributes, {}, "only short plain labels are kept");
+    const codex = run("codex", "text/event-stream", [sse([{ type: "response.completed", response: { model: "gpt-5.5", service_tier: "priority", usage: { input_tokens: 10, output_tokens: 2 } } }])]);
+    assert.deepEqual(codex.attributes, { serviceTier: "priority" });
   });
 
   test("oversized events keep only a bounded tail and still find the final usage", () => {
@@ -74,17 +93,17 @@ describe("usage tap", () => {
     const chunks: string[] = [];
     for (let at = 0; at < text.length; at += 65_536) chunks.push(text.slice(at, at + 65_536));
     const result = run("codex", "text/event-stream", chunks);
-    assert.deepEqual(result.totals, { input: 10, cacheRead: 0, cacheWrite: 0, output: 3, reasoning: 0 });
+    assert.deepEqual(result.totals, { input: 10, cacheRead: 0, cacheWrite: 0, output: 3, reasoning: 0, cacheWrite1h: 0, webSearches: 0 });
     assert.deepEqual(usageFromTail('{"a":"\\"usage\\": {","usage": {"output_tokens": 4, "x": "}"}}'), { output_tokens: 4, x: "}" });
   });
 
   test("non-streaming JSON, malformed and unknown events", () => {
     const json = run("claude", "application/json", [JSON.stringify({ type: "message", model: "claude-y", usage: { input_tokens: 3, output_tokens: 9 } })]);
-    assert.deepEqual(json.totals, { input: 3, cacheRead: 0, cacheWrite: 0, output: 9, reasoning: 0 });
+    assert.deepEqual(json.totals, { input: 3, cacheRead: 0, cacheWrite: 0, output: 9, reasoning: 0, cacheWrite1h: 0, webSearches: 0 });
     const compact = run("codex", "application/json", [JSON.stringify({ output: [], usage: { input_tokens: 40, output_tokens: 6 } })]);
     assert.equal(compact.totals.input, 40);
     const noisy = run("claude", "text/event-stream", [": ping\n\nevent: x\ndata: {not json\n\ndata: [DONE]\n\n", sse([{ type: "unknown_type", usage: { input_tokens: 999 } }]), sse(claudeEvents.slice(3))]);
-    assert.deepEqual(noisy.totals, { input: 0, cacheRead: 0, cacheWrite: 0, output: 77, reasoning: 0 });
+    assert.deepEqual(noisy.totals, { input: 0, cacheRead: 0, cacheWrite: 0, output: 77, reasoning: 0, cacheWrite1h: 0, webSearches: 0 });
     const negative = run("claude", "text/event-stream", [sse([{ type: "message_delta", usage: { output_tokens: -5, input_tokens: "7" } }])]);
     assert.deepEqual(negative.totals, zeroUsage(), "only finite, non-negative numbers count");
   });

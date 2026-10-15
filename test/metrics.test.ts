@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
-import { HistoryStore } from "../src/history.ts";
+import { DatabaseSync } from "node:sqlite";
+import { COST_ESTIMATED_CACHE, HistoryStore } from "../src/history.ts";
 import { Metrics } from "../src/metrics.ts";
-import { tempDir } from "./support.ts";
+import { zeroUsage, type UsageFigures } from "../src/usage.ts";
+import { captureLogs, tempDir } from "./support.ts";
 
-const usage = (values: Partial<Record<"input" | "cacheRead" | "cacheWrite" | "output" | "reasoning", number>>) =>
-  ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, ...values });
+const usage = (values: Partial<UsageFigures>): UsageFigures => ({ ...zeroUsage(), ...values });
 
 describe("metrics", () => {
   test("every event adds into each tier; only complete buckets are reported", () => {
@@ -162,13 +163,60 @@ describe("metrics", () => {
     const one = recent[1]!;
     assert.equal(one.requests, 2, "totals include requests from before the window");
     assert.equal(one.errors, 1);
-    assert.deepEqual(one.usage, { input: 0, cacheRead: 200, cacheWrite: 20, output: 12, reasoning: 0 });
+    assert.deepEqual(one.usage, { input: 0, cacheRead: 200, cacheWrite: 20, output: 12, reasoning: 0, cacheWrite1h: 0, webSearches: 0 });
     assert.deepEqual(one.accountIds, ["b", "a"], "most recently used account first");
     assert.equal(one.model, "m2");
     assert.deepEqual(metrics.sessions(now - 600_000, { accountId: "b" }).map((s) => s.sessionId), ["s-one"]);
     assert.deepEqual(metrics.sessions(now - 600_000, { poolId: "11111111-1111-4111-8111-111111111111" }), []);
     metrics.close();
     store.close();
+  });
+
+  test("a version 1 database gains the pricing columns, and stored history is priced at startup", () => {
+    const path = join(tempDir(), "history.db");
+    // The version 1 requests table, as the first history.db release created it.
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+      CREATE TABLE requests (request_id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL, client TEXT NOT NULL,
+        account_id TEXT NOT NULL, provider TEXT NOT NULL, pool_id TEXT, binding_id TEXT, session_id TEXT, route TEXT NOT NULL, model TEXT,
+        status INTEGER, outcome TEXT NOT NULL, bytes_up INTEGER NOT NULL, bytes_down INTEGER NOT NULL, input INTEGER NOT NULL,
+        cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, output INTEGER NOT NULL, reasoning INTEGER NOT NULL, estimated INTEGER NOT NULL);
+      INSERT INTO meta VALUES ('schema', '1');`);
+    const now = Date.parse("2026-10-15T12:00:00Z");
+    old.prepare(`INSERT INTO requests VALUES ('old', ?, ?, 'c', 'a', 'claude', NULL, NULL, 's', '/v1/messages', 'claude-opus-5-5', 200, 'ok', 0, 0,
+      1000, 100000, 2000, 500, 0, 0)`).run(now - 60_000, now - 59_000);
+    old.close();
+    chmodSync(path, 0o600);
+    const store = new HistoryStore(path);
+    const metrics = new Metrics({ history: store, now: () => now });
+    const [restored] = metrics.recentRequests();
+    // Written before the split was recorded: cache writes at the five-minute rate, marked estimated.
+    assert.ok(Math.abs(restored!.cost! - (1000 * 4 + 100_000 * 0.2 + 2000 * 5 + 500 * 20) / 1e6) < 1e-12);
+    assert.equal(restored!.costFlags, COST_ESTIMATED_CACHE);
+    const handle = metrics.begin({ provider: "claude", route: "/v1/messages", accountId: "a", client: "c", sessionId: "s", tapped: true });
+    handle.model("claude-opus-5-5");
+    handle.attributes({ cacheSplit: true });
+    handle.usage(usage({ cacheWrite: 1000, cacheWrite1h: 1000, output: 100 }), false, true);
+    handle.end(200);
+    const fresh = metrics.recentRequests()[0]!;
+    assert.ok(Math.abs(fresh.cost! - (1000 * 8 + 100 * 20) / 1e6) < 1e-12, "one-hour writes at the one-hour rate");
+    assert.equal(fresh.costFlags, 0);
+    const summary = metrics.costSummary(now - 120_000)!;
+    assert.deepEqual({ ...summary, cost: Math.round(summary.cost * 1e6), high: Math.round(summary.high * 1e6) },
+      { cost: 44_000 + 10_000, high: 44_000 + 2000 * 3 + 10_000, requests: 2, unpriced: 0, estimated: 1 });
+    assert.equal(metrics.sessions(now - 120_000)[0]!.cost.requests, 2);
+    const unknown = metrics.begin({ provider: "claude", route: "/v1/messages", accountId: "a", client: "c", tapped: true });
+    unknown.model("claude-unreleased");
+    unknown.usage(usage({ output: 5 }), false, true);
+    unknown.end(200);
+    assert.equal(metrics.costSummary(now - 120_000)!.unpriced, 1, "unpriced, not free");
+    metrics.close();
+    store.close();
+    // Reopening with the same price table does not reprice.
+    const logs = captureLogs();
+    const again = new Metrics({ history: new HistoryStore(path), now: () => now });
+    assert.equal(logs.join("\n").includes("history.repriced"), false);
+    again.close();
   });
 
   test("retention deletes old history and is bounded; without a store nothing is kept", () => {

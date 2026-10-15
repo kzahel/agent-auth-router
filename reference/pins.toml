@@ -28,3 +28,11 @@ repository = "https://github.com/earendil-works/pi.git"
 revision = "dc939913f6142adce7c09da5707fdd6451b37fb0"
 purpose = "pi coding agent: provider clients, model registry and per-model API prices"
 required = true
+
+[[checkout]]
+name = "genai-prices"
+path = "reference/genai-prices"
+repository = "https://github.com/pydantic/genai-prices.git"
+revision = "a7e6d36cb10bd4829d3773d37ede7a3daebaa00d"
+purpose = "Source of the vendored API price table (src/prices-data.ts) and its calculation rules"
+required = true

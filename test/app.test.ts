@@ -153,7 +153,7 @@ test("desktop pipe: owner hello, core-side policy, subscriptions and change even
   const done = await app.next((m) => m.sub === 4 && m.data.outcome === "ok");
   assert.equal(done.data.client, "laptop");
   assert.equal(done.data.model, "claude-fixture");
-  assert.deepEqual(done.data.usage, { input: 7, cacheRead: 70, cacheWrite: 0, output: 33, reasoning: 0 });
+  assert.deepEqual(done.data.usage, { input: 7, cacheRead: 70, cacheWrite: 0, output: 33, reasoning: 0, cacheWrite1h: 0, webSearches: 0 });
   assert.ok(app.messages.some((m) => m.sub === 4 && m.data.outcome === "active"));
   const append = await app.next((m) => m.sub === 5 && m.data.series.output.some((v: number | null) => v), 4000);
   assert.ok(append.data.start > history.completeThrough);
@@ -229,6 +229,9 @@ test("web dashboard: exact host and origin, single-use codes, sessions and logou
   await assert.rejects(ownerRequest(store, "history/set-retention", { retentionDays: 0 }), /whole number/);
   assert.equal((await ownerRequest(store, "history/set-retention", { retentionDays: 14 })).retentionDays, 14);
   assert.deepEqual(await ownerRequest(store, "sessions/recent", { range: "24h", scope: "all" }), { stored: true, sessions: [] });
+  const cost = await ownerRequest(store, "history/cost", { range: "24h", scope: "account:work" });
+  assert.deepEqual(cost.summary, { cost: 0, high: 0, requests: 0, unpriced: 0, estimated: 0 });
+  assert.match(cost.prices.commit, /^[0-9a-f]{40}$/);
   await assert.rejects(ownerRequest(store, "sessions/recent", { range: "1y" }), /invalid range/);
   assert.equal(statSync(join(store.dir, "history.db")).mode & 0o777, 0o600);
   const logout = await httpRequest(origin, "/auth/logout", { method: "POST", headers: { host, cookie, origin, "content-type": "application/json" }, body: "{}" });

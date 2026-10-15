@@ -1,6 +1,6 @@
 # Cost estimates at API rates
 
-Status: implemented (2026-10-15). The router shows what its traffic would cost
+Status: implemented 2026-10-15. The router shows what its traffic would cost
 at the providers' published pay-as-you-go API prices. Subscription accounts are
 not billed these amounts; the figures compare usage against API pricing.
 
@@ -84,14 +84,17 @@ A cost is exact when the provider reported everything it depends on. It is
 marked estimated (`~`) when:
 
 - the response did not report the five-minute/one-hour cache-write split.
-  Requests recorded before 2026-10-15 stored only the total; their cache
-  writes are priced at the five-minute rate, so a one-hour write is
-  under-priced by 37.5% on Opus 5.5 ($5 instead of $8 per MTok);
+  Requests recorded before 2026-10-15 stored only the total. Their cache
+  writes are priced at the five-minute rate, and each such cost also stores
+  an upper bound with those writes priced as one-hour ($5 versus $8 per MTok
+  on Opus 5.5). Totals that include them show the range, such as
+  "$370–$414 at API rates";
 - output is still the live estimate (a stream that ended without the
   provider's final count).
 
-A request whose model has no price is unpriced: it counts toward "unpriced
-requests", never as zero cost.
+A request with tokens whose model has no price is unpriced: it counts toward
+"unpriced requests", never as zero cost. A request with no tokens at all (a
+model listing, or a failure before generation) costs $0.
 
 ## Recording
 
@@ -106,21 +109,26 @@ repeats totals without the split):
 From Codex it records `service_tier`. All are metadata; no content is kept.
 
 `history.db` schema version 2 adds these to the `requests` table, with
-`cost_usd` and `cost_flags` computed when a request is stored. At startup the
-router prices rows without a cost, and reprices every row when the vendored
-price commit differs from the one recorded in the database.
+`cost_usd` and `cost_flags` computed when a request is stored; version 3 adds
+`cost_high_usd`, the upper bound above. An older database gains the columns
+at startup. The router reprices every row when `PRICES_VERSION` (the vendored
+price commit plus a rules version in [src/pricing.ts](../src/pricing.ts))
+differs from the one recorded in the database, which includes the first start
+after this change.
 
 ## Display
 
-- Requests and sessions tables: a Cost column, `~` when estimated.
-- Chart legend: the total for the selected range and scope, "≈ $X at API
-  rates", with the number of unpriced requests in its tooltip.
+- Requests and sessions tables: a Cost column, `~` when estimated, with the
+  upper bound in its tooltip.
+- Chart legend: the total for the selected range and scope, "$X at API rates",
+  "≈ $X" when estimated, or "$X–$Y" when cache durations are unknown; its
+  tooltip counts estimated and unpriced requests.
 - Tooltips say the figures are API list prices, not what a subscription pays.
 
 ## Plan
 
 1. Record the cache-write split, speed, inference geography, web searches and
-   Codex service tier; schema migration to version 2. ✔
+   Codex service tier; schema migrations to versions 2 and 3. ✔
 2. Pin genai-prices as a reference, vendor the trimmed data with provenance,
    and write the calculator with tests (Opus flat above 200k, Haiku 5.5 tier,
    one-hour writes, unknown split, fast mode, US-only, Codex tiers and service
@@ -129,8 +137,40 @@ price commit differs from the one recorded in the database.
 4. Range totals by scope from the stored requests; costs in the requests and
    sessions views. ✔
 5. Check against live traffic: the share of cache writes that are one-hour in
-   Claude Code subscription traffic. ✔ (see below)
+   Claude Code subscription traffic. Started; see Findings.
+
+## Verification
+
+- `test/pricing.test.ts` checks hand-computed costs from the published rates:
+  Opus 5.5 flat near 1M input; Haiku 5.5 at exactly 100k (base) and just
+  above (every category at the higher rate); one-hour and unreported cache
+  splits; fast mode, US-only inference and web searches; GPT-5.5 Codex below
+  and above 272k and its service tiers; unknown models; dated price lists.
+- A differential run (not in the repository) priced 2,000 random usages
+  across Opus 5.5, Haiku 5.5, Haiku 4.5, GPT-5.5 and GPT-5.3 Codex with both
+  this calculator and `@pydantic/genai-prices` 0.1.13's `calcPrice`; every
+  result agreed to floating-point precision.
+- `test/metrics.test.ts` migrates a version 1 database, prices its history at
+  startup, prices new requests with the split and does not reprice when the
+  table is unchanged.
 
 ## Findings
 
-Recorded after the router ran with this change; see the end of this file.
+Observed on the maintainer's router on 2026-10-15, from 12:13 local time,
+when the split started being recorded:
+
+- All 16 Opus 5.5 requests with cache writes in the first half hour wrote
+  only one-hour cache entries (25,212 of 25,212 tokens). They came from one
+  Claude Code session on one subscription account; no Haiku request with
+  cache writes was seen yet. This supports, but does not establish, that
+  Claude Code subscription traffic uses one-hour caching. The stored totals
+  will settle it as more sessions and models are recorded:
+  `SELECT model, sum(cache_write), sum(cache_write_1h) FROM requests WHERE
+  cache_write_1h IS NOT NULL GROUP BY model`.
+- `inference_geo` was `global` and `speed` absent on every request, so no
+  US-only or fast-mode multiplier applied.
+- Of the 14,139 requests stored when pricing began, 40.1M Opus 5.5 cache-write
+  tokens have no recorded duration: $200 at the five-minute rate, $321 at the
+  one-hour rate. This uncertainty leaves with retention (30 days by default).
+- Over the 24 hours before pricing began, traffic would have cost $370–$414
+  at API rates, mostly cache reads (1.2B tokens at $0.20 per MTok).

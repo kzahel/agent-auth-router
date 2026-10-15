@@ -4,13 +4,14 @@
 // Metadata only: no request content, credentials or profile paths.
 
 import { randomUUID } from "node:crypto";
-import type { HistoryStore, SessionSummary } from "./history.ts";
+import type { CostSummary, HistoryStore, SessionSummary } from "./history.ts";
 import { log, errorText } from "./log.ts";
+import { PRICES_VERSION, priceRequest } from "./pricing.ts";
 import type { QuotaWindow } from "./quotas.ts";
 import type { Provider } from "./types.ts";
-import { USAGE_FIELDS, zeroUsage, type UsageFigures } from "./usage.ts";
+import { USAGE_FIELDS, zeroUsage, type UsageAttributes, type UsageFigures } from "./usage.ts";
 
-export const COUNTERS = ["requests", "errors", "input", "cacheRead", "cacheWrite", "output", "reasoning", "bytesUp", "bytesDown", "unreported"] as const;
+export const COUNTERS = ["requests", "errors", "input", "cacheRead", "cacheWrite", "output", "reasoning", "cacheWrite1h", "webSearches", "bytesUp", "bytesDown", "unreported"] as const;
 export type Counter = (typeof COUNTERS)[number];
 
 export const RANGES = {
@@ -27,7 +28,7 @@ export const isRange = (value: unknown): value is RangeName => typeof value === 
 const isGauge = (metric: string) => metric.startsWith("quota:");
 const SCOPE = /^(all|account:[a-z0-9][a-z0-9-]{0,62}|pool:[a-f0-9-]{36})$/;
 export const isScope = (value: unknown): value is string => typeof value === "string" && SCOPE.test(value);
-const METRIC = /^(requests|errors|input|cacheRead|cacheWrite|output|reasoning|bytesUp|bytesDown|unreported|quota:[a-z0-9_:-]{1,40})$/;
+const METRIC = /^(requests|errors|input|cacheRead|cacheWrite|output|reasoning|cacheWrite1h|webSearches|bytesUp|bytesDown|unreported|quota:[a-z0-9_:-]{1,40})$/;
 export const isMetric = (value: unknown): value is string => typeof value === "string" && METRIC.test(value);
 const RECENT_LIMIT = 200;
 const SAVE_INTERVAL_MS = 60_000;
@@ -138,6 +139,18 @@ export interface RequestEntry {
   usage: UsageFigures;
   /** Output includes a live estimate the provider never replaced. */
   estimated: boolean;
+  /** The provider split cache writes into five-minute and one-hour; false keeps usage.cacheWrite1h unknown. */
+  cacheSplit: boolean;
+  /** Pricing context as the provider reported it, null when it did not. */
+  speed: string | null;
+  inferenceGeo: string | null;
+  serviceTier: string | null;
+  /** Estimated cost at API rates once finished; null while active or when the model has no price. */
+  cost: number | null;
+  /** history.ts COST_* bits. */
+  costFlags: number;
+  /** The cost if cache writes of unknown duration were one-hour; equals cost when known. */
+  costHigh: number | null;
 }
 
 export interface RequestStart {
@@ -155,6 +168,7 @@ export interface RequestStart {
 
 export interface RequestHandle {
   model(model: string): void;
+  attributes(values: UsageAttributes): void;
   usage(change: UsageFigures, estimated: boolean, final: boolean): void;
   bytesUp(bytes: number): void;
   bytesDown(bytes: number): void;
@@ -238,7 +252,7 @@ export class Metrics {
       id: ++this.seq, requestId: start.requestId ?? randomUUID(), startedAt: this.now(), endedAt: null, client: start.client, accountId: start.accountId, provider: start.provider,
       poolId: start.poolId ?? null, bindingId: start.bindingId ?? null, sessionId: start.sessionId ?? null,
       route: start.route, model: null, status: null, outcome: "active", bytesUp: 0, bytesDown: 0,
-      usage: zeroUsage(), estimated: false,
+      usage: zeroUsage(), estimated: false, cacheSplit: false, speed: null, inferenceGeo: null, serviceTier: null, cost: null, costFlags: 0, costHigh: null,
     };
     this.recent.push(entry);
     if (this.recent.length > RECENT_LIMIT) this.recent.shift();
@@ -246,6 +260,13 @@ export class Metrics {
     let ended = false, final = false;
     return {
       model: (model) => { entry.model = model; },
+      attributes: (values) => {
+        if (ended) return;
+        if (values.cacheSplit) entry.cacheSplit = true;
+        if (values.speed) entry.speed = values.speed;
+        if (values.inferenceGeo) entry.inferenceGeo = values.inferenceGeo;
+        if (values.serviceTier) entry.serviceTier = values.serviceTier;
+      },
       usage: (change, estimated, isFinal) => {
         if (ended) return;
         for (const field of USAGE_FIELDS) { entry.usage[field] += change[field]; this.add(scopes, field, change[field]); }
@@ -267,10 +288,14 @@ export class Metrics {
         entry.endedAt = this.now();
         entry.status = status;
         entry.outcome = outcome === "client_closed" ? "client_closed" : status >= 400 ? "error" : "ok";
+        const priced = priceRequest(entry);
+        entry.cost = priced.cost;
+        entry.costFlags = priced.flags;
+        entry.costHigh = priced.high;
         this.emit(entry);
         if (this.store) {
-          const { id: _id, endedAt, outcome: finished, ...stored } = entry;
-          try { this.store.putRequest({ ...stored, endedAt: endedAt!, outcome: finished as "ok" | "error" | "client_closed" }); }
+          const { id: _id, endedAt, outcome: finished, cost: _cost, costFlags: _flags, costHigh: _high, ...stored } = entry;
+          try { this.store.putRequest({ ...stored, endedAt: endedAt!, outcome: finished as "ok" | "error" | "client_closed" }, priced); }
           catch (error) { log("metrics.request_save_failed", { error: errorText(error) }); }
         }
       },
@@ -358,6 +383,10 @@ export class Metrics {
   recentRequests(after = 0): RequestEntry[] {
     return this.recent.filter(e => e.id > after).reverse().map(e => structuredClone(e));
   }
+  /** Cost at API rates of requests finished since `since`; null without a history store. */
+  costSummary(since: number, filter: { accountId?: string; poolId?: string } = {}): CostSummary | null {
+    return this.store?.costSummary(since, filter) ?? null;
+  }
   /** Sessions with activity since `since`; empty without a history store. */
   sessions(since: number, filter: { accountId?: string; poolId?: string } = {}): SessionSummary[] {
     return this.store?.sessions(since, filter) ?? [];
@@ -398,6 +427,11 @@ export class Metrics {
       if (accountId.length > 200 || !Number.isSafeInteger(at) || at > now || !Array.isArray(windows)) continue;
       const valid = windows.slice(0, 32).map(persistedWindow).filter(w => w !== null);
       if (valid.length) this.latestQuota.set(accountId, { at, windows: valid });
+    }
+    // Costs follow the vendored price table: reprice stored history when it or the rules change.
+    if (history.pricesVersion() !== PRICES_VERSION) {
+      const count = history.reprice(priceRequest, PRICES_VERSION);
+      log("history.repriced", { requests: count, version: PRICES_VERSION });
     }
     for (const stored of history.recentRequests(RECENT_LIMIT).reverse()) this.recent.push({ ...stored, id: ++this.seq });
     this.prune();

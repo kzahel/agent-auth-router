@@ -30,6 +30,7 @@ revision on purpose when it records what was inspected at the time.
 | --- | --- | --- |
 | `cliproxyapi` | `8ef43e4df3b216a42493105d31c2873b69191473` (inspected 2026-10-04) | Provider protocols, OAuth ownership, routing policies, token counting. MIT. |
 | `vibeproxy` | `f2aa365523dd739a114fb7bc73a58353c3737c49` (inspected 2026-10-04) | macOS wrapper around CLIProxyAPI: bundling, request rewriting, signing, Sparkle updates. Optional. |
+| `genai-prices` | `a7e6d36cb10bd4829d3773d37ede7a3daebaa00d` (2026-10-14) | Source of the vendored API price table in `src/prices-data.ts`; see [docs/pricing.md](../docs/pricing.md). MIT. |
 | `pi` | `dc939913f6142adce7c09da5707fdd6451b37fb0` (2026-10-15) | pi coding agent (earendil-works/pi, formerly badlogic/pi-mono): provider clients, model registry and per-model API prices. |
 
 Reading a project's source is not a claim that its behavior is stable or

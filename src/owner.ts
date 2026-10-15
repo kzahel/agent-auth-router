@@ -10,6 +10,7 @@ import http from "node:http";
 import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { MAX_RETENTION_DAYS } from "./history.ts";
+import { PRICES_SOURCE } from "./prices-data.ts";
 import { COUNTERS, isMetric, isRange, isScope, RANGES, type Metrics } from "./metrics.ts";
 import { ControlError, type ControlRegistry } from "./control.ts";
 import { CredentialCoordinator } from "./coordinator.ts";
@@ -289,6 +290,15 @@ export class OwnerService {
       const since = Date.now() - RANGES[range].count * RANGES[range].bucketMs;
       const filter = scope.startsWith("account:") ? { accountId: scope.slice(8) } : scope.startsWith("pool:") ? { poolId: scope.slice(5) } : {};
       return { stored: this.metrics().retentionDays() !== null, sessions: this.metrics().sessions(since, filter) };
+    }
+    if (operation === "history/cost") {
+      // Estimated cost at API rates of requests finished within the selected range and scope.
+      const range = body.range ?? "1h", scope = body.scope ?? "all";
+      if (!isRange(range)) throw new ControlError(400, "invalid range");
+      if (!isScope(scope)) throw new ControlError(400, "invalid scope");
+      const since = Date.now() - RANGES[range].count * RANGES[range].bucketMs;
+      const filter = scope.startsWith("account:") ? { accountId: scope.slice(8) } : scope.startsWith("pool:") ? { poolId: scope.slice(5) } : {};
+      return { summary: this.metrics().costSummary(since, filter), prices: PRICES_SOURCE };
     }
     if (operation === "history/settings") return { retentionDays: this.metrics().retentionDays(), maxRetentionDays: MAX_RETENTION_DAYS };
     if (operation === "history/set-retention") {

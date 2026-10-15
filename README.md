@@ -35,7 +35,9 @@ Closing the window keeps the router running in the tray; **Quit** stops it.
 The **Dashboard** tab shows live traffic per account and pool: active streams,
 input and output tokens, cache hits, and recent requests or sessions, with
 history from 2 minutes to 30 days. History is kept in `history.db` in the state
-directory for 30 days by default, adjustable on the App tab. See the
+directory for 30 days by default, adjustable on the App tab. Requests,
+sessions and ranges show what the traffic would cost at the providers'
+published API prices ([pricing](docs/pricing.md)). See the
 [desktop guide](desktop/README.md) for details.
 
 ## How it works
