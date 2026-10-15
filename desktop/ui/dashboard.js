@@ -96,7 +96,8 @@ export function createDashboard({ client, overview }) {
       else if (message.type === "request") {
         const index = requests.findIndex(r => r.id === message.data.id);
         if (index >= 0) requests[index] = message.data; else requests.unshift(message.data);
-        requests = requests.slice(0, 50);
+        // As many as the router keeps, so a scoped view still has history.
+        requests = requests.slice(0, 200);
       }
       renderRequests();
     }));
@@ -179,16 +180,11 @@ export function createDashboard({ client, overview }) {
         const spark = element("canvas", undefined, "sparkline");
         spark.setAttribute("aria-hidden", "true");
         row.cells[5].append(spark);
-        row.tabIndex = 0;
-        row.title = "Show this account in the graph";
-        const select = () => { scope = `account:${a.id}`; localStorage.setItem("dash-scope", scope); renderScopes(); subscribe(); };
-        row.onclick = select;
-        row.onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } };
       }
       const s = scopeRate(`account:${a.id}`);
       const last = requests.find(r => r.accountId === a.id);
       // Proxied responses update quota between overview refreshes.
-      row.classList.toggle("selected", scope === `account:${a.id}`);
+      row.classList.toggle("in-scope", inScope(a.id));
       row.cells[0].textContent = `${accountLabel(a.id)} · ${a.provider}${a.enabled ? "" : " · disabled"}`;
       row.cells[1].textContent = s ? `${formatNumber(sent(s.rate))} / ${formatNumber(s.rate.output)}` : "0 / 0";
       row.cells[2].textContent = s ? String(s.active) : "0";
@@ -202,11 +198,22 @@ export function createDashboard({ client, overview }) {
     if (ordered.some((row, i) => body.rows[i] !== row) || body.rows.length !== ordered.length) body.replaceChildren(...ordered);
   }
 
+  // The Show selector scopes the whole tab: tiles, graph, the highlighted
+  // account rows and recent requests. A request carries its pool, if any;
+  // an account row is in a pool's scope when the account is a member.
+  function inScope(accountId, poolId) {
+    if (scope === `account:${accountId}`) return true;
+    if (poolId !== undefined) return scope === `pool:${poolId}`;
+    return !!overview()?.pools.find(p => `pool:${p.id}` === scope)?.accountIds.includes(accountId);
+  }
+
   function renderRequests() {
     const body = $("dash-requests").tBodies[0];
-    $("dash-requests-empty").hidden = requests.length > 0;
-    $("dash-requests").hidden = !requests.length;
-    body.replaceChildren(...requests.slice(0, 25).map(r => {
+    const shown = requests.filter(r => scope === "all" || inScope(r.accountId, r.poolId ?? null));
+    $("dash-requests-empty").textContent = scope === "all" ? "No requests since the router started." : "No recent requests in this scope.";
+    $("dash-requests-empty").hidden = shown.length > 0;
+    $("dash-requests").hidden = !shown.length;
+    body.replaceChildren(...shown.slice(0, 25).map(r => {
       const row = element("tr");
       const input = r.usage.input + r.usage.cacheRead + r.usage.cacheWrite;
       const cached = input ? Math.round((r.usage.cacheRead / input) * 100) : 0;
@@ -280,7 +287,7 @@ export function createDashboard({ client, overview }) {
       subscribe();
     };
   }
-  $("dash-scope").onchange = () => { scope = $("dash-scope").value; localStorage.setItem("dash-scope", scope); renderAccounts(); subscribe(); };
+  $("dash-scope").onchange = () => { scope = $("dash-scope").value; localStorage.setItem("dash-scope", scope); renderAccounts(); renderRequests(); subscribe(); };
   $("dash-goto-accounts").onclick = () => document.getElementById("tab-accounts").click();
   setInterval(() => { if (visible) { graph.stale = Date.now() - lastEvent > 3000; if (requests.some(r => r.outcome === "active")) renderRequests(); } }, 1000);
 
