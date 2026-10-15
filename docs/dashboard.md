@@ -305,8 +305,9 @@ Rendering follows rstorrent's `SpeedPanel.tsx` and `speed-geometry.ts`:
 - A scroll phase from 0 to 1 over one bucket, reset when a bucket completes.
   It runs only for live ranges while the page is visible and reduced motion
   is off.
-- A 1/2/5×10ⁿ scale that rises at once and decays down with a 2-second
-  half-life.
+- A 1/2/5×10ⁿ scale that snaps to the visible maximum in both directions;
+  an earlier 2-second downward decay took many seconds after a large peak
+  scrolled off.
 - A pointer or keyboard cursor (arrows, Home, End, Escape) with an
   exact-bucket tooltip, and an "updates paused" label after 3 s without data.
 - Series use the reference categorical palette in fixed order. It was

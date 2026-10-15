@@ -1,6 +1,6 @@
 // Canvas traffic graph after rstorrent's speed panel: complete buckets only,
 // a scroll phase that slides one bucket per bucket interval, a 1/2/5 y scale
-// that rises at once and decays downward, and an exact-bucket cursor.
+// that snaps to the visible maximum, and an exact-bucket cursor.
 // Panes stack on a shared time axis and each keeps its own labelled scale.
 
 const prefersReducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -86,7 +86,6 @@ export class TrafficGraph {
   #animating = false;
   #frame = 0;
   #cursor = null;
-  #scales = new Map();
   #lastDraw = 0;
   #live = true;
   #stale = false;
@@ -107,7 +106,6 @@ export class TrafficGraph {
     this.#panes = panes;
     this.#live = live;
     this.#rate = rate;
-    this.#scales.clear();
     this.draw();
   }
   get data() { return this.#data; }
@@ -163,16 +161,9 @@ export class TrafficGraph {
       return { pane, left, right: width - right, top: y0, bottom: y0 + paneHeight, height: paneHeight, titleY: y0 - 5 };
     });
   }
-  #scale(pane, index, maximum, now) {
-    const target = pane.maximum ?? niceMaximum(maximum * 1.1, pane.floor ?? 1);
-    const previous = this.#scales.get(index);
-    let value = target;
-    if (previous && target < previous.value) {
-      // Fall with a two-second half-life; rise immediately.
-      value = Math.max(target, previous.value * 0.5 ** ((now - previous.at) / 2000));
-    }
-    this.#scales.set(index, { value, at: now });
-    return { value, settling: value > target * 1.0001 };
+  /** 1/2/5 steps above the visible maximum; it snaps rather than animating. */
+  #scale(pane, maximum) {
+    return pane.maximum ?? niceMaximum(maximum * 1.1, pane.floor ?? 1);
   }
   draw() {
     const canvas = this.#canvas;
@@ -197,8 +188,7 @@ export class TrafficGraph {
     const data = this.#data;
     const length = data ? data.completeThrough - data.start + 1 : 0;
     const count = data?.count ?? 120;
-    let settling = false;
-    for (const [index, area] of this.#layout(width, height).entries()) {
+    for (const area of this.#layout(width, height)) {
       const { pane, left, right } = area;
       const spacing = (right - left) / Math.max(1, count - 1);
       const x = (i) => right - (length - 1 - i + phase) * spacing;
@@ -217,8 +207,7 @@ export class TrafficGraph {
           if (stacks[k][i] > maximum && x(i) >= left - spacing) maximum = stacks[k][i];
         });
       }
-      const scale = this.#scale(pane, index, maximum, now);
-      settling ||= scale.settling;
+      const scale = { value: this.#scale(pane, maximum) };
       const baseline = area.bottom;
       const y = (v) => area.bottom - (v / scale.value) * area.height;
       // Title and recessive hairline grid.
@@ -312,7 +301,7 @@ export class TrafficGraph {
       ctx.fillText(this.#stale ? "updates paused" : "now", last.right, height - 4);
     }
     this.#tooltipUpdate();
-    if ((phase > 0 && phase < 1) || settling) this.#kick();
+    if (phase > 0 && phase < 1) this.#kick();
   }
   #index(clientX) {
     const data = this.#data;
