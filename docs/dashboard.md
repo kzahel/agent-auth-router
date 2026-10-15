@@ -252,22 +252,24 @@ no accounts it links to Accounts.
 
 - **Controls:** scope (All traffic, each pool, each account), range (2 min to
   30 days) and units (tokens or bytes), remembered per browser.
-- **Summary tiles:** active streams, sent and generated tokens per second,
+- **Summary tiles:** active streams, sent and output tokens per second,
   one-minute cache hit ratio, requests and errors.
 - **Traffic graph:** two panes on a shared time axis, each with its own
   labelled scale. "New input" stacks cache write and uncached input as solid
-  bands; "Generated" is a line of estimated output. Cache reads are left out
-  of the drawing and listed in the tooltip and table: agent sessions resend
+  bands; "Output" is a line of output tokens, estimated live until the
+  provider reports its count. The legend gives each series' total for the
+  visible range. Cache reads are left out of the drawing and listed, without
+  a swatch, in the legend, tooltip and table: agent sessions resend
   their whole context each turn, so cache reads are typically over 99% of
   what is sent and would flatten the costlier tokens to a hairline. The two
   panes are separate scales, not a dual-axis chart. Bytes mode draws uploaded
   and downloaded as lines.
-- **Value table:** last, average, peak and total for each series over the
-  visible range. It doubles as the accessible table view, and as relief for
-  two light-mode colours below 3:1 contrast.
+- **Values table:** last, average, peak and total for each series over the
+  visible range, collapsed under the chart. It doubles as the accessible
+  table view, and as relief for two light-mode colours below 3:1 contrast.
 - **Quota graph** (account scope): used percent per window, holding the last
   sample until the next one.
-- **Accounts table:** live sent/generated rates, streams, quota meters, time
+- **Accounts table:** live sent/output rates, streams, quota meters, time
   since the last request and a two-minute sparkline. Selecting a row scopes
   the graph to that account.
 - **Recent requests:** time, client → account, model, sent tokens with the

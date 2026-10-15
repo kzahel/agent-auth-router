@@ -42,7 +42,7 @@ export function createDashboard({ client, overview }) {
       // Cache reads are nearly all of what is sent and cost little, so they
       // would flatten the tokens that matter; they stay in the tooltip and table.
       { title: "New input · tokens/s", series: ["cacheWrite", "input"], context: ["cacheRead"], stacked: true, format: formatNumber, unit: "/s" },
-      { title: "Generated · est. tokens/s", series: ["output"], format: formatNumber, unit: "/s" },
+      { title: "Output · est. tokens/s", series: ["output"], format: formatNumber, unit: "/s" },
     ]
     : [
       { title: "Uploaded · per second", series: ["bytesUp"], format: formatBytes, unit: "/s" },
@@ -53,16 +53,21 @@ export function createDashboard({ client, overview }) {
       context: (p.context ?? []).map(key => ({ key, label: SERIES[key].label })) })), { live: LIVE_RANGES.has(range) });
     renderLegend();
   };
+  // Drawn series first, then context series, each with its total for the
+  // visible range; the full values table sits collapsed under the chart.
   function renderLegend() {
-    const legend = $("dash-legend");
-    legend.replaceChildren();
-    for (const pane of panes()) for (const key of pane.series) {
-      const item = element("span", undefined, "legend-item");
+    const panesNow = panes();
+    const keys = [...panesNow.flatMap(p => p.series), ...panesNow.flatMap(p => p.context ?? [])];
+    $("dash-legend").replaceChildren(...keys.map(key => {
+      const drawn = panesNow.some(p => p.series.includes(key));
+      const item = element("span", undefined, drawn ? "legend-item" : "legend-item context");
+      item.dataset.key = key;
       const swatch = element("span", undefined, "swatch");
-      swatch.style.background = color(SERIES[key].slot);
-      item.append(swatch, document.createTextNode(SERIES[key].label));
-      legend.append(item);
-    }
+      if (drawn) swatch.style.background = color(SERIES[key].slot);
+      else item.title = "Not drawn: nearly all of what is sent, so it would flatten the rest";
+      item.append(swatch, document.createTextNode(SERIES[key].label), element("b", "–"));
+      return item;
+    }));
   }
 
   function subscribe() {
@@ -133,7 +138,7 @@ export function createDashboard({ client, overview }) {
     const stats = [
       ["Active streams", s ? String(s.active) : "0"],
       ["Sent", s ? `${formatNumber(sent(s.rate))}/s` : "0/s"],
-      ["Generated", s ? `${formatNumber(s.rate.output)}/s` : "0/s"],
+      ["Output", s ? `${formatNumber(s.rate.output)}/s` : "0/s"],
       ["Cache hit · 1 min", s && sent(s.minute) ? `${Math.round((s.minute.cacheRead / sent(s.minute)) * 100)}%` : "–"],
       ["Requests · 1 min", s ? String(s.minute.requests) : "0"],
       ["Errors · 1 min", s ? String(s.minute.errors) : "0"],
@@ -241,6 +246,8 @@ export function createDashboard({ client, overview }) {
         row.append(element("td", value === null ? "–" : `${format(value)}/s`));
       }
       row.append(element("td", format(total)));
+      const legendTotal = $("dash-legend").querySelector(`[data-key="${key}"] b`);
+      if (legendTotal) legendTotal.textContent = values.length ? format(total) : "–";
       return row;
     }));
   }

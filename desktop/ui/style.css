@@ -159,6 +159,12 @@ code { font-family: ui-monospace, monospace; font-size: 12px; }
 .chart figcaption { margin-top: 4px; font-size: 11px; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; margin: 0 0 4px 4px; }
 .legend-item, .tooltip-row { display: inline-flex; align-items: center; gap: 6px; }
+/* Totals keep a fixed width so the legend does not shift as they change. */
+.legend b { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 4ch; }
+.legend .context { color: var(--muted); }
+.chart-values { margin-top: 4px; }
+.chart-values summary { font-size: 12px; }
+.chart-values .data-table { margin-top: 4px; }
 .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 .chart-frame { position: relative; }
 .chart-frame canvas { display: block; width: 100%; height: 240px; }
