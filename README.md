@@ -33,8 +33,10 @@ app is signed and notarized, and updates itself after you confirm.
 
 Closing the window keeps the router running in the tray; **Quit** stops it.
 The **Dashboard** tab shows live traffic per account and pool: active streams,
-tokens sent and generated, cache hits and recent requests, with history from
-2 minutes to 30 days. See the [desktop guide](desktop/README.md) for details.
+tokens sent and output, cache hits, and recent requests or sessions, with
+history from 2 minutes to 30 days. History is kept in `history.db` in the state
+directory for 30 days by default, adjustable on the App tab. See the
+[desktop guide](desktop/README.md) for details.
 
 ## How it works
 

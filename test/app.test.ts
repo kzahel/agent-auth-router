@@ -224,6 +224,13 @@ test("web dashboard: exact host and origin, single-use codes, sessions and logou
   assert.equal((await httpRequest(origin, "/v1/app/metrics/snapshot", { method: "POST", headers: { host, cookie, origin, "content-type": "text/plain" }, body: "{}" })).status, 415);
 
   assert.equal((await ownerRequest(store, "dashboard/sessions")).sessions.length, 1);
+  // History lives in the router's database; the UI reads sessions and sets retention.
+  assert.deepEqual(await ownerRequest(store, "history/settings"), { retentionDays: 30, maxRetentionDays: 3650 });
+  await assert.rejects(ownerRequest(store, "history/set-retention", { retentionDays: 0 }), /whole number/);
+  assert.equal((await ownerRequest(store, "history/set-retention", { retentionDays: 14 })).retentionDays, 14);
+  assert.deepEqual(await ownerRequest(store, "sessions/recent", { range: "24h", scope: "all" }), { stored: true, sessions: [] });
+  await assert.rejects(ownerRequest(store, "sessions/recent", { range: "1y" }), /invalid range/);
+  assert.equal(statSync(join(store.dir, "history.db")).mode & 0o777, 0o600);
   const logout = await httpRequest(origin, "/auth/logout", { method: "POST", headers: { host, cookie, origin, "content-type": "application/json" }, body: "{}" });
   assert.match(String(logout.headers["set-cookie"]), /Max-Age=0/);
   assert.equal((await webSocket(origin, { host, cookie, origin })).status, 401, "logout ends the session on the server");

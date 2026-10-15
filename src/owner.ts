@@ -9,7 +9,8 @@ import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { COUNTERS, isMetric, isRange, isScope, type Metrics } from "./metrics.ts";
+import { MAX_RETENTION_DAYS } from "./history.ts";
+import { COUNTERS, isMetric, isRange, isScope, RANGES, type Metrics } from "./metrics.ts";
 import { ControlError, type ControlRegistry } from "./control.ts";
 import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
@@ -279,6 +280,23 @@ export class OwnerService {
     if (operation === "requests/recent") {
       if (body.after !== undefined && !Number.isSafeInteger(body.after)) throw new ControlError(400, "invalid after");
       return { requests: this.metrics().recentRequests(body.after as number | undefined) };
+    }
+    if (operation === "sessions/recent") {
+      // Sessions active within the dashboard's selected range, narrowed by its scope.
+      const range = body.range ?? "1h", scope = body.scope ?? "all";
+      if (!isRange(range)) throw new ControlError(400, "invalid range");
+      if (!isScope(scope)) throw new ControlError(400, "invalid scope");
+      const since = Date.now() - RANGES[range].count * RANGES[range].bucketMs;
+      const filter = scope.startsWith("account:") ? { accountId: scope.slice(8) } : scope.startsWith("pool:") ? { poolId: scope.slice(5) } : {};
+      return { stored: this.metrics().retentionDays() !== null, sessions: this.metrics().sessions(since, filter) };
+    }
+    if (operation === "history/settings") return { retentionDays: this.metrics().retentionDays(), maxRetentionDays: MAX_RETENTION_DAYS };
+    if (operation === "history/set-retention") {
+      const days = body.retentionDays;
+      if (!Number.isInteger(days) || (days as number) < 1 || (days as number) > MAX_RETENTION_DAYS) throw new ControlError(400, `retentionDays must be a whole number from 1 to ${MAX_RETENTION_DAYS}`);
+      if (this.metrics().retentionDays() === null) throw new ControlError(409, "history is not stored on this router");
+      this.metrics().setRetentionDays(days as number);
+      return { retentionDays: this.metrics().retentionDays(), maxRetentionDays: MAX_RETENTION_DAYS };
     }
     if (operation === "accounts/login-command") {
       const account = this.account(body);

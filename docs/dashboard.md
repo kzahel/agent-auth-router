@@ -97,12 +97,18 @@ was not running is a gap, not zero. Only complete buckets are reported.
 | 24 hours | 5 min | 288 | yes |
 | 30 days | 1 h | 720 | yes |
 
-The 24-hour and 30-day tiers are saved to `metrics.json` (private, atomic) at
-most once a minute and on shutdown. Only covered, non-zero buckets are
-written. A corrupt or insecure file is logged and ignored. The last 200
-requests are kept in memory with metadata only: times, client name, account,
-pool, binding, the client's session id, provider, route, model, status,
-outcome, bytes and token figures. Completed entries, quota observations and
+The 24-hour and 30-day tiers are saved to `history.db`, a private SQLite
+database in the state directory, once a minute and on shutdown; only buckets
+entered or changed since the last save are written, and only covered,
+non-zero ones. The same database holds every finished request, with metadata
+only: times, client name, account, pool, binding, the client's session id,
+provider, route, model, status, outcome, bytes and token figures. The last
+200 are listed again after a restart, and sessions are totalled from these
+rows on demand. It also keeps the last quota reading per account for display.
+History older than the retention (30 days by default, 1 to 3650 on the App
+tab) is deleted at startup, daily and when the setting changes. A corrupt or
+insecure database is logged and left alone; the router then charts live
+traffic only. Completed entries, quota observations and
 binding decisions also go to the [event log](events.md), which keeps full
 resolution where these tiers keep sums and last samples.
 

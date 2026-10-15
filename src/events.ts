@@ -4,13 +4,15 @@
 // paths. Best effort: a failing log never affects a relay or an admission.
 
 import { appendFileSync, lstatSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
+import { DEFAULT_RETENTION_DAYS } from "./history.ts";
 import { join } from "node:path";
 import { errorText, log } from "./log.ts";
 import { ensurePrivateDir } from "./state.ts";
 import type { Provider } from "./types.ts";
 
 export const EVENT_LOG_VERSION = 1;
-export const EVENT_RETENTION_DAYS = 90;
+/** The history default; a running router passes its configured retention. */
+export const EVENT_RETENTION_DAYS = DEFAULT_RETENTION_DAYS;
 const FLUSH_INTERVAL_MS = 5_000;
 const MAX_PENDING_LINES = 5_000;
 const FILE = /^(\d{4})-(\d{2})-(\d{2})\.jsonl$/;
@@ -77,7 +79,8 @@ export class EventLog {
     this.disabled = true;
     this.pending = [];
   }
-  private prune(retentionDays: number): void {
+  /** Deletes day files older than the retention period. */
+  prune(retentionDays: number): void {
     mkdirSync(this.dir, { recursive: true });
     const cutoff = this.now() - retentionDays * 86_400_000;
     for (const name of readdirSync(this.dir)) {

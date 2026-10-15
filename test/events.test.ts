@@ -39,11 +39,13 @@ describe("event log", () => {
     const dir = join(tempDir(), "events");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const now = Date.UTC(2026, 9, 6);
-    writeFileSync(join(dir, "2026-07-01.jsonl"), "{}\n", { mode: 0o600 });
-    writeFileSync(join(dir, "2026-07-10.jsonl"), "{}\n", { mode: 0o600 });
+    writeFileSync(join(dir, "2026-09-01.jsonl"), "{}\n", { mode: 0o600 });
+    writeFileSync(join(dir, "2026-09-10.jsonl"), "{}\n", { mode: 0o600 });
     writeFileSync(join(dir, "notes.txt"), "keep", { mode: 0o600 });
     const log = new EventLog({ dir, now: () => now });
-    assert.deepEqual(readdirSync(dir).sort(), ["2026-07-10.jsonl", "notes.txt"], "files older than 90 days go; others stay");
+    assert.deepEqual(readdirSync(dir).sort(), ["2026-09-10.jsonl", "notes.txt"], "files older than 30 days go; others stay");
+    log.prune(20);
+    assert.deepEqual(readdirSync(dir).sort(), ["notes.txt"], "a shorter retention applies at once");
     const target = join(dir, "elsewhere.jsonl");
     writeFileSync(target, "", { mode: 0o600 });
     symlinkSync(target, log.fileFor(now));

@@ -69,8 +69,9 @@ checked against data before being fixed in code.
 - The directory and files are private (0700 and 0600). A day file that is a
   symlink, not a regular file, not owned by this user, or group/world
   accessible disables the log for the process with one log line.
-- Day files older than 90 days are deleted at startup. Nothing else in the
-  directory is touched.
+- Day files older than the history retention (30 days unless changed on the
+  App tab) are deleted at startup, daily, and when the retention changes.
+  Nothing else in the directory is touched.
 - Writing is best effort. A failure disables the log and never affects a
   relay or an admission.
 

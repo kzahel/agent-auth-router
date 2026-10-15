@@ -3,13 +3,14 @@ import type { QuotaReadOptions } from "./quotas.ts";
 import { startControl } from "./control.ts";
 import { startDashboard, type Dashboard } from "./dashboard.ts";
 import { EventLog, eventLogEnabled } from "./events.ts";
+import { HistoryStore } from "./history.ts";
 import { Metrics } from "./metrics.ts";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { accountHelper } from "./helpers.ts";
-import { log } from "./log.ts";
+import { errorText, log } from "./log.ts";
 import type { OwnerLifecycle } from "./owner.ts";
 import { createRouter, type RouterServer } from "./server.ts";
 import { LiveClients, type StateStore } from "./state.ts";
@@ -50,9 +51,13 @@ export interface DashboardOptions { port: number; uiDir?: string; dev?: boolean 
 
 export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}, lifecycle: { desktop?: boolean; recoverStaleSocket?: boolean; cancelProcesses?: () => Promise<void>; onClosed?: () => void; dashboard?: DashboardOptions; eventLog?: boolean; restart?: OwnerLifecycle["restart"] } = {}): Promise<RunningRouter> {
   store.init();
-  const metrics = new Metrics({ path: join(store.dir, "metrics.json") });
-  // Default on; AAR_EVENT_LOG=0 or --no-event-log switches it off.
-  const events = (lifecycle.eventLog ?? eventLogEnabled()) ? new EventLog({ dir: join(store.dir, "events") }) : undefined;
+  // History is best effort: without it the router still routes and charts live traffic.
+  let history: HistoryStore | undefined;
+  try { history = new HistoryStore(join(store.dir, "history.db")); } catch (error) { log("history.open_failed", { error: errorText(error) }); }
+  // Default on; AAR_EVENT_LOG=0 or --no-event-log switches it off. It shares the history retention.
+  const events = (lifecycle.eventLog ?? eventLogEnabled()) ? new EventLog({ dir: join(store.dir, "events"), ...(history ? { retentionDays: history.retentionDays() } : {}) }) : undefined;
+  const metrics = new Metrics(history ? { history } : {});
+  metrics.onPrune = days => events?.prune(days);
   if (events) metrics.onEvent(({ entry }) => { if (entry.outcome !== "active") { const { id: _id, ...rest } = entry; events.write("request", rest); } });
   const config = store.loadConfig();
   const origin = `http://${config.listen.host.includes(":") ? `[${config.listen.host}]` : config.listen.host}:${config.listen.port}`;
@@ -73,6 +78,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
       await stopped;
       await cancelling;
       metrics.close();
+      history?.close();
       events?.write("router", { action: "stop", routerId: control?.registry.routerId ?? null, pid: process.pid });
       events?.close();
       lifecycle.onClosed?.();
@@ -117,7 +123,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
         owner.extensions.dashboard = dashboard;
       }
     }
-    catch (error) { router.server.close(); await control?.close(); metrics.close(); events?.close(); throw error; }
+    catch (error) { router.server.close(); await control?.close(); metrics.close(); history?.close(); events?.close(); throw error; }
   }
   log("router.listening", { origin: boundOrigin, accounts: coordinators.size });
 

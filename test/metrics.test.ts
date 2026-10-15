@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
+import { HistoryStore } from "../src/history.ts";
 import { Metrics } from "../src/metrics.ts";
-import { captureLogs, tempDir } from "./support.ts";
+import { tempDir } from "./support.ts";
 
 const usage = (values: Partial<Record<"input" | "cacheRead" | "cacheWrite" | "output" | "reasoning", number>>) =>
   ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, ...values });
@@ -65,22 +66,24 @@ describe("metrics", () => {
     assert.deepEqual(metrics.recentRequests(1).map((e) => e.id), [2]);
   });
 
-  test("persisted tiers survive a restart with the downtime left uncovered", () => {
+  test("stored tiers, quota readings and recent requests survive a restart; downtime stays a gap", () => {
     const dir = tempDir();
-    const path = join(dir, "metrics.json");
+    const path = join(dir, "history.db");
     let now = 3_000_000_000_000;
-    const first = new Metrics({ path, now: () => now });
-    const handle = first.begin({ provider: "claude", route: "/v1/messages", accountId: "work", client: "c", tapped: true });
+    const store = new HistoryStore(path);
+    const first = new Metrics({ history: store, now: () => now });
+    const handle = first.begin({ provider: "claude", route: "/v1/messages", accountId: "work", client: "c", sessionId: "session-1", tapped: true });
     handle.usage(usage({ cacheRead: 5000 }), false, true);
     handle.end(200);
     first.quota("work", [{ bucket: "five_hour", windowMinutes: 300, usedPercent: 42, remainingPercent: 58, resetsAt: null }]);
     now += 600_000;
     first.close();
+    store.close();
     assert.equal(statSync(path).mode & 0o777, 0o600);
-    assert.equal(readFileSync(path, "utf8").includes("work"), true);
     // Two hours later the router starts again.
     now += 2 * 3_600_000;
-    const second = new Metrics({ path, now: () => now });
+    const reopened = new HistoryStore(path);
+    const second = new Metrics({ history: reopened, now: () => now });
     const day = second.history("24h", "account:work", ["cacheRead", "quota"]);
     const values = day.series.cacheRead!;
     assert.equal(values.filter((v) => v === 5000).length, 1);
@@ -88,20 +91,84 @@ describe("metrics", () => {
     const lastCovered = covered.lastIndexOf(true);
     assert.ok(lastCovered < values.length - 20, "the two hours offline are gaps");
     assert.equal(day.series["quota:five_hour"]!.filter((v) => v === 42).length, 1);
+    assert.equal(second.history("2m", "account:work", ["cacheRead"]).series.cacheRead!.every((v) => v === null || v === 0), true, "short tiers are not persisted");
     assert.deepEqual(second.snapshot().quota.work?.map((w) => w.usedPercent), [42], "the last reading is kept for display");
     assert.equal(second.snapshot().quotaAt.work, 3_000_000_000_000, "with the time it was observed");
-    assert.equal(second.history("2m", "account:work", ["cacheRead"]).series.cacheRead!.every((v) => v === null || v === 0), true, "short tiers are not persisted");
+    const [restored] = second.recentRequests();
+    assert.equal(restored?.sessionId, "session-1", "finished requests are listed again after a restart");
+    assert.equal(restored?.usage.cacheRead, 5000);
     second.close();
-    const saved = JSON.parse(readFileSync(path, "utf8"));
-    saved.quota.other = { at: now, windows: [{ bucket: "bad/bucket", windowMinutes: null, usedPercent: 1, remainingPercent: 99, resetsAt: null }] };
-    saved.quota.future = { at: now + 1, windows: saved.quota.work.windows };
-    writeFileSync(path, JSON.stringify(saved));
-    const third = new Metrics({ path, now: () => now });
-    assert.deepEqual(Object.keys(third.snapshot().quota), ["work"], "malformed or future readings are dropped");
-    third.close();
-    const logs = captureLogs();
-    writeFileSync(path, "{ not json");
-    assert.doesNotThrow(() => new Metrics({ path, now: () => now }).close(), "a corrupt file is logged, not fatal");
-    assert.match(logs.join("\n"), /metrics.load_failed/);
+    reopened.close();
+  });
+
+  test("sessions total every stored request; scope narrows which sessions qualify", () => {
+    let now = 4_000_000_000_000;
+    const store = new HistoryStore(join(tempDir(), "history.db"));
+    const metrics = new Metrics({ history: store, now: () => now });
+    const request = (accountId: string, sessionId: string | undefined, output: number, status = 200, model = "m1") => {
+      const handle = metrics.begin({ provider: "claude", route: "/v1/messages", accountId, client: "laptop", sessionId, tapped: true });
+      handle.model(model);
+      handle.usage(usage({ cacheRead: 100, cacheWrite: 10, output }), false, true);
+      now += 1000;
+      handle.end(status);
+    };
+    request("a", "s-one", 5);
+    now += 3_600_000;
+    request("b", "s-one", 7, 500, "m2");
+    request("a", "s-two", 11);
+    request("a", undefined, 13);
+    const recent = metrics.sessions(now - 600_000);
+    assert.deepEqual(recent.map((s) => s.sessionId), ["s-two", "s-one"], "newest activity first; requests without a session are left out");
+    const one = recent[1]!;
+    assert.equal(one.requests, 2, "totals include requests from before the window");
+    assert.equal(one.errors, 1);
+    assert.deepEqual(one.usage, { input: 0, cacheRead: 200, cacheWrite: 20, output: 12, reasoning: 0 });
+    assert.deepEqual(one.accountIds, ["b", "a"], "most recently used account first");
+    assert.equal(one.model, "m2");
+    assert.deepEqual(metrics.sessions(now - 600_000, { accountId: "b" }).map((s) => s.sessionId), ["s-one"]);
+    assert.deepEqual(metrics.sessions(now - 600_000, { poolId: "11111111-1111-4111-8111-111111111111" }), []);
+    metrics.close();
+    store.close();
+  });
+
+  test("retention deletes old history and is bounded; without a store nothing is kept", () => {
+    let now = 5_000_000_000_000;
+    const store = new HistoryStore(join(tempDir(), "history.db"));
+    const metrics = new Metrics({ history: store, now: () => now });
+    const pruned: number[] = [];
+    metrics.onPrune = (days) => pruned.push(days);
+    assert.equal(metrics.retentionDays(), 30, "30 days by default");
+    const handle = metrics.begin({ provider: "claude", route: "/v1/messages", accountId: "a", client: "c", sessionId: "old", tapped: true });
+    handle.usage(usage({ output: 1 }), false, true);
+    handle.end(200);
+    metrics.save();
+    now += 10 * 86_400_000;
+    metrics.setRetentionDays(30);
+    assert.equal(store.recentRequests(10).length, 1, "within retention");
+    metrics.setRetentionDays(7);
+    assert.deepEqual(pruned, [30, 7]);
+    assert.equal(store.recentRequests(10).length, 0, "older than the new retention");
+    assert.equal(store.buckets("30d", 0).length, 0);
+    assert.throws(() => metrics.setRetentionDays(0), RangeError);
+    assert.throws(() => metrics.setRetentionDays(1.5), RangeError);
+    metrics.close();
+    store.close();
+    const memory = new Metrics();
+    assert.equal(memory.retentionDays(), null);
+    assert.deepEqual(memory.sessions(0), []);
+  });
+
+  test("an unreadable or exposed history database is refused, not overwritten", () => {
+    const dir = tempDir();
+    const corrupt = join(dir, "corrupt.db");
+    writeFileSync(corrupt, "not a database", { mode: 0o600 });
+    assert.throws(() => new HistoryStore(corrupt));
+    assert.equal(readFileSync(corrupt, "utf8"), "not a database");
+    if (process.platform !== "win32") {
+      const exposed = join(dir, "exposed.db");
+      new HistoryStore(exposed).close();
+      chmodSync(exposed, 0o644);
+      assert.throws(() => new HistoryStore(exposed), /insecure/);
+    }
   });
 });

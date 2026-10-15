@@ -4,10 +4,9 @@
 // Metadata only: no request content, credentials or profile paths.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import type { HistoryStore, SessionSummary } from "./history.ts";
 import { log, errorText } from "./log.ts";
 import type { QuotaWindow } from "./quotas.ts";
-import { writePrivateJson } from "./state.ts";
 import type { Provider } from "./types.ts";
 import { USAGE_FIELDS, zeroUsage, type UsageFigures } from "./usage.ts";
 
@@ -32,6 +31,8 @@ const METRIC = /^(requests|errors|input|cacheRead|cacheWrite|output|reasoning|by
 export const isMetric = (value: unknown): value is string => typeof value === "string" && METRIC.test(value);
 const RECENT_LIMIT = 200;
 const SAVE_INTERVAL_MS = 60_000;
+const PRUNE_INTERVAL_MS = 86_400_000;
+const PERSISTED = Object.entries(RANGES).filter(([, r]) => r.persist) as [RangeName, (typeof RANGES)[RangeName]][];
 
 class Tier {
   readonly bucketMs: number;
@@ -159,8 +160,6 @@ export interface RequestHandle {
 
 export type MetricsEvent = { type: "request"; entry: RequestEntry };
 
-interface PersistedTier { head: number; covered: [number, number][]; series: Record<string, [number, number][]> }
-interface PersistedMetrics { version: 1; savedAt: number; scopes: Record<string, Partial<Record<RangeName, PersistedTier>>>; quota?: Record<string, LatestQuota> }
 /** The last windows seen per account, kept across restarts for display only; pool evidence never reads it. */
 interface LatestQuota { at: number; windows: QuotaWindow[] }
 const MAX_LATEST_QUOTA = 256;
@@ -182,20 +181,23 @@ export class Metrics {
   private readonly latestQuota = new Map<string, LatestQuota>();
   private readonly listeners = new Set<(event: MetricsEvent) => void>();
   private readonly now: () => number;
-  private readonly path: string | undefined;
+  private readonly store: HistoryStore | undefined;
+  /** Per scope and persisted tier, the oldest bucket not yet known to be saved. */
+  private readonly unsaved = new Map<string, number>();
   private seq = 0;
-  private dirty = false;
-  private timer: NodeJS.Timeout | undefined;
+  private timers: NodeJS.Timeout[] = [];
+  /** Called after history is pruned, with the retention in days. */
+  onPrune?: (retentionDays: number) => void;
   /** Changes when history restarts, so clients refetch instead of appending. */
   readonly epoch = randomUUID();
-  constructor(options: { path?: string; now?: () => number } = {}) {
+  constructor(options: { history?: HistoryStore; now?: () => number } = {}) {
     this.now = options.now ?? Date.now;
-    this.path = options.path;
+    this.store = options.history;
     this.scope("all");
-    if (this.path) {
-      try { this.load(this.path); } catch (error) { log("metrics.load_failed", { error: errorText(error) }); }
-      this.timer = setInterval(() => this.save(), SAVE_INTERVAL_MS);
-      this.timer.unref();
+    if (this.store) {
+      try { this.load(this.store); } catch (error) { log("metrics.load_failed", { error: errorText(error) }); }
+      this.timers = [setInterval(() => this.save(), SAVE_INTERVAL_MS), setInterval(() => this.prune(), PRUNE_INTERVAL_MS)];
+      for (const timer of this.timers) timer.unref();
     }
   }
   private scope(key: string): Scope {
@@ -204,6 +206,7 @@ export class Metrics {
       const now = this.now();
       scope = Object.fromEntries(Object.entries(RANGES).map(([name, r]) => [name, new Tier(r.bucketMs, r.count, now)])) as Scope;
       this.scopes.set(key, scope);
+      for (const [name] of PERSISTED) this.unsaved.set(`${key}|${name}`, scope[name].head);
     }
     return scope;
   }
@@ -211,7 +214,6 @@ export class Metrics {
     if (!value) return;
     const now = this.now();
     for (const key of scopes) for (const tier of Object.values(this.scope(key))) tier.add(metric, value, now);
-    this.dirty = true;
   }
   onEvent(listener: (event: MetricsEvent) => void): () => void {
     this.listeners.add(listener);
@@ -259,6 +261,11 @@ export class Metrics {
         entry.status = status;
         entry.outcome = outcome === "client_closed" ? "client_closed" : status >= 400 ? "error" : "ok";
         this.emit(entry);
+        if (this.store) {
+          const { id: _id, endedAt, outcome: finished, ...stored } = entry;
+          try { this.store.putRequest({ ...stored, endedAt: endedAt!, outcome: finished as "ok" | "error" | "client_closed" }); }
+          catch (error) { log("metrics.request_save_failed", { error: errorText(error) }); }
+        }
       },
     };
   }
@@ -269,14 +276,13 @@ export class Metrics {
       this.latestQuota.delete(accountId);
       this.latestQuota.set(accountId, { at: now, windows: windows.map(w => ({ ...w })) });
       if (this.latestQuota.size > MAX_LATEST_QUOTA) this.latestQuota.delete(this.latestQuota.keys().next().value!);
-      this.dirty = true;
+      try { this.store?.putQuota(accountId, now, windows); } catch (error) { log("metrics.quota_save_failed", { error: errorText(error) }); }
     }
     for (const w of windows) {
       if (w.usedPercent === null || !Number.isFinite(w.usedPercent)) continue;
       const metric = `quota:${w.bucket}`;
       if (!isMetric(metric)) continue;
       for (const tier of Object.values(scope)) tier.gauge(metric, Math.max(0, Math.min(100, w.usedPercent)), now);
-      this.dirty = true;
     }
   }
   scopeKeys(): string[] { return [...this.scopes.keys()]; }
@@ -304,78 +310,75 @@ export class Metrics {
   recentRequests(after = 0): RequestEntry[] {
     return this.recent.filter(e => e.id > after).reverse().map(e => structuredClone(e));
   }
-  private load(path: string): void {
-    if (!existsSync(path)) return;
-    const stat = lstatSync(path);
-    if (!stat.isFile() || (process.platform !== "win32" && (stat.uid !== process.getuid?.() || (stat.mode & 0o077)))) throw new Error("insecure metrics state");
-    const value = JSON.parse(readFileSync(path, "utf8")) as PersistedMetrics;
-    if (value?.version !== 1 || !value.scopes || typeof value.scopes !== "object") throw new Error("unsupported metrics state");
-    const now = this.now();
-    for (const [key, ranges] of Object.entries(value.scopes)) {
-      if (!isScope(key) || !ranges || typeof ranges !== "object") continue;
-      const scope = this.scope(key);
-      for (const [name, saved] of Object.entries(ranges)) {
-        if (!isRange(name) || !RANGES[name].persist || !saved || !Number.isSafeInteger(saved.head)) continue;
-        const tier = scope[name];
-        if (saved.head > tier.head) continue;
-        tier.head = saved.head;
-        tier.covered.fill(0);
-        const live = (b: number) => Number.isSafeInteger(b) && b <= saved.head && b > saved.head - tier.count;
-        for (const [from, to] of Array.isArray(saved.covered) ? saved.covered : []) {
-          for (let b = Math.max(from, saved.head - tier.count + 1); live(b) && b <= to; b++) tier.covered[((b % tier.count) + tier.count) % tier.count] = 1;
-        }
-        for (const [metric, points] of Object.entries(saved.series ?? {})) {
-          if (!isMetric(metric) || !Array.isArray(points)) continue;
-          for (const point of points) {
-            if (!Array.isArray(point) || !live(point[0]) || typeof point[1] !== "number" || !Number.isFinite(point[1])) continue;
-            tier.restore(metric, point[0], point[1]);
-          }
-        }
-        // Time the router was not running stays uncovered.
-        tier.advance(now, false);
-      }
-    }
-    for (const [id, saved] of Object.entries(value.quota ?? {}).slice(-MAX_LATEST_QUOTA)) {
-      if (id.length > 200 || !saved || !Number.isSafeInteger(saved.at) || saved.at > now || !Array.isArray(saved.windows)) continue;
-      const windows = saved.windows.slice(0, 32).map(persistedWindow).filter(w => w !== null);
-      if (windows.length) this.latestQuota.set(id, { at: saved.at, windows });
-    }
+  /** Sessions with activity since `since`; empty without a history store. */
+  sessions(since: number, filter: { accountId?: string; poolId?: string } = {}): SessionSummary[] {
+    return this.store?.sessions(since, filter) ?? [];
   }
-  save(): void {
-    if (!this.path || !this.dirty) return;
-    const scopes: PersistedMetrics["scopes"] = {};
-    for (const [key, scope] of this.scopes) {
-      const ranges: Partial<Record<RangeName, PersistedTier>> = {};
-      for (const name of Object.keys(RANGES) as RangeName[]) {
-        if (!RANGES[name].persist) continue;
-        const tier = scope[name], series: Record<string, [number, number][]> = {};
-        tier.advance(this.now());
-        for (const [metric, values] of tier.series) {
-          const points: [number, number][] = [];
-          for (let b = tier.head - tier.count + 1; b <= tier.head; b++) {
-            const i = ((b % tier.count) + tier.count) % tier.count;
-            if (tier.covered[i] && values[i] !== 0 && !Number.isNaN(values[i]!)) points.push([b, values[i]!]);
-          }
-          if (points.length) series[metric] = points;
-        }
-        const covered: [number, number][] = [];
-        for (let b = tier.head - tier.count + 1; b <= tier.head; b++) {
-          if (!tier.covered[((b % tier.count) + tier.count) % tier.count]) continue;
-          const last = covered.at(-1);
-          if (last && last[1] === b - 1) last[1] = b; else covered.push([b, b]);
-        }
-        ranges[name] = { head: tier.head, covered, series };
-      }
-      scopes[key] = ranges;
-    }
+  retentionDays(): number | null { return this.store?.retentionDays() ?? null; }
+  setRetentionDays(days: number): void {
+    if (!this.store) throw new Error("history is not stored");
+    this.store.setRetentionDays(days);
+    this.prune();
+  }
+  /** Deletes stored history past the retention period. */
+  prune(): void {
+    if (!this.store) return;
     try {
-      writePrivateJson(this.path, { version: 1, savedAt: this.now(), scopes, quota: Object.fromEntries(this.latestQuota) } satisfies PersistedMetrics);
-      this.dirty = false;
+      this.store.prune(this.now(), Object.fromEntries(PERSISTED.map(([name, r]) => [name, r.bucketMs])));
+      this.onPrune?.(this.store.retentionDays());
+    } catch (error) { log("metrics.prune_failed", { error: errorText(error) }); }
+  }
+  private load(history: HistoryStore): void {
+    const now = this.now();
+    for (const [name, range] of PERSISTED) {
+      const head = Math.floor(now / range.bucketMs), after = head - range.count;
+      const tiers = (key: string) => isScope(key) ? this.scope(key)[name] : undefined;
+      const restored = new Set<string>();
+      // Covered buckets are those the router was running for; downtime stays a gap.
+      for (const { scope, bucket } of history.coverage(name, after)) {
+        const tier = tiers(scope);
+        if (!tier || bucket > tier.head) continue;
+        if (!restored.has(scope)) { tier.covered.fill(0); tier.covered[tier.head % tier.count] = 1; restored.add(scope); }
+        tier.covered[((bucket % tier.count) + tier.count) % tier.count] = 1;
+      }
+      for (const row of history.buckets(name, after)) {
+        if (!isMetric(row.metric) || !Number.isFinite(row.value)) continue;
+        tiers(row.scope)?.restore(row.metric, row.bucket, row.value);
+      }
+    }
+    for (const { accountId, at, windows } of history.latestQuota().slice(-MAX_LATEST_QUOTA)) {
+      if (accountId.length > 200 || !Number.isSafeInteger(at) || at > now || !Array.isArray(windows)) continue;
+      const valid = windows.slice(0, 32).map(persistedWindow).filter(w => w !== null);
+      if (valid.length) this.latestQuota.set(accountId, { at, windows: valid });
+    }
+    for (const stored of history.recentRequests(RECENT_LIMIT).reverse()) this.recent.push({ ...stored, id: ++this.seq });
+    this.prune();
+  }
+  /** Writes buckets entered or changed since the last save, and their coverage. */
+  save(): void {
+    if (!this.store) return;
+    const now = this.now();
+    try {
+      this.store.transaction(() => {
+        for (const [key, scope] of this.scopes) for (const [name] of PERSISTED) {
+          const tier = scope[name], id = `${key}|${name}`;
+          tier.advance(now);
+          const from = Math.max(this.unsaved.get(id) ?? tier.head, tier.head - tier.count + 1);
+          for (let b = from; b <= tier.head; b++) {
+            const i = ((b % tier.count) + tier.count) % tier.count;
+            if (!tier.covered[i]) continue;
+            this.store!.putCoverage(key, name, b);
+            for (const [metric, values] of tier.series) if (values[i] !== 0 && !Number.isNaN(values[i]!)) this.store!.putBucket(key, name, b, metric, values[i]!);
+          }
+          // The head bucket can still change, so it is saved again next time.
+          this.unsaved.set(id, tier.head);
+        }
+      });
     } catch (error) { log("metrics.save_failed", { error: errorText(error) }); }
   }
   close(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = undefined;
+    for (const timer of this.timers) clearInterval(timer);
+    this.timers = [];
     this.save();
   }
 }

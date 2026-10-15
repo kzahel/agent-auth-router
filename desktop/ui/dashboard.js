@@ -33,7 +33,9 @@ export function createDashboard({ client, overview }) {
   if (!RANGES.some(([key]) => key === range)) range = "2m";
   let scope = localStorage.getItem("dash-scope") ?? "all";
   let units = localStorage.getItem("dash-units") === "bytes" ? "bytes" : "tokens";
+  let activity = localStorage.getItem("dash-activity") === "sessions" ? "sessions" : "requests";
   let live, requests = [], visible = false, lastEvent = 0;
+  let sessions = [], sessionsStored = true, sessionsTimer;
   const sparklines = new Map();
   const stop = [];
 
@@ -76,6 +78,7 @@ export function createDashboard({ client, overview }) {
     for (const off of stop.splice(0)) off();
     if (!visible) return;
     configure();
+    loadSessions(0);
     const metrics = units === "tokens" ? ["cacheRead", "cacheWrite", "input", "output"] : ["bytesUp", "bytesDown"];
     const history = { range, scope, metrics };
     stop.push(client.subscribe("history", history, (message) => {
@@ -98,8 +101,10 @@ export function createDashboard({ client, overview }) {
         if (index >= 0) requests[index] = message.data; else requests.unshift(message.data);
         // As many as the router keeps, so a scoped view still has history.
         requests = requests.slice(0, 200);
+        if (message.data.outcome !== "active") loadSessions();
       }
       renderRequests();
+      renderSessions();
     }));
     const quota = scope.startsWith("account:");
     $("dash-quota").hidden = !quota;
@@ -207,11 +212,65 @@ export function createDashboard({ client, overview }) {
     return !!overview()?.pools.find(p => `pool:${p.id}` === scope)?.accountIds.includes(accountId);
   }
 
+  function renderActivity() {
+    $("dash-activity-title").textContent = activity === "sessions" ? "Recent sessions" : "Recent requests";
+    for (const button of $("dash-activity").children) button.setAttribute("aria-pressed", String(button.dataset.view === activity));
+    renderRequests();
+    renderSessions();
+  }
+
+  // Sessions are totalled by the router from stored requests: fetched for the
+  // selected range and scope, and again shortly after each request finishes.
+  function loadSessions(delay = 1000) {
+    if (!visible || activity !== "sessions") return;
+    clearTimeout(sessionsTimer);
+    sessionsTimer = setTimeout(async () => {
+      try {
+        const result = await client.call("sessions/recent", { range, scope });
+        sessions = result.sessions;
+        sessionsStored = result.stored;
+        renderSessions();
+      } catch { /* The next finished request or control change retries. */ }
+    }, delay);
+  }
+
+  function renderSessions() {
+    const shown = activity === "sessions";
+    $("dash-sessions-empty").textContent = sessionsStored ? "No sessions in this range." : "Sessions need the router's history database, which could not be opened.";
+    $("dash-sessions-empty").hidden = !shown || sessions.length > 0;
+    $("dash-sessions").hidden = !shown || !sessions.length;
+    if (!shown) return;
+    const streaming = new Set(requests.filter(r => r.outcome === "active" && r.sessionId).map(r => r.sessionId));
+    $("dash-sessions").tBodies[0].replaceChildren(...sessions.slice(0, 25).map(s => {
+      const row = element("tr");
+      const input = s.usage.input + s.usage.cacheRead + s.usage.cacheWrite;
+      const cached = input ? Math.round((s.usage.cacheRead / input) * 100) : 0;
+      const active = streaming.has(s.sessionId);
+      for (const text of [
+        s.sessionId.slice(0, 8),
+        `${s.client} → ${s.accountIds.map(accountLabel).join(", ")}`,
+        s.model ?? "–",
+        String(s.requests),
+        input ? `${formatNumber(input)} (${cached}% cached)` : "–",
+        `${s.estimated ? "~" : ""}${formatNumber(s.usage.output)}`,
+        active ? "streaming" : ago(s.lastAt),
+      ]) row.append(element("td", text));
+      row.cells[0].title = s.sessionId;
+      row.cells[1].title = row.cells[1].textContent;
+      row.cells[2].title = s.model ?? "";
+      row.cells[3].title = `${s.requests} requests${s.errors ? `, ${s.errors} failed` : ""} since ${new Date(s.firstAt).toLocaleString()}`;
+      if (s.errors) row.cells[3].classList.add("danger");
+      // Idle past the provider's five-minute prompt cache.
+      row.classList.toggle("idle", !active && Date.now() - s.lastAt > 5 * 60_000);
+      return row;
+    }));
+  }
+
   function renderRequests() {
     const body = $("dash-requests").tBodies[0];
-    const shown = requests.filter(r => scope === "all" || inScope(r.accountId, r.poolId ?? null));
+    const shown = activity === "requests" ? requests.filter(r => scope === "all" || inScope(r.accountId, r.poolId ?? null)) : [];
     $("dash-requests-empty").textContent = scope === "all" ? "No requests since the router started." : "No recent requests in this scope.";
-    $("dash-requests-empty").hidden = shown.length > 0;
+    $("dash-requests-empty").hidden = activity !== "requests" || shown.length > 0;
     $("dash-requests").hidden = !shown.length;
     body.replaceChildren(...shown.slice(0, 25).map(r => {
       const row = element("tr");
@@ -290,8 +349,17 @@ export function createDashboard({ client, overview }) {
     };
   }
   $("dash-scope").onchange = () => { scope = $("dash-scope").value; localStorage.setItem("dash-scope", scope); renderAccounts(); renderRequests(); subscribe(); };
+  for (const button of $("dash-activity").children) {
+    button.onclick = () => {
+      activity = button.dataset.view;
+      localStorage.setItem("dash-activity", activity);
+      renderActivity();
+      loadSessions(0);
+    };
+  }
+  renderActivity();
   $("dash-goto-accounts").onclick = () => document.getElementById("tab-accounts").click();
-  setInterval(() => { if (visible) { graph.stale = Date.now() - lastEvent > 3000; if (requests.some(r => r.outcome === "active")) renderRequests(); } }, 1000);
+  setInterval(() => { if (visible) { graph.stale = Date.now() - lastEvent > 3000; if (requests.some(r => r.outcome === "active")) renderRequests(); if (activity === "sessions") renderSessions(); } }, 1000);
 
   return {
     /** The tab subscribes only while it is shown. */
@@ -303,10 +371,10 @@ export function createDashboard({ client, overview }) {
       renderScopes();
       subscribe();
       renderAccounts();
-      renderRequests();
+      renderActivity();
     },
     /** Overview changed: refresh labels and scope choices. */
-    refresh() { renderScopes(); renderAccounts(); renderRequests(); },
+    refresh() { renderScopes(); renderAccounts(); renderRequests(); renderSessions(); },
     /** Reconnection repeats snapshots, so nothing else is needed here. */
   };
 }

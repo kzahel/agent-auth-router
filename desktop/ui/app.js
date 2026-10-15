@@ -610,7 +610,26 @@ function selectTab(tab) {
     $(item.getAttribute("aria-controls")).hidden = !selected;
   }
   dashboard.show(tab.id === "tab-dashboard");
+  if (tab.id === "tab-app") loadRetention();
 }
+
+// History retention is stored by the router, so the CLI, web and desktop share it.
+async function loadRetention() {
+  try {
+    const { retentionDays, maxRetentionDays } = await api("history/settings");
+    $("retention").disabled = retentionDays === null;
+    $("retention").max = String(maxRetentionDays);
+    if (document.activeElement !== $("retention")) $("retention").value = retentionDays ?? "";
+    $("retention-status").textContent = retentionDays === null ? "History is not stored: the router could not open its database." : "";
+  } catch (failure) { $("retention-status").textContent = text(failure); }
+}
+$("retention").onchange = async () => {
+  const days = Number($("retention").value);
+  try {
+    await api("history/set-retention", { retentionDays: days });
+    $("retention-status").textContent = `Keeping ${days} ${days === 1 ? "day" : "days"} of history.`;
+  } catch (failure) { $("retention-status").textContent = text(failure); void loadRetention(); }
+};
 for (const tab of tabs) {
   tab.onclick = () => selectTab(tab);
   tab.onkeydown = event => {
