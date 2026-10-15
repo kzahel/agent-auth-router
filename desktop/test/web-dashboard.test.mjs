@@ -110,7 +110,7 @@ test("web dashboard signs in once, shows live traffic and keeps the access link 
   await page.locator("#dash-quota canvas").waitFor();
   await page.waitForFunction(() => document.querySelector("#dash-quota-empty")?.hidden === true);
   // Opening the dashboard probed the unknown quota once; later views reuse it.
-  await page.waitForFunction(() => document.querySelector("#dash-accounts tbody td:nth-child(4) .meter") !== null);
+  await page.waitForFunction(() => document.querySelector("#dash-accounts tbody td:nth-child(4) [data-bucket]") !== null);
   const probes = readFileSync(join(home, "cli-log.jsonl"), "utf8").split("\n").filter((l) => l.includes('"event":"start"'));
   assert.equal(probes.length, 1);
   await page.locator("#dash-graph").hover({ position: { x: 600, y: 60 } });

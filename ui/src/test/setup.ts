@@ -13,3 +13,8 @@ dialog.close = function (this: HTMLDialogElement, value?: string) {
   this.open = false;
   this.dispatchEvent(new Event("close"));
 };
+
+// Canvas drawing and element resizing are not part of jsdom.
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
+HTMLCanvasElement.prototype.getContext = (() => null) as unknown as HTMLCanvasElement["getContext"];
+window.matchMedia ??= ((query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;

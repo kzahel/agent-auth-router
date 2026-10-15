@@ -1,0 +1,101 @@
+.controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.scope { flex: 1 1 200px; }
+.reset { min-height: 28px; font-size: 12px; font-weight: 400; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; margin-top: 10px; }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; display: grid; gap: 2px; }
+.stat span { color: var(--muted); font-size: 11px; }
+.stat strong { font-size: 16px; font-weight: 600; }
+.chart { margin: 10px 0 0; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 8px 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; margin: 0 0 4px 4px; }
+.legendItem { display: inline-flex; align-items: center; gap: 6px; }
+/* Totals keep a fixed width so the legend does not shift as they change. */
+.legend b { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 4ch; text-align: left; }
+/* Legend entries switch series on and off; an off series keeps an outlined swatch. */
+.legend button.legendItem { border: 0; background: none; min-height: 0; padding: 2px 4px; margin: -2px -4px; font: inherit; font-weight: 400; color: var(--text); border-radius: 4px; }
+.legend button.legendItem:hover { background: var(--hover); }
+.legend .legendItem > span { background: var(--swatch); border: 1.5px solid var(--swatch); }
+.legend [aria-pressed="false"] { color: var(--muted); }
+.legend [aria-pressed="false"] > span { background: transparent; }
+.legendRange { color: var(--muted); }
+/* The range's cost at API rates, set apart at the end of the legend. */
+.legendCost { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chartValues { margin-top: 4px; }
+.chartValues summary { font-size: 12px; }
+.chartValues table { margin-top: 4px; }
+.frame { position: relative; }
+.frame canvas { display: block; width: 100%; height: 240px; }
+.frame canvas.singlePane { height: 190px; }
+.quotaFrame canvas { height: 130px; }
+.quota { margin-top: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+.tooltip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px #0002; display: grid; gap: 2px; min-width: 150px; }
+/* Rows the graph writes into its tooltip. */
+.tooltip :global(.tooltip-time) { color: var(--muted); font-size: 11px; }
+.tooltip :global(.tooltip-row) { display: inline-flex; align-items: center; gap: 6px; }
+.tooltip :global(.swatch) { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+.tooltip :global(.tooltip-row) b { margin-left: auto; padding-left: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.heading { margin: 16px 0 6px; }
+.heading > div { margin-left: auto; }
+.inScope { background: var(--hover); box-shadow: inset 3px 0 var(--accent); }
+.errorRow td:last-child { color: var(--danger); }
+.idle td { color: var(--muted); }
+.sparkline { display: block; width: 90px; height: 22px; }
+
+/* Fixed columns, right-aligned figures: streaming rows, ticking durations
+   and changing values do not shift the tables. */
+.accounts { table-layout: fixed; }
+.accounts td:first-child { white-space: normal; overflow-wrap: anywhere; }
+.accounts thead th { white-space: normal; vertical-align: bottom; }
+.accounts th:nth-child(2) { width: 150px; }
+.accounts th:nth-child(3) { width: 64px; }
+.accounts th:nth-child(4) { width: 200px; }
+.accounts th:nth-child(5) { width: 92px; }
+.accounts th:nth-child(6) { width: 106px; }
+.requests { table-layout: fixed; min-width: 720px; }
+.requests th:nth-child(1) { width: 92px; }
+.requests th:nth-child(3) { width: 116px; }
+.requests th:nth-child(4) { width: 132px; }
+.requests th:nth-child(5) { width: 56px; }
+.requests th:nth-child(6) { width: 60px; }
+.requests th:nth-child(7) { width: 60px; }
+.requests th:nth-child(8) { width: 74px; }
+.requests :is(th, td):nth-child(n+4):nth-child(-n+7) { text-align: right; }
+.requests td:nth-child(2), .requests td:nth-child(3) { overflow: hidden; text-overflow: ellipsis; }
+.sessions { table-layout: fixed; min-width: 720px; }
+.sessions th:nth-child(1) { width: 80px; }
+.sessions th:nth-child(3) { width: 116px; }
+.sessions th:nth-child(4) { width: 72px; }
+.sessions th:nth-child(5) { width: 132px; }
+.sessions th:nth-child(6) { width: 56px; }
+.sessions th:nth-child(7) { width: 64px; }
+.sessions th:nth-child(8) { width: 88px; }
+.sessions :is(th, td):nth-child(n+4):nth-child(-n+7) { text-align: right; }
+.sessions td:nth-child(-n+3) { overflow: hidden; text-overflow: ellipsis; }
+.sessions td:first-child { font-family: ui-monospace, monospace; font-size: 11px; }
+
+/* Quota meters: one per window, with a tick where usage would be on an even pace. */
+.quotaCell { position: relative; }
+/* As tall as the usual two meters, so the first reading does not grow the row. */
+.quotaEmpty { min-height: 35px; display: flex; align-items: center; }
+.meters { display: grid; gap: 3px; }
+.meters.stale { opacity: .5; }
+.meter { display: grid; grid-template-columns: 50px minmax(0, 1fr) 34px; align-items: center; gap: 6px; }
+.meterLabel { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.meterValue { text-align: right; }
+.meterTrack { position: relative; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--series-1) 16%, var(--surface)); }
+.meterFill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--series-1); transition: width .4s ease-out; }
+.meterPace { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--chart-muted); box-shadow: 0 0 0 1px var(--surface); transition: left .4s ease-out; }
+.meter[data-level="warning"] .meterFill { background: var(--warning); }
+.meter[data-level="critical"] .meterFill { background: var(--danger); }
+.meter[data-level="warning"] .meterValue { color: var(--warning); font-weight: 600; }
+.meter[data-level="critical"] .meterValue { color: var(--danger); font-weight: 600; }
+/* Over the faded bars, between the labels and the percentages, so it adds no height. */
+.meterNote { position: absolute; top: 50%; left: 56px; right: 40px; transform: translateY(-50%); text-align: center; color: var(--muted); font-size: 11px; line-height: 16px; background: color-mix(in srgb, var(--surface) 88%, transparent); border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .meterFill, .meterPace { transition: none; } }
+@media (max-width: 560px) {
+  .sparkline { width: 60px; }
+  .accounts th:nth-child(4), .accounts td:nth-child(4) { display: none; }
+  .accounts th:nth-child(2) { width: 92px; }
+  .accounts th:nth-child(3) { width: 58px; }
+  .accounts th:nth-child(5) { width: 72px; }
+  .accounts th:nth-child(6) { width: 76px; }
+}

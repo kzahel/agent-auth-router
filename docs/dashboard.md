@@ -259,7 +259,7 @@ for that case.
 
 ## Dashboard tab
 
-`ui/src/dashboard.ts` and `ui/src/chart/traffic-graph.ts`. The Dashboard is the first tab; with
+`ui/src/dashboard/` and `ui/src/chart/traffic-graph.ts`. The Dashboard is the first tab; with
 no accounts it links to Accounts.
 
 - **Controls:** scope (All traffic, each pool, each account), range (2 min to

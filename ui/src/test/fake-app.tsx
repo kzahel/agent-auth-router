@@ -19,14 +19,26 @@ export function overview(change: Partial<Overview> = {}): Overview {
   return { routerId: "fixture", activeRequests: 0, accounts: [], pools: [], integrations: [], logins: [], ...change };
 }
 
-export async function fakeApp(handlers: Record<string, Handler> = {}, options: { native?: Partial<DesktopShell> } = {}) {
+export async function fakeApp(handlers: Record<string, Handler> = {}, options: {
+  native?: Partial<DesktopShell>;
+  /** Snapshots for subscriptions by kind; others get an empty object. */
+  snapshots?: Record<string, Handler>;
+} = {}) {
   const calls: { operation: string; body: Record<string, unknown> }[] = [];
+  const subscriptions = new Map<number, { kind: string; body: Record<string, unknown> }>();
   let deliver: (message: Inbound) => void = () => {};
   const port: Port = {
     kind: options.native ? "desktop" : "web",
     connect: async () => ({ protocol: 1, routerId: "fixture", kind: options.native ? "desktop" : "web" }),
     send: (message) => {
-      if (!("call" in message)) return;
+      if ("subscribe" in message) {
+        const body = message.body as Record<string, unknown>;
+        subscriptions.set(message.id, { kind: message.subscribe, body });
+        const snapshot = options.snapshots?.[message.subscribe]?.(body) ?? {};
+        void Promise.resolve().then(() => deliver({ id: message.id, result: snapshot }));
+        return;
+      }
+      if ("unsubscribe" in message) { subscriptions.delete(message.unsubscribe); return; }
       const body = message.body as Record<string, unknown>;
       calls.push({ operation: message.call, body });
       const handler = handlers[message.call] ?? (message.call === "overview" ? () => overview() : () => ({}));
@@ -46,8 +58,18 @@ export async function fakeApp(handlers: Record<string, Handler> = {}, options: {
   await client.start();
   return {
     client, router, calls,
+    /** Open subscriptions of one kind, with their request bodies. */
+    subscribed: (kind: string) => [...subscriptions.values()].filter(s => s.kind === kind).map(s => s.body),
+    /** Sends an event to every open subscription of one kind. */
+    emit: (kind: string, event: string, data: unknown) => {
+      for (const [id, s] of subscriptions) if (s.kind === kind) deliver({ sub: id, event, data });
+    },
     /** The calls made for one operation, in order. */
     called: (operation: string) => calls.filter(c => c.operation === operation),
-    render: (ui: ReactNode) => render(<AppProvider client={client} router={router}><ConfirmProvider>{ui}</ConfirmProvider></AppProvider>),
+    render: (ui: ReactNode) => {
+      const wrap = (node: ReactNode) => <AppProvider client={client} router={router}><ConfirmProvider>{node}</ConfirmProvider></AppProvider>;
+      const result = render(wrap(ui));
+      return { ...result, rerender: (node: ReactNode) => result.rerender(wrap(node)) };
+    },
   };
 }
