@@ -158,7 +158,7 @@ fn ensure_core(app: &tauri::AppHandle, core: &mut Core) -> Result<Value, String>
             .map_err(|_| "Cannot inspect router process")?
             .is_none()
         {
-            return Err("Router is starting or unavailable. Reload to retry.".into());
+            return Err("Router is starting or unavailable. Choose Start router to retry.".into());
         }
     }
     let mut child = command(app)?
@@ -333,7 +333,7 @@ async fn app_connect(
                 if error.contains("ENOENT")
                     && state_dir(&app).is_ok_and(|s| s.join("control.sock").exists())
                 {
-                    "This router was started by an earlier version. Stop it, then Reload.".into()
+                    "This router was started by an earlier version. Stop it, then choose Start router.".into()
                 } else {
                     error
                 }
@@ -502,7 +502,7 @@ async fn install_update(
     .await
     .map_err(|_| "Router stop failed")??;
     if update.install(bytes).is_err() {
-        return Err("Update installation failed. Reload to restart the existing router.".into());
+        return Err("Update installation failed. Choose Start router to restart the existing router.".into());
     }
     app.restart();
 }

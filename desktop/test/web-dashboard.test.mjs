@@ -75,7 +75,8 @@ test("web dashboard signs in once, shows live traffic and keeps the access link 
   await page.goto(link);
   await page.getByRole("tab", { name: "Dashboard", exact: true }).waitFor();
   assert.equal(new URL(page.url()).hash, "", "the access code leaves the address bar");
-  await page.getByText("Router running", { exact: false }).waitFor();
+  // The status banner appears only when something is wrong.
+  await page.waitForFunction(() => document.getElementById("status").hidden);
   // Desktop-only controls are hidden in the browser.
   await page.getByRole("tab", { name: "App", exact: true }).click();
   assert.equal(await page.getByText("Launch at login").isVisible(), false);

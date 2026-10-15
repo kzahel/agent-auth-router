@@ -36,7 +36,7 @@ impl Diagnostics {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
-        startup_message(&self.bytes.lock().unwrap()).unwrap_or_else(|| format!("Router exited during startup ({status}). Check the bundled runtime and state folder, then Reload."))
+        startup_message(&self.bytes.lock().unwrap()).unwrap_or_else(|| format!("Router exited during startup ({status}). Check the bundled runtime and state folder, then choose Start router."))
     }
 }
 fn startup_message(bytes: &[u8]) -> Option<String> {

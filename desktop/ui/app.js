@@ -33,6 +33,12 @@ const signInLabels = {
   signed_out: "Not signed in",
   unusable: "Stored credentials unreadable",
 };
+/** The banner shows only when something is wrong; `startable` offers Start router in the desktop app. */
+function setStatus(message, startable = false) {
+  $("status-text").textContent = message;
+  $("status").hidden = !message;
+  $("start-router").hidden = !(message && startable && desktop);
+}
 function error(value) {
   $("error").textContent = value ? text(value) : "";
   $("error").hidden = !value;
@@ -171,7 +177,7 @@ $("remove-form").onsubmit = async event => {
     $("delete-profile").disabled = !removal.canDeleteProfile;
   }
 };
-/** `start` (Reload and first load) may start a stopped desktop core; change events never do. */
+/** `start` (Start router and first load) may start a stopped desktop core; change events never do. */
 async function reload(start = false) {
   const generation = ++observationGeneration;
   let next;
@@ -183,14 +189,13 @@ async function reload(start = false) {
     }
     next = await api("overview");
   }
-  catch (failure) { if (generation === observationGeneration) $("status").textContent = "Router unavailable"; throw failure; }
+  catch (failure) { if (generation === observationGeneration) setStatus("Router unavailable", true); throw failure; }
   if (generation !== observationGeneration) return;
   snapshot = next;
   dashboard.refresh();
   // Unbundled routers (run from source) have no version to show.
   $("version").textContent = next.build?.source === "unbundled" ? "" : next.build?.version ?? "";
-  $("status").textContent =
-    `Router running · ${next.activeRequests} active request${next.activeRequests === 1 ? "" : "s"}`;
+  setStatus("");
   $("accounts").replaceChildren();
   $("pools").replaceChildren();
   $("integrations").replaceChildren();
@@ -393,7 +398,7 @@ $("providers").onclick = () =>
       )
       .join(" · ");
   }, $("providers"));
-$("reload").onclick = () => run(() => reload(true), $("reload"));
+$("start-router").onclick = () => run(() => reload(true), $("start-router"));
 $("new-pool").onclick = () => {
   if (snapshot) editPool();
 };
@@ -594,7 +599,7 @@ $("stop").onclick = () =>
     stoppedByOwner = true;
     try { await api("stop", { routerId: snapshot.routerId }); }
     catch (failure) { stoppedByOwner = false; throw failure; }
-    $("status").textContent = desktop ? "Router stopped. Reload to start it again." : "Router stopped. Start it again with aar serve.";
+    setStatus(desktop ? "Router stopped." : "Router stopped. Start it again with aar serve.", true);
   }, $("stop"));
 if (shell.native) void shell.startup(null)
   .then((enabled) => {
@@ -649,7 +654,7 @@ for (const tab of tabs) {
 $("terminal-presentation").value = localStorage.getItem("terminal-presentation") === "embedded" ? "embedded" : "external";
 $("terminal-presentation").onchange = () => localStorage.setItem("terminal-presentation", $("terminal-presentation").value);
 
-if (shell.native) void shell.onLifecycleError((payload) => { error(payload); $("status").textContent = "Router could not stop"; });
+if (shell.native) void shell.onLifecycleError((payload) => { error(payload); setStatus("Router could not stop"); });
 
 // Registry changes (pairing, CLI edits, sign-in progress) arrive as change
 // events. Coalesce bursts; observation preserves editors and never starts a stopped core.
@@ -669,7 +674,7 @@ client.onChange(stateChanged);
 client.onStatus((state) => {
   if (state === "connected") { stateChanged(); return; }
   if (stoppedByOwner) { client.pause(); return; }
-  $("status").textContent = desktop ? "Router unavailable · reconnecting" : "Router unavailable · reconnecting. Restart it with aar serve if it stopped.";
+  setStatus(desktop ? "Router unavailable · reconnecting" : "Router unavailable · reconnecting. Restart it with aar serve if it stopped.", true);
 });
 selectTab(tabs.find(t => t.getAttribute("aria-selected") === "true") ?? tabs[0]);
 
@@ -681,10 +686,10 @@ if (!desktop) {
   const session = await port.authenticate();
   if (!session.authenticated) {
     $("app-shell").hidden = true;
-    $("reload").hidden = $("logout").hidden = true;
+    $("logout").hidden = true;
     $("signed-out").hidden = false;
     $("signed-out-detail").textContent = session.error ?? "This browser is not signed in.";
-    $("status").textContent = "Signed out";
+    setStatus("");
   }
   if (session.authenticated) void run(() => reload(true));
 } else void run(() => reload(true));

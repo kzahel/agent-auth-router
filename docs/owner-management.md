@@ -220,7 +220,7 @@ does not read credential files or perform provider requests. The UI coalesces
 updates and preserves open editors.
 
 Automatic reconnection only reattaches to a running owner; unlike explicit
-Reload, it cannot start the core. The native WebView smoke pairs through
+**Start router** (formerly Reload), it cannot start the core. The native WebView smoke pairs through
 the real private control socket after the empty Connections view is rendered,
 then checks that the connection appears without a reload and that observation
 cannot revive an explicitly stopped core.

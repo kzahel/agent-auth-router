@@ -167,7 +167,7 @@ backoff. Automatic reconnection never starts a stopped core.
   using only the standard library's `UnixStream` and `serde_json`. The
   webview never receives the credential.
   - `app_connect(start)` opens the connection and resolves with the hello.
-    `start` also starts a stopped core, as Reload and first launch do.
+    `start` also starts a stopped core, as **Start router** and first launch do.
   - `app_send(message)` writes a line; it refuses `hello` messages.
   - `app-message` and `app-closed` events carry the core's lines and the
     connection's end.

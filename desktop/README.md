@@ -75,9 +75,11 @@ window cancels that login. **Quit** stops the router, including active requests,
 renewal work and sign-ins, and exits the app. Yep Anywhere connections that need
 the router remain unavailable until the app is launched again. There is no
 keep-running option. **Stop router** is explicit and refuses active
-requests, metadata reads, renewal or sign-in work. Reload starts it again.
+requests, metadata reads, renewal or sign-in work. **Start router** in the
+status banner starts it again; the banner appears only while the router is
+stopped, unavailable or connecting.
 Updates download signed bytes and require an idle core before installation and
-relaunch. A failed installation offers restart through Reload. A desktop-started router also shuts down when the app process disappears.
+relaunch. A failed installation offers restart through **Start router**. A desktop-started router also shuts down when the app process disappears.
 On relaunch, the app recovers a private abandoned control socket only after two
 refused connection probes and an unchanged file identity. It preserves that inode
 as `control.sock.stale-*`; live sockets, foreign owners, symlinks and ordinary

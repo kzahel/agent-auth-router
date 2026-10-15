@@ -5,6 +5,18 @@ import { readFile, mkdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { chromium } from "@playwright/test";
 
+
+// The window refreshes on the router's change events, as it does after an
+// edit made elsewhere; tests send one and wait for the overview it fetches.
+async function refresh(page) {
+  await page.evaluate(() => {
+    window.refreshBase = window.operations.filter(o => o.operation === "overview").length;
+    window.emitApp({ event: "change", data: { revision: Date.now() } });
+  });
+  await page.waitForFunction(() => window.operations.filter(o => o.operation === "overview").length > window.refreshBase);
+  await page.waitForTimeout(50);
+}
+
 test("management UI preserves typing while observations update, and offers owner actions", async (t) => {
   const server = createServer(async (req, res) => {
     const files = {
@@ -159,7 +171,7 @@ test("management UI preserves typing while observations update, and offers owner
       );
     });
   });
-  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await refresh(page);
   const name = "Work Codex shared development pool";
   await input.pressSequentially(name, { delay: 20 });
   assert.equal(await input.inputValue(), name);
@@ -209,7 +221,7 @@ test("management UI preserves typing while observations update, and offers owner
   await account.getByRole("button", { name: "Edit nickname" }).click();
   const nickname = page.locator("#nickname-form input[name=nickname]");
   await nickname.fill("Work account");
-  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await refresh(page);
   assert.equal(await nickname.inputValue(), "Work account");
   await page.getByRole("button", { name: "Save nickname" }).click();
   await account.getByText("Work account", { exact: true }).waitFor();
@@ -261,7 +273,7 @@ test("management UI preserves typing while observations update, and offers owner
   await page.getByText("Add account", { exact: true }).first().click();
   // Present a compact account slice for visual inspection while preserving the volume test above.
   await page.evaluate(() => { window.fixtureState.accounts = window.fixtureState.accounts.slice(0, 4); });
-  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await refresh(page);
   await page.waitForFunction(() => document.querySelectorAll("#accounts article").length === 4);
   await page.getByRole("tab", { name: "Accounts", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
@@ -318,7 +330,7 @@ test("management UI preserves typing while observations update, and offers owner
   assert.equal(keep.body.home, undefined);
   // The same action is available for legacy retired rows.
   await page.evaluate(() => { window.fixtureState.accounts[0].retired = true; });
-  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await refresh(page);
   await account.getByText("Retired · credential profile retained", { exact: true }).waitFor();
   await account.getByRole("button", { name: "Remove", exact: true }).click();
   await deletion.check();
@@ -329,7 +341,7 @@ test("management UI preserves typing while observations update, and offers owner
   assert.equal(destroy.body.home, "/Users/example/.agent-auth-router/profiles/work-2");
   assert.equal(destroy.body.deleteIdentity, "1:fixture");
   await page.evaluate(() => { window.fixtureState.accounts[0].imported = true; });
-  await page.getByRole("button", { name: "Reload", exact: true }).click();
+  await refresh(page);
   await account.getByText("More", { exact: true }).click();
   await account.getByRole("button", { name: "Remove", exact: true }).click();
   assert.equal(await deletion.isChecked(), false);

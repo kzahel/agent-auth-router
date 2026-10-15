@@ -1,7 +1,8 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Auth Router</title><link rel="stylesheet" href="style.css"></head>
 <body><main>
-<header><div><h1>Agent Auth Router</h1><p id="status" role="status">Connecting to the router…</p></div><div class="actions"><button id="reload">Reload</button><button id="logout" class="web-only">Log out</button></div></header>
+<header><h1>Agent Auth Router</h1><div class="actions"><button id="logout" class="web-only">Log out</button></div></header>
+<div id="status" class="status-banner" role="status"><span id="status-text">Connecting to the router…</span><button id="start-router" class="desktop-only" hidden>Start router</button></div>
 <section id="signed-out" class="settings" hidden><h2>Sign in to the dashboard</h2><p id="signed-out-detail" class="hint"></p><p class="hint">Open the link that <code>aar serve</code> printed, or run <code>aar dashboard url</code> on this machine for a new one. Each link signs in one browser.</p></section>
 <div id="app-shell">
 <nav role="tablist" aria-label="Router management"><button type="button" role="tab" id="tab-dashboard" aria-controls="panel-dashboard" aria-selected="true">Dashboard</button><button type="button" role="tab" id="tab-accounts" aria-controls="panel-accounts" aria-selected="false" tabindex="-1">Accounts</button><button type="button" role="tab" id="tab-pools" aria-controls="panel-pools" aria-selected="false" tabindex="-1">Pools</button><button type="button" role="tab" id="tab-integrations" aria-controls="panel-integrations" aria-selected="false" tabindex="-1">Connections</button><button type="button" role="tab" id="tab-app" aria-controls="panel-app" aria-selected="false" tabindex="-1">App</button></nav>
