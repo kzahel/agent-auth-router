@@ -4,20 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prepare:bundle": "node scripts/prepare-ui.mjs && node scripts/prepare-bundle.mjs",
+    "prepare:bundle": "npm --prefix ../ui run build && node scripts/prepare-bundle.mjs",
     "dev": "npm run prepare:bundle && tauri dev",
     "build": "npm run prepare:bundle && tauri build --bundles app",
     "check": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml",
     "test": "node --test test/*.test.mjs",
-    "postinstall": "node scripts/prepare-ui.mjs",
-    "pretest": "node scripts/prepare-ui.mjs"
+    "pretest": "npm --prefix ../ui run build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.1",
     "@playwright/test": "1.58.2"
-  },
-  "dependencies": {
-    "@xterm/xterm": "6.0.0",
-    "@xterm/addon-fit": "0.11.0"
   }
 }

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http, { type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,6 +11,34 @@ export const FIXTURES = join(import.meta.dirname, "fixtures");
 export function tempDir(prefix = "aar-test-"): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+/**
+ * A synthetic UI build shaped like `vite build` output in ui/dist: the
+ * management page, a terminal page, hashed assets and the manifest.
+ */
+export function uiBuild(): string {
+  const dir = tempDir("aar-ui-");
+  const files: Record<string, string> = {
+    "index.html": '<!doctype html><script type="module" src="./assets/index-a1.js"></script>',
+    "terminal.html": '<!doctype html><script type="module" src="./assets/terminal-b2.js"></script>',
+    "assets/index-a1.js": 'import "./shared-c3.js";',
+    "assets/shared-c3.js": "export {};",
+    "assets/shared-d4.css": ":root {}",
+    "assets/terminal-b2.js": 'import "./shared-c3.js";',
+    "assets/terminal-e5.css": "#terminal {}",
+    "third-party-licenses.txt": "synthetic",
+    ".vite/manifest.json": JSON.stringify({
+      "index.html": { file: "assets/index-a1.js", src: "index.html", isEntry: true, imports: ["_shared-c3.js"] },
+      "terminal.html": { file: "assets/terminal-b2.js", src: "terminal.html", isEntry: true, imports: ["_shared-c3.js"], css: ["assets/terminal-e5.css"] },
+      "_shared-c3.js": { file: "assets/shared-c3.js", css: ["assets/shared-d4.css"] },
+    }),
+  };
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(join(dir, path, ".."), { recursive: true });
+    writeFileSync(join(dir, path), content);
+  }
   return dir;
 }
 

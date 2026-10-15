@@ -23,7 +23,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
       - run: npm ci
+      - run: npm ci --prefix ui
+      - name: Check, test and build the UI
+        run: npm --prefix ui run check
       - run: npm run check
       - run: npm run build
 

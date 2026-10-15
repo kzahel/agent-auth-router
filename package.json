@@ -13,13 +13,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:ui": "npm --prefix ui run build",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test --test-concurrency=1 'test/**/*.test.ts'",
     "integration:prepare": "node integration/yepanywhere/prepare.mjs",
     "test:integration": "node --test --test-concurrency=1 'integration/yepanywhere/*.test.mjs'",
     "check": "npm run typecheck && npm test",
     "aar": "node src/cli.ts",
-    "dev": "node src/cli.ts serve --dev"
+    "dev": "node scripts/dev.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",

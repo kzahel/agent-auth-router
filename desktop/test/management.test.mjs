@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { resolve, join, extname } from "node:path";
 import { chromium } from "@playwright/test";
 
+const dist = resolve(import.meta.dirname, "../../ui/dist");
 
 // The window refreshes on the router's change events, as it does after an
 // edit made elsewhere; tests send one and wait for the overview it fetches.
@@ -19,21 +20,15 @@ async function refresh(page) {
 
 test("management UI preserves typing while observations update, and offers owner actions", async (t) => {
   const server = createServer(async (req, res) => {
-    const files = {
-      "/": ["index.html", "text/html"],
-      "/app.js": ["app.js", "text/javascript"],
-      "/app-client.js": ["app-client.js", "text/javascript"],
-      "/dashboard.js": ["dashboard.js", "text/javascript"],
-      "/graph.js": ["graph.js", "text/javascript"],
-      "/style.css": ["style.css", "text/css"],
-    };
-    const file = files[req.url];
-    if (!file) {
-      res.writeHead(404).end();
-      return;
-    }
-    res.setHeader("content-type", file[1]);
-    res.end(await readFile(resolve(import.meta.dirname, "../ui", file[0])));
+    // The UI build (`npm --prefix ui run build`, run by pretest).
+    const path = req.url === "/" ? "/index.html" : req.url;
+    const type = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" }[extname(path)];
+    if (!type || path.includes("..")) return res.writeHead(404).end();
+    try {
+      const content = await readFile(join(dist, path));
+      res.setHeader("content-type", type);
+      res.end(content);
+    } catch { res.writeHead(404).end(); }
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => new Promise((r) => server.close(r)));

@@ -351,7 +351,7 @@ async function main(argv: string[]): Promise<void> {
       }
       if (router.dashboard) {
         process.stdout.write(`Web dashboard: ${router.dashboard.mintCode().url}\n  This link signs in one browser. Run \`aar dashboard url\` for another.\n`);
-        if (dashboard?.dev) process.stdout.write("  Dev mode: signed-in browsers reload when desktop/ui files change.\n");
+        if (dashboard?.dev) process.stdout.write("  Dev mode: signed-in browsers reload when the UI build in ui/dist changes.\n");
       }
       if (parentClosed) shutdown();
       return;

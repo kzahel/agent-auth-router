@@ -5,10 +5,10 @@
 // the page never receives the owner credential.
 
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { join, resolve } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AppHub, MAX_MESSAGE_CHARS } from "./app.ts";
 import { ControlError } from "./control.ts";
@@ -24,21 +24,44 @@ const MAX_SESSIONS = 64;
 const COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60;
 const TOUCH_INTERVAL_MS = 60 * 60_000;
 
-/** The shared UI: bundled beside the core (resources/ui), or a source checkout's desktop/ui. */
+const MANIFEST = ".vite/manifest.json";
+
+/** The shared UI's build: bundled beside the core (resources/ui), or a source checkout's ui/dist. */
 export function defaultUiDir(): string {
-  const candidates = ["../ui/", "../desktop/ui/"].map(path => resolve(fileURLToPath(new URL(path, import.meta.url))));
-  return candidates.find(dir => existsSync(join(dir, "index.html"))) ?? candidates.at(-1)!;
+  const candidates = ["../ui/", "../ui/dist/"].map(path => resolve(fileURLToPath(new URL(path, import.meta.url))));
+  return candidates.find(dir => existsSync(join(dir, MANIFEST))) ?? candidates.at(-1)!;
 }
 
-/** Files the browser may load. Desktop-only terminal assets are not served. */
-export const ASSETS: Record<string, string> = {
-  "/index.html": "text/html; charset=utf-8",
-  "/app.js": "text/javascript; charset=utf-8",
-  "/app-client.js": "text/javascript; charset=utf-8",
-  "/dashboard.js": "text/javascript; charset=utf-8",
-  "/graph.js": "text/javascript; charset=utf-8",
-  "/style.css": "text/css; charset=utf-8",
+const CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".woff2": "font/woff2",
 };
+
+interface ManifestChunk { file: string; css?: string[]; assets?: string[]; imports?: string[]; dynamicImports?: string[] }
+
+/**
+ * Files the browser may load: the management page, what its entry needs
+ * according to the build's manifest, and the license notices. Desktop-only
+ * terminal assets are not served.
+ */
+export function servedFiles(uiDir: string): Set<string> {
+  const manifest = JSON.parse(readFileSync(join(uiDir, MANIFEST), "utf8")) as Record<string, ManifestChunk>;
+  const files = new Set(["/index.html", "/third-party-licenses.txt"]);
+  const visit = (key: string) => {
+    const chunk = manifest[key];
+    if (!chunk || files.has(`/${chunk.file}`)) return;
+    files.add(`/${chunk.file}`);
+    for (const file of [...chunk.css ?? [], ...chunk.assets ?? []]) files.add(`/${file}`);
+    for (const next of [...chunk.imports ?? [], ...chunk.dynamicImports ?? []]) visit(next);
+  };
+  visit("index.html");
+  return files;
+}
 
 interface Session { id: string; tokenHash: string; createdAt: string; lastUsedAt: string; userAgent: string | null }
 interface SessionFile { version: 1; sessions: Session[] }
@@ -54,7 +77,17 @@ export interface Dashboard extends DashboardControl {
 export async function startDashboard(options: { store: StateStore; hub: AppHub; authenticateOwner: (header: string | undefined) => void; port: number; uiDir?: string; dev?: boolean }): Promise<Dashboard> {
   const { store, hub } = options;
   const uiDir = options.uiDir ?? defaultUiDir();
-  if (!existsSync(join(uiDir, "index.html"))) throw new Error(`dashboard UI files not found in ${uiDir}`);
+  // A source checkout may run the router before building the UI; the page then says so.
+  if (!existsSync(join(uiDir, MANIFEST))) log("dashboard.ui_missing", { uiDir, hint: "npm run build:ui" });
+  // Rebuilt when the build changes, which `vite build --watch` does in development.
+  let served = { mtime: -1, files: new Set<string>() };
+  const servedNow = () => {
+    try {
+      const mtime = statSync(join(uiDir, MANIFEST)).mtimeMs;
+      if (mtime !== served.mtime) served = { mtime, files: servedFiles(uiDir) };
+    } catch { served = { mtime: -1, files: new Set() }; }
+    return served.files;
+  };
   const sessionsPath = join(store.dir, "dashboard-sessions.json");
   const codes = new Map<string, number>();
   let sessions = loadSessions(sessionsPath);
@@ -64,12 +97,14 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
   // Development: reload signed-in browsers when a served UI file changes.
   let watcher: FSWatcher | undefined, reloadTimer: NodeJS.Timeout | undefined;
   if (options.dev) {
-    watcher = watch(uiDir, (_event, file) => {
-      if (!file || !ASSETS[`/${file}`]) return;
-      clearTimeout(reloadTimer);
-      reloadTimer = setTimeout(() => hub.broadcast("web", { event: "ui-reload", data: { file } }), 100);
-    });
-    watcher.unref();
+    try {
+      watcher = watch(uiDir, { recursive: true }, (_event, file) => {
+        if (!file || !servedNow().has(`/${file.split(sep).join("/")}`)) return;
+        clearTimeout(reloadTimer);
+        reloadTimer = setTimeout(() => hub.broadcast("web", { event: "ui-reload", data: { file } }), 100);
+      });
+      watcher.unref();
+    } catch (error) { log("dashboard.ui_watch_failed", { uiDir, error: errorText(error) }); }
   }
 
   const origins = () => new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
@@ -134,13 +169,20 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
       if (!hostAllowed(req)) return json(res, 403, { error: "invalid host" });
       const url = new URL(req.url ?? "/", "http://dashboard.invalid");
       const path = url.pathname;
-      if (req.method === "GET" && (path === "/" || ASSETS[path])) {
-        const file = path === "/" ? "/index.html" : path;
+      const file = path === "/" ? "/index.html" : path;
+      if (req.method === "GET" && servedNow().has(file)) {
         let content: Buffer;
         try { content = readFileSync(join(uiDir, file.slice(1))); } catch { return json(res, 404, { error: "not found" }); }
         const csp = `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://${req.headers.host}; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`;
-        res.writeHead(200, headers({ "content-type": ASSETS[file]!, "content-security-policy": csp }));
+        // Built assets are named by content hash, so they never change.
+        const cache = file.startsWith("/assets/") ? { "cache-control": "public, max-age=31536000, immutable" } : {};
+        res.writeHead(200, headers({ "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream", "content-security-policy": csp, ...cache }));
         res.end(content);
+        return;
+      }
+      if (req.method === "GET" && path === "/" && !servedNow().size) {
+        res.writeHead(503, headers({ "content-type": "text/plain; charset=utf-8" }));
+        res.end(`The dashboard UI is not built. In a source checkout, run npm run build:ui.\n`);
         return;
       }
       if (path === "/auth/status" && req.method === "GET") return json(res, 200, { authenticated: !!session(req) });

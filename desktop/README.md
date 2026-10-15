@@ -91,6 +91,7 @@ From the repository root:
 
 ```sh
 npm ci
+npm ci --prefix ui
 npm ci --prefix desktop
 npm --prefix desktop run dev
 npm --prefix desktop run build

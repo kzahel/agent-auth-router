@@ -85,6 +85,7 @@ Node 24 or newer.
 
 ```sh
 npm install
+npm ci --prefix ui && npm run build:ui          # the web dashboard's UI
 npm run check                                   # typecheck + tests
 npm run aar -- init
 npm run aar -- account add work --provider claude --credential-store claude-keychain
@@ -108,8 +109,10 @@ app.
 session lasts until you log out or run `aar dashboard revoke`. It is
 loopback-only. See [the dashboard design](docs/dashboard.md).
 
-For UI work, `npm run dev` (`aar serve --dev`) reloads signed-in browsers when a
-file in `desktop/ui` changes. After editing `src/`, run `aar restart` (or
+For UI work, `npm run dev` rebuilds the UI in `ui/` whenever its source changes
+and runs `aar serve --dev`, which reloads signed-in browsers after each rebuild.
+The UI is React and TypeScript built with Vite; see [ui/README.md](ui/README.md).
+After editing `src/`, run `aar restart` (or
 `npm run aar restart`): the router restarts with the current code once nothing
 has been in flight for five seconds, without interrupting a request. See
 [restarting `aar serve`](docs/owner-management.md#restarting-aar-serve-2026-10-11).

@@ -6,11 +6,11 @@ import { resolve, join, extname } from "node:path";
 import { chromium } from "@playwright/test";
 
 test("embedded terminal supports keyboard input, resize, theme, cancellation and local-only output", async t => {
-  const root = resolve(import.meta.dirname, "../ui");
+  const root = resolve(import.meta.dirname, "../../ui/dist");
   const config = JSON.parse(await readFile(resolve(import.meta.dirname, "../src-tauri/tauri.conf.json")));
   const server = createServer(async (req, res) => {
     const path = req.url === "/" ? "/terminal.html" : req.url;
-    if (!/^\/(terminal\.(html|js|css)|style\.css|vendor\/(xterm\.(js|css)|addon-fit\.js))$/.test(path)) return res.writeHead(404).end();
+    if (!/^\/(terminal\.html|assets\/[\w-]+\.(js|css))$/.test(path)) return res.writeHead(404).end();
     res.setHeader("Content-Security-Policy", config.app.security.csp);
     res.setHeader("content-type", { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" }[extname(path)]);
     res.end(await readFile(join(root, path)));

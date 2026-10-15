@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { cpSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http, { type IncomingHttpHeaders } from "node:http";
 import net from "node:net";
 import { join } from "node:path";
@@ -10,8 +10,8 @@ import { generateGatewayToken, hashGatewayToken } from "../src/gateway-auth.ts";
 import { ownerRequest } from "../src/owner.ts";
 import { startRouter } from "../src/runtime.ts";
 import { StateStore } from "../src/state.ts";
-import { defaultUiDir, startDashboard } from "../src/dashboard.ts";
-import { captureLogs, mockUpstream, tempDir, waitFor, writeClaudeCredentials } from "./support.ts";
+import { servedFiles, startDashboard } from "../src/dashboard.ts";
+import { captureLogs, mockUpstream, tempDir, uiBuild, waitFor, writeClaudeCredentials } from "./support.ts";
 
 const skip = process.platform === "win32";
 
@@ -110,7 +110,7 @@ async function fixture(t: { after(fn: () => unknown): void }, upstreamHandler: (
   store.saveAccounts([{ id: "work", provider: "claude", home, helper: { kind: "none" } }]);
   const token = generateGatewayToken();
   store.saveClients([{ id: randomUUID(), name: "laptop", tokenSha256: hashGatewayToken(token), createdAt: new Date().toISOString(), accounts: { claude: "work" } }]);
-  const router = await startRouter(store, {}, { dashboard: { port: 0, ...dashboard } });
+  const router = await startRouter(store, {}, { dashboard: { port: 0, uiDir: uiBuild(), ...dashboard } });
   t.after(() => router.close(true));
   const infer = (body = "{}") => fetch(`${router.origin}/claude/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body }).then((r) => r.text());
   return { store, router, upstream, infer, token, ownerToken: readFileSync(join(store.dir, "owner.key"), "utf8") };
@@ -182,8 +182,15 @@ test("web dashboard: exact host and origin, single-use codes, sessions and logou
   const page = await httpRequest(origin, "/", { headers: { host } });
   assert.equal(page.status, 200);
   assert.match(String(page.headers["content-security-policy"]), /script-src 'self'/);
+  assert.equal(page.headers["cache-control"], "no-store");
   assert.equal((await httpRequest(origin, "/", { headers: { host: "evil.example" } })).status, 403, "DNS rebinding");
-  assert.equal((await httpRequest(origin, "/terminal.html", { headers: { host } })).status, 404, "desktop-only assets are not served");
+  // The build's manifest decides: the page's entry, its imports and their CSS.
+  const asset = await httpRequest(origin, "/assets/shared-d4.css", { headers: { host } });
+  assert.equal(asset.status, 200);
+  assert.equal(asset.headers["content-type"], "text/css; charset=utf-8");
+  assert.match(String(asset.headers["cache-control"]), /immutable/);
+  for (const path of ["/terminal.html", "/assets/terminal-b2.js", "/assets/terminal-e5.css", "/.vite/manifest.json", "/assets/../index.html/x"])
+    assert.equal((await httpRequest(origin, path, { headers: { host } })).status, 404, `${path} is not served`);
 
   const code = new URL((await ownerRequest(store, "dashboard/code")).url).hash.slice("#code=".length);
   const exchange = (headers: Record<string, string>) => httpRequest(origin, "/auth/exchange", { method: "POST", headers: { host, "content-type": "application/json", ...headers }, body: JSON.stringify({ code }) });
@@ -251,8 +258,7 @@ test("web dashboard: exact host and origin, single-use codes, sessions and logou
 });
 
 test("dev mode reloads signed-in browsers when a served UI file changes", { skip }, async (t) => {
-  const uiDir = tempDir("aa-ui-");
-  cpSync(defaultUiDir(), uiDir, { recursive: true });
+  const uiDir = uiBuild();
   const { store, router } = await fixture(t, undefined, { uiDir, dev: true });
   const origin = router.dashboard!.origin, host = new URL(origin).host;
   const code = new URL((await ownerRequest(store, "dashboard/code")).url).hash.slice("#code=".length);
@@ -260,12 +266,29 @@ test("dev mode reloads signed-in browsers when a served UI file changes", { skip
   const ws = await webSocket(origin, { host, cookie, origin });
   t.after(() => ws.close());
   await waitFor(() => ws.messages.some((m) => m.hello));
-  writeFileSync(join(uiDir, "terminal.html"), "not served");
+  writeFileSync(join(uiDir, "assets/terminal-e5.css"), "/* edited */");
   await new Promise((r) => setTimeout(r, 300));
   assert.ok(!ws.messages.some((m) => m.event === "ui-reload"), "files the dashboard does not serve are ignored");
-  writeFileSync(join(uiDir, "style.css"), readFileSync(join(uiDir, "style.css"), "utf8") + "\n/* edited */\n");
+  writeFileSync(join(uiDir, "assets/shared-d4.css"), ":root {}\n/* edited */\n");
   await waitFor(() => ws.messages.some((m) => m.event === "ui-reload"));
-  assert.match((await httpRequest(origin, "/style.css", { headers: { host } })).text, /edited/, "files are served fresh");
+  assert.match((await httpRequest(origin, "/assets/shared-d4.css", { headers: { host } })).text, /edited/, "files are served fresh");
+});
+
+test("without a UI build the router still runs and the dashboard says how to build it", { skip }, async (t) => {
+  const uiDir = uiBuild();
+  rmSync(join(uiDir, ".vite"), { recursive: true });
+  const { router, infer } = await fixture(t, undefined, { uiDir });
+  const origin = router.dashboard!.origin, host = new URL(origin).host;
+  const page = await httpRequest(origin, "/", { headers: { host } });
+  assert.equal(page.status, 503);
+  assert.match(page.text, /npm run build:ui/);
+  assert.equal((await httpRequest(origin, "/index.html", { headers: { host } })).status, 404);
+  assert.match(await infer(), /claude-fixture/);
+});
+
+test("the dashboard serves what the management page's manifest entry needs", () => {
+  const files = servedFiles(uiBuild());
+  assert.deepEqual([...files].sort(), ["/assets/index-a1.js", "/assets/shared-c3.js", "/assets/shared-d4.css", "/index.html", "/third-party-licenses.txt"]);
 });
 
 test("a dashboard port conflict fails clearly", { skip }, async (t) => {

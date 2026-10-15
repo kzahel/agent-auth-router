@@ -2,22 +2,27 @@
 // recent requests. Everything here is provider-reported metadata; output
 // marked "~" includes a live estimate the provider has not yet replaced.
 
-import { TrafficGraph, formatBytes, formatNumber, sparkline } from "./graph.js";
+import { TrafficGraph, sparkline, type GraphMessage, type GraphPane } from "./chart/traffic-graph.ts";
+import { COST_ESTIMATED, ago, costTitle, formatBytes, formatCost, formatNumber } from "./lib/format.ts";
+import { QUOTA_STALE_MS, elapsedPercent, quotaLabel, tenth } from "./lib/quota.ts";
+import type { AppClient } from "./protocol/client.ts";
+import type { ActivityData, Counter, LiveSnapshot, Overview, QuotaWindow, RangeCost, RangeName, RequestEntry, ScopeRates, SessionSummary } from "./protocol/types.ts";
 
-const $ = (id) => document.getElementById(id);
-const element = (tag, text, className) => {
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
   const el = document.createElement(tag);
   if (text !== undefined) el.textContent = text;
   if (className) el.className = className;
   return el;
 };
 
-const RANGES = [["2m", "2 min"], ["10m", "10 min"], ["1h", "1 hour"], ["24h", "24 hours"], ["30d", "30 days"]];
-const LIVE_RANGES = new Set(["2m", "10m", "1h"]);
+const RANGES: [RangeName, string][] = [["2m", "2 min"], ["10m", "10 min"], ["1h", "1 hour"], ["24h", "24 hours"], ["30d", "30 days"]];
+const LIVE_RANGES = new Set<RangeName>(["2m", "10m", "1h"]);
+type SeriesKey = "cacheRead" | "cacheWrite" | "input" | "output" | "bytesUp" | "bytesSent" | "bytesDown";
 // Output is drawn over the input bands, so the three token series take the
 // palette's first three slots, which validate as distinct in every pairing in
 // both modes. Cache read is background volume, off by default, in a neutral.
-const SERIES = {
+const SERIES: Record<SeriesKey, { label: string; slot: number | "neutral" }> = {
   cacheRead: { label: "Cache read", slot: "neutral" },
   cacheWrite: { label: "Cache write", slot: 2 },
   input: { label: "Uncached input", slot: 3 },
@@ -27,45 +32,49 @@ const SERIES = {
   bytesSent: { label: "Sent upstream", slot: 2 },
   bytesDown: { label: "Downloaded", slot: 4 },
 };
+type Units = "tokens" | "bytes";
+type Activity = "requests" | "sessions";
 // The view a new browser starts with, and what Reset view returns to.
-const DEFAULT_VIEW = { range: "2m", scope: "all", units: "tokens", activity: "requests", hidden: ["cacheRead"] };
+const DEFAULT_VIEW = { range: "2m" as RangeName, scope: "all", units: "tokens" as Units, activity: "requests" as Activity, hidden: ["cacheRead"] as SeriesKey[] };
 const VIEW_KEYS = ["dash-range", "dash-scope", "dash-units", "dash-activity", "dash-hidden"];
-const color = (slot) => getComputedStyle(document.documentElement).getPropertyValue(`--series-${slot}`).trim();
-const sent = (rate) => rate.input + rate.cacheRead + rate.cacheWrite;
+const color = (slot: number | "neutral") => getComputedStyle(document.documentElement).getPropertyValue(`--series-${slot}`).trim();
+const sent = (rate: Record<Counter, number>) => rate.input + rate.cacheRead + rate.cacheWrite;
 
-export function createDashboard({ client, overview }) {
-  const graph = new TrafficGraph($("dash-graph"), $("dash-tooltip"));
-  const quotaGraph = new TrafficGraph($("dash-quota-graph"), $("dash-quota-tooltip"));
-  let range = localStorage.getItem("dash-range") ?? DEFAULT_VIEW.range;
+interface PaneSpec extends Omit<GraphPane, "series"> { series: SeriesKey[]; line?: SeriesKey[] }
+
+export function createDashboard({ client, overview }: { client: AppClient; overview: () => Overview | undefined }) {
+  const graph = new TrafficGraph($<HTMLCanvasElement>("dash-graph"), $("dash-tooltip"));
+  const quotaGraph = new TrafficGraph($<HTMLCanvasElement>("dash-quota-graph"), $("dash-quota-tooltip"));
+  let range = (localStorage.getItem("dash-range") ?? DEFAULT_VIEW.range) as RangeName;
   if (!RANGES.some(([key]) => key === range)) range = DEFAULT_VIEW.range;
   let scope = localStorage.getItem("dash-scope") ?? DEFAULT_VIEW.scope;
-  let units = localStorage.getItem("dash-units") === "bytes" ? "bytes" : DEFAULT_VIEW.units;
-  let activity = localStorage.getItem("dash-activity") === "sessions" ? "sessions" : DEFAULT_VIEW.activity;
+  let units: Units = localStorage.getItem("dash-units") === "bytes" ? "bytes" : DEFAULT_VIEW.units;
+  let activity: Activity = localStorage.getItem("dash-activity") === "sessions" ? "sessions" : DEFAULT_VIEW.activity;
   // Series switched off in the legend. Cache reads start off: nearly all of what
   // is sent and cheap, they would flatten the costlier tokens to a hairline.
-  let hidden;
-  try { hidden = new Set(JSON.parse(localStorage.getItem("dash-hidden") ?? JSON.stringify(DEFAULT_VIEW.hidden))); } catch { hidden = new Set(DEFAULT_VIEW.hidden); }
+  let hidden: Set<SeriesKey>;
+  try { hidden = new Set(JSON.parse(localStorage.getItem("dash-hidden") ?? JSON.stringify(DEFAULT_VIEW.hidden)) as SeriesKey[]); } catch { hidden = new Set(DEFAULT_VIEW.hidden); }
   const isDefaultView = () => range === DEFAULT_VIEW.range && scope === DEFAULT_VIEW.scope && units === DEFAULT_VIEW.units
     && activity === DEFAULT_VIEW.activity && [...hidden].sort().join() === [...DEFAULT_VIEW.hidden].sort().join();
-  let live, requests = [], visible = false, lastEvent = 0;
-  let sessions, sessionsStored = true, sessionsTimer, rangeCost;
+  let live: LiveSnapshot | undefined, requests: RequestEntry[] = [], visible = false, lastEvent = 0;
+  let sessions: SessionSummary[] | undefined, sessionsStored = true, sessionsTimer: ReturnType<typeof setTimeout> | undefined, rangeCost: RangeCost | undefined;
   // Per account, the chart's shown series per second over the selected range,
   // from the router's history; resubscribed when the legend changes.
-  let accountTraffic, stopActivity;
+  let accountTraffic: ActivityData | undefined, stopActivity: (() => void) | undefined;
   const shownSeries = () => panes().flatMap(p => p.series).filter(key => !hidden.has(key));
   function subscribeActivity() {
     stopActivity?.();
-    stopActivity = visible ? client.subscribe("activity", { range, metrics: shownSeries() }, (message) => {
+    stopActivity = visible ? client.subscribe<ActivityData>("activity", { range, metrics: shownSeries() }, (message) => {
       if (message.type === "error") return;
-      accountTraffic = message.data;
+      accountTraffic = message.data as ActivityData;
       renderAccounts();
     }) : undefined;
   }
-  const stop = [];
+  const stop: (() => void)[] = [];
 
   // Tokens share one axis: new input and output are of similar size. Bytes keep
   // two panes, since uploads (whole contexts) dwarf downloads.
-  const panes = () => units === "tokens"
+  const panes = (): PaneSpec[] => units === "tokens"
     ? [{ title: "Tokens per second", series: ["cacheRead", "cacheWrite", "input", "output"], line: ["output"], stacked: true, format: formatNumber, unit: "/s" }]
     : [
       { title: "Uploaded · per second", series: ["bytesUp", "bytesSent"], format: formatBytes, unit: "/s" },
@@ -75,13 +84,13 @@ export function createDashboard({ client, overview }) {
     const shown = panes().filter(p => p.series.some(key => !hidden.has(key)));
     $("dash-graph").classList.toggle("single-pane", shown.length <= 1);
     // Disabled rather than hidden, so the controls row never shifts.
-    $("dash-reset").disabled = isDefaultView();
+    $<HTMLButtonElement>("dash-reset").disabled = isDefaultView();
     graph.configure((shown.length ? shown : panes().slice(0, 1)).map(p => ({ ...p,
       series: p.series.filter(key => !hidden.has(key)).map(key => ({ key, label: SERIES[key].label, color: color(SERIES[key].slot), line: p.line?.includes(key) })),
       context: p.series.filter(key => hidden.has(key)).map(key => ({ key, label: SERIES[key].label })) })), { live: LIVE_RANGES.has(range) });
     renderLegend();
   };
-  const rangeSpan = () => RANGES.find(([key]) => key === range)[1].replace(/^1 /, "");
+  const rangeSpan = () => RANGES.find(([key]) => key === range)![1].replace(/^1 /, "");
   // Every series with its total for the selected range, which leads the legend
   // so the totals are not read as running counts. Each entry switches its series
   // on or off; the full values table sits collapsed under the chart.
@@ -128,26 +137,27 @@ export function createDashboard({ client, overview }) {
     stop.push(client.subscribe("history", history, (message) => {
       if (message.type === "error") return;
       lastEvent = Date.now();
-      if (!graph.update(message)) { for (const off of stop.splice(0)) off(); subscribe(); return; }
+      if (!graph.update(message as GraphMessage)) { for (const off of stop.splice(0)) off(); subscribe(); return; }
       renderSummary();
     }));
-    stop.push(client.subscribe("live", {}, (message) => {
+    stop.push(client.subscribe<LiveSnapshot>("live", {}, (message) => {
       if (message.type === "error") return;
       lastEvent = Date.now();
       // Snapshots repeat after a reconnect, such as a router restart.
       if (message.type === "snapshot") loadStored(0);
-      live = message.data;
+      live = message.data as LiveSnapshot;
       renderLive();
     }));
     subscribeActivity();
     stop.push(client.subscribe("requests", {}, (message) => {
-      if (message.type === "snapshot") requests = message.data.requests;
+      if (message.type === "snapshot") requests = (message.data as { requests: RequestEntry[] }).requests;
       else if (message.type === "request") {
-        const index = requests.findIndex(r => r.id === message.data.id);
-        if (index >= 0) requests[index] = message.data; else requests.unshift(message.data);
+        const entry = message.data as RequestEntry;
+        const index = requests.findIndex(r => r.id === entry.id);
+        if (index >= 0) requests[index] = entry; else requests.unshift(entry);
         // As many as the router keeps, so a scoped view still has history.
         requests = requests.slice(0, 200);
-        if (message.data.outcome !== "active") loadStored();
+        if (entry.outcome !== "active") loadStored();
       }
       renderRequests();
       renderSessions();
@@ -158,25 +168,26 @@ export function createDashboard({ client, overview }) {
       quotaGraph.configure([], { live: LIVE_RANGES.has(range), rate: false });
       stop.push(client.subscribe("history", { range, scope, metrics: ["quota"] }, (message) => {
         if (message.type === "error") return;
-        if (!quotaGraph.update(message)) { subscribe(); return; }
-        const keys = Object.keys(quotaGraph.data.series).filter(k => k.startsWith("quota:")).sort();
-        $("dash-quota-empty").hidden = keys.some(k => quotaGraph.data.series[k].some(v => v !== null));
+        if (!quotaGraph.update(message as GraphMessage)) { subscribe(); return; }
+        const series = quotaGraph.data!.series;
+        const keys = Object.keys(series).filter(k => k.startsWith("quota:")).sort();
+        $("dash-quota-empty").hidden = keys.some(k => series[k]!.some(v => v !== null));
         quotaGraph.configure([{ title: "Quota used · %", series: keys.slice(0, 4).map((key, i) => ({ key, label: quotaLabel({ bucket: key.slice(6) }), color: color(i + 1) })),
           maximum: 100, format: (v) => `${Math.round(v)}%`, unit: "" }], { live: LIVE_RANGES.has(range), rate: false });
       }));
     }
   }
 
-  function accountLabel(id) {
+  function accountLabel(id: string) {
     const a = overview()?.accounts.find(a => a.id === id);
     if (!a) return id;
     return a.nickname || (a.home ?? a.id).split("/").filter(Boolean).at(-1) || a.id;
   }
-  function scopeRate(key) { return live?.scopes[key]; }
+  function scopeRate(key: string): ScopeRates | undefined { return live?.scopes[key]; }
 
   function renderScopes() {
-    const select = $("dash-scope"), snapshot = overview();
-    const options = [["all", "All traffic"]];
+    const select = $<HTMLSelectElement>("dash-scope"), snapshot = overview();
+    const options: [string, string][] = [["all", "All traffic"]];
     for (const p of snapshot?.pools ?? []) options.push([`pool:${p.id}`, `Pool · ${p.name}`]);
     for (const a of snapshot?.accounts ?? []) options.push([`account:${a.id}`, `Account · ${accountLabel(a.id)}`]);
     if (!options.some(([key]) => key === scope)) scope = "all";
@@ -189,7 +200,7 @@ export function createDashboard({ client, overview }) {
 
   function renderLive() {
     const s = scopeRate(scope);
-    const stats = [
+    const stats: [string, string][] = [
       // Every tile names its window. Rates average the last minute: a request
       // uploads its context in about a second, so a 5-second rate mostly read 0.
       // Sessions count conversations, however many requests each runs at once.
@@ -198,10 +209,10 @@ export function createDashboard({ client, overview }) {
       ...(units === "tokens" ? [
         ["Input · 1 min", s ? `${formatNumber(sent(s.minute) / 60)}/s` : "0/s"],
         ["Output · 1 min", s ? `${formatNumber(s.minute.output / 60)}/s` : "0/s"],
-      ] : [
+      ] as [string, string][] : [
         ["Uploaded · 1 min", `${formatBytes(s ? s.minute.bytesUp / 60 : 0)}/s`],
         ["Downloaded · 1 min", `${formatBytes(s ? s.minute.bytesDown / 60 : 0)}/s`],
-      ]),
+      ] as [string, string][]),
       ["Cache hit · 1 min", s && sent(s.minute) ? `${Math.round((s.minute.cacheRead / sent(s.minute)) * 100)}%` : "–"],
       ["Requests · 1 min", s ? String(s.minute.requests) : "0"],
       ["Errors · 1 min", s ? String(s.minute.errors) : "0"],
@@ -211,15 +222,15 @@ export function createDashboard({ client, overview }) {
       tiles.replaceChildren(...stats.map(([label]) => { const tile = element("div", undefined, "stat"); tile.append(element("span", label, "stat-label"), element("strong", "")); return tile; }));
     }
     stats.forEach(([label, value], i) => {
-      tiles.children[i].querySelector(".stat-label").textContent = label;
-      tiles.children[i].querySelector("strong").textContent = value;
+      tiles.children[i]!.querySelector(".stat-label")!.textContent = label;
+      tiles.children[i]!.querySelector("strong")!.textContent = value;
     });
     renderAccounts();
     graph.stale = Date.now() - lastEvent > 3000;
   }
 
   function renderAccounts() {
-    const body = $("dash-accounts").tBodies[0], snapshot = overview();
+    const body = $<HTMLTableElement>("dash-accounts").tBodies[0]!, snapshot = overview();
     const accounts = snapshot?.accounts ?? [];
     $("dash-accounts-empty").hidden = accounts.length > 0;
     $("dash-accounts").hidden = !accounts.length;
@@ -233,27 +244,28 @@ export function createDashboard({ client, overview }) {
         for (let i = 0; i < 6; i++) row.append(element("td"));
         const spark = element("canvas", undefined, "sparkline");
         spark.setAttribute("aria-hidden", "true");
-        row.cells[5].append(spark);
+        row.cells[5]!.append(spark);
       }
+      const cells = row.cells;
       const s = scopeRate(`account:${a.id}`);
       const last = requests.find(r => r.accountId === a.id);
       // Proxied responses update quota between overview refreshes.
       row.classList.toggle("in-scope", inScope(a.id));
-      row.cells[0].textContent = `${accountLabel(a.id)} · ${a.provider}${a.enabled ? "" : " · disabled"}`;
-      row.cells[1].textContent = units === "tokens"
+      cells[0]!.textContent = `${accountLabel(a.id)} · ${a.provider}${a.enabled ? "" : " · disabled"}`;
+      cells[1]!.textContent = units === "tokens"
         ? (s ? `${formatNumber(sent(s.rate))} / ${formatNumber(s.rate.output)}` : "0 / 0")
         : `${formatBytes(s?.rate.bytesUp ?? 0)} / ${formatBytes(s?.rate.bytesDown ?? 0)}`;
-      row.cells[2].textContent = s ? String(s.active) : "0";
+      cells[2]!.textContent = s ? String(s.active) : "0";
       const recent = live?.quota?.[a.id];
-      renderQuota(row.cells[3], recent ?? a.windows, { at: recent ? live.quotaAt?.[a.id] : Date.parse(a.quota?.observedAt ?? ""),
-        checking: live?.quotaChecking?.includes(a.id), error: a.error });
-      row.cells[4].textContent = last ? ago(last.startedAt) : "–";
+      renderQuota(cells[3]!, recent ?? a.windows, { at: recent ? live?.quotaAt?.[a.id] ?? NaN : Date.parse(a.quota?.observedAt ?? ""),
+        checking: !!live?.quotaChecking?.includes(a.id), error: a.error ?? undefined });
+      cells[4]!.textContent = last ? ago(last.startedAt) : "–";
       // One scale for every row, so line heights compare across accounts.
       const values = accountTraffic?.accounts[a.id] ?? [];
-      const total = values.reduce((sum, v) => sum + (v ?? 0), 0) * (accountTraffic?.bucketMs ?? 0) / 1000;
-      sparkline(row.cells[5].firstChild, values, getComputedStyle(document.documentElement).getPropertyValue("--muted").trim(), trafficPeak);
+      const total = values.reduce<number>((sum, v) => sum + (v ?? 0), 0) * (accountTraffic?.bucketMs ?? 0) / 1000;
+      sparkline(cells[5]!.firstChild as HTMLCanvasElement, values, getComputedStyle(document.documentElement).getPropertyValue("--muted").trim(), trafficPeak);
       const format = units === "tokens" ? formatNumber : formatBytes, unit = units === "tokens" ? " tokens" : "";
-      row.cells[5].title = accountTraffic ? `${accountLabel(a.id)}: ${format(total)}${unit}, peak ${format(Math.max(0, ...values.map(v => v ?? 0)))}/s, in the last ${rangeSpan()} (${shownSeries().map(key => SERIES[key].label.toLowerCase()).join(", ") || "no series shown"})` : "";
+      cells[5]!.title = accountTraffic ? `${accountLabel(a.id)}: ${format(total)}${unit}, peak ${format(Math.max(0, ...values.map(v => v ?? 0)))}/s, in the last ${rangeSpan()} (${shownSeries().map(key => SERIES[key].label.toLowerCase()).join(", ") || "no series shown"})` : "";
       return row;
     });
     if (ordered.some((row, i) => body.rows[i] !== row) || body.rows.length !== ordered.length) body.replaceChildren(...ordered);
@@ -262,16 +274,16 @@ export function createDashboard({ client, overview }) {
   // The Show selector scopes the whole tab: tiles, graph, the highlighted
   // account rows and recent requests. A request carries its pool, if any;
   // an account row is in a pool's scope when the account is a member.
-  function inScope(accountId, poolId) {
+  function inScope(accountId: string, poolId?: string | null) {
     if (scope === `account:${accountId}`) return true;
     if (poolId !== undefined) return scope === `pool:${poolId}`;
     return !!overview()?.pools.find(p => `pool:${p.id}` === scope)?.accountIds.includes(accountId);
   }
 
   function renderActivity() {
-    $("dash-reset").disabled = isDefaultView();
+    $<HTMLButtonElement>("dash-reset").disabled = isDefaultView();
     $("dash-activity-title").textContent = activity === "sessions" ? "Recent sessions" : "Recent requests";
-    for (const button of $("dash-activity").children) button.setAttribute("aria-pressed", String(button.dataset.view === activity));
+    for (const button of $("dash-activity").children) button.setAttribute("aria-pressed", String((button as HTMLElement).dataset.view === activity));
     renderRequests();
     renderSessions();
   }
@@ -284,7 +296,10 @@ export function createDashboard({ client, overview }) {
     clearTimeout(sessionsTimer);
     sessionsTimer = setTimeout(async () => {
       try {
-        const [result, cost] = await Promise.all([client.call("sessions/recent", { range, scope }), client.call("history/cost", { range, scope })]);
+        const [result, cost] = await Promise.all([
+          client.call<{ sessions: SessionSummary[]; stored: boolean }>("sessions/recent", { range, scope }),
+          client.call<RangeCost>("history/cost", { range, scope }),
+        ]);
         sessions = result.sessions;
         sessionsStored = result.stored;
         rangeCost = cost;
@@ -296,13 +311,13 @@ export function createDashboard({ client, overview }) {
 
   // Legend total: what the selected range's traffic would cost at API list prices.
   function renderCost() {
-    const target = $("dash-legend").querySelector(".legend-cost");
+    const target = $("dash-legend").querySelector<HTMLElement>(".legend-cost");
     if (!target) return;
     const summary = rangeCost?.summary;
     target.hidden = !summary || !summary.requests;
     if (!summary) return;
     target.textContent = `${summary.estimated ? "≈ " : ""}${formatCost(summary.cost)} at API rates`;
-    target.title = [`Estimated cost of these ${summary.requests} requests at the providers' published API prices (genai-prices ${rangeCost.prices.date}).`,
+    target.title = [`Estimated cost of these ${summary.requests} requests at the providers' published API prices (genai-prices ${rangeCost!.prices.date}).`,
       "Subscription accounts are not billed these amounts.",
       ...(summary.estimated ? [`${summary.estimated} partly estimated: cache writes recorded before the router noted their duration (priced as 1-hour), or output never reported.`] : []),
       ...(summary.unpriced ? [`${summary.unpriced} unpriced: no price for their model.`] : [])].join(" ");
@@ -311,11 +326,11 @@ export function createDashboard({ client, overview }) {
   function renderSessions() {
     const shown = activity === "sessions";
     $("dash-sessions-empty").textContent = !sessions ? "Loading sessions…" : sessionsStored ? "No sessions in this range." : "Sessions need the router's history database, which could not be opened.";
-    $("dash-sessions-empty").hidden = !shown || sessions?.length > 0;
+    $("dash-sessions-empty").hidden = !shown || (sessions?.length ?? 0) > 0;
     $("dash-sessions").hidden = !shown || !sessions?.length;
     if (!shown || !sessions) return;
     const streaming = new Set(requests.filter(r => r.outcome === "active" && r.sessionId).map(r => r.sessionId));
-    $("dash-sessions").tBodies[0].replaceChildren(...sessions.slice(0, 25).map(s => {
+    $<HTMLTableElement>("dash-sessions").tBodies[0]!.replaceChildren(...sessions.slice(0, 25).map(s => {
       const row = element("tr");
       const input = s.usage.input + s.usage.cacheRead + s.usage.cacheWrite;
       const cached = input ? Math.round((s.usage.cacheRead / input) * 100) : 0;
@@ -330,12 +345,13 @@ export function createDashboard({ client, overview }) {
         s.cost.requests > s.cost.unpriced ? `${s.cost.estimated ? "~" : ""}${formatCost(s.cost.cost)}` : "–",
         active ? "streaming" : ago(s.lastAt),
       ]) row.append(element("td", text));
-      row.cells[0].title = s.sessionId;
-      row.cells[1].title = row.cells[1].textContent;
-      row.cells[2].title = s.model ?? "";
-      row.cells[3].title = `${s.requests} requests${s.errors ? `, ${s.errors} failed` : ""} since ${new Date(s.firstAt).toLocaleString()}`;
-      row.cells[6].title = costTitle(s.cost.estimated > 0, s.cost.unpriced);
-      if (s.errors) row.cells[3].classList.add("danger");
+      const cells = row.cells;
+      cells[0]!.title = s.sessionId;
+      cells[1]!.title = cells[1]!.textContent ?? "";
+      cells[2]!.title = s.model ?? "";
+      cells[3]!.title = `${s.requests} requests${s.errors ? `, ${s.errors} failed` : ""} since ${new Date(s.firstAt).toLocaleString()}`;
+      cells[6]!.title = costTitle(s.cost.estimated > 0, s.cost.unpriced);
+      if (s.errors) cells[3]!.classList.add("danger");
       // Idle past the provider's five-minute prompt cache.
       row.classList.toggle("idle", !active && Date.now() - s.lastAt > 5 * 60_000);
       return row;
@@ -343,7 +359,7 @@ export function createDashboard({ client, overview }) {
   }
 
   function renderRequests() {
-    const body = $("dash-requests").tBodies[0];
+    const body = $<HTMLTableElement>("dash-requests").tBodies[0]!;
     const shown = activity === "requests" ? requests.filter(r => scope === "all" || inScope(r.accountId, r.poolId ?? null)) : [];
     $("dash-requests-empty").textContent = scope === "all" ? "No requests since the router started." : "No recent requests in this scope.";
     $("dash-requests-empty").hidden = activity !== "requests" || shown.length > 0;
@@ -364,23 +380,24 @@ export function createDashboard({ client, overview }) {
         `${duration.toFixed(duration < 10 ? 1 : 0)} s`,
         status,
       ]) row.append(element("td", text));
-      row.cells[1].title = row.cells[1].textContent;
-      row.cells[2].title = r.model ?? r.route;
-      row.cells[5].title = r.outcome === "active" ? "Priced when the response ends" : r.cost === null || r.cost === undefined ? "No price for this model" : costTitle(r.costFlags & COST_ESTIMATED, 0);
+      const cells = row.cells;
+      cells[1]!.title = cells[1]!.textContent ?? "";
+      cells[2]!.title = r.model ?? r.route;
+      cells[5]!.title = r.outcome === "active" ? "Priced when the response ends" : r.cost === null || r.cost === undefined ? "No price for this model" : costTitle(!!(r.costFlags & COST_ESTIMATED), 0);
       if (r.outcome === "error") row.classList.add("error");
       return row;
     }));
   }
 
   function renderSummary() {
-    const data = graph.data, body = $("dash-summary").tBodies[0];
+    const data = graph.data, body = $<HTMLTableElement>("dash-summary").tBodies[0]!;
     if (!data) return;
     const length = data.completeThrough - data.start + 1, perSecond = data.bucketMs / 1000;
     const format = units === "tokens" ? formatNumber : formatBytes;
     // Totals are whole counts; the rate formatter would print 6 as "6.0".
-    const formatTotal = (value) => value < 10 ? String(Math.round(value)) : format(value);
+    const formatTotal = (value: number) => value < 10 ? String(Math.round(value)) : format(value);
     body.replaceChildren(...panes().flatMap(p => p.series).map(key => {
-      const values = [];
+      const values: number[] = [];
       for (let i = 0; i < length; i++) { const v = data.series[key]?.[i]; if (v !== null && v !== undefined) values.push(v); }
       const total = values.reduce((a, b) => a + b, 0);
       const row = element("tr");
@@ -391,7 +408,7 @@ export function createDashboard({ client, overview }) {
       name.append(label);
       name.scope = "row";
       row.append(name);
-      for (const value of [values.length ? values.at(-1) / perSecond : null, values.length ? total / values.length / perSecond : null, values.length ? Math.max(...values) / perSecond : null]) {
+      for (const value of [values.length ? values.at(-1)! / perSecond : null, values.length ? total / values.length / perSecond : null, values.length ? Math.max(...values) / perSecond : null]) {
         row.append(element("td", value === null ? "–" : `${format(value)}/s`));
       }
       row.append(element("td", formatTotal(total)));
@@ -403,6 +420,9 @@ export function createDashboard({ client, overview }) {
 
   // Controls.
   const rangeGroup = $("dash-range");
+  const pressed = (group: HTMLElement, attribute: "range" | "units", value: string) => {
+    for (const b of group.children) b.setAttribute("aria-pressed", String((b as HTMLElement).dataset[attribute] === value));
+  };
   rangeGroup.replaceChildren(...RANGES.map(([key, label]) => {
     const b = element("button", label);
     b.type = "button";
@@ -411,17 +431,17 @@ export function createDashboard({ client, overview }) {
     b.onclick = () => {
       range = key;
       localStorage.setItem("dash-range", range);
-      for (const other of rangeGroup.children) other.setAttribute("aria-pressed", String(other.dataset.range === range));
+      pressed(rangeGroup, "range", range);
       subscribe();
     };
     return b;
   }));
-  for (const b of $("dash-units").children) {
+  for (const b of $("dash-units").children as HTMLCollectionOf<HTMLButtonElement>) {
     b.setAttribute("aria-pressed", String(b.dataset.units === units));
     b.onclick = () => {
-      units = b.dataset.units;
+      units = b.dataset.units as Units;
       localStorage.setItem("dash-units", units);
-      for (const other of $("dash-units").children) other.setAttribute("aria-pressed", String(other.dataset.units === units));
+      pressed($("dash-units"), "units", units);
       subscribe();
     };
   }
@@ -429,32 +449,32 @@ export function createDashboard({ client, overview }) {
     for (const key of VIEW_KEYS) localStorage.removeItem(key);
     ({ range, scope, units, activity } = DEFAULT_VIEW);
     hidden = new Set(DEFAULT_VIEW.hidden);
-    for (const b of rangeGroup.children) b.setAttribute("aria-pressed", String(b.dataset.range === range));
-    for (const b of $("dash-units").children) b.setAttribute("aria-pressed", String(b.dataset.units === units));
+    pressed(rangeGroup, "range", range);
+    pressed($("dash-units"), "units", units);
     renderScopes();
     renderAccounts();
     renderActivity();
     subscribe();
   };
-  $("dash-scope").onchange = () => { scope = $("dash-scope").value; localStorage.setItem("dash-scope", scope); renderAccounts(); renderRequests(); subscribe(); };
-  for (const button of $("dash-activity").children) {
+  $<HTMLSelectElement>("dash-scope").onchange = () => { scope = $<HTMLSelectElement>("dash-scope").value; localStorage.setItem("dash-scope", scope); renderAccounts(); renderRequests(); subscribe(); };
+  for (const button of $("dash-activity").children as HTMLCollectionOf<HTMLButtonElement>) {
     button.onclick = () => {
       // Hold the section's height so a shorter view does not pull the page up.
       const body = $("dash-activity-body");
       body.style.minHeight = `${Math.max(body.offsetHeight, parseFloat(body.style.minHeight) || 0)}px`;
-      activity = button.dataset.view;
+      activity = button.dataset.view as Activity;
       localStorage.setItem("dash-activity", activity);
       renderActivity();
       loadStored(0);
     };
   }
   renderActivity();
-  $("dash-goto-accounts").onclick = () => document.getElementById("tab-accounts").click();
+  $("dash-goto-accounts").onclick = () => $("tab-accounts").click();
   setInterval(() => { if (visible) { graph.stale = Date.now() - lastEvent > 3000; if (requests.some(r => r.outcome === "active")) renderRequests(); if (activity === "sessions") renderSessions(); } }, 1000);
 
   return {
     /** The tab subscribes only while it is shown. */
-    show(shown) {
+    show(shown: boolean) {
       if (visible === shown) return;
       visible = shown;
       graph.visible = shown;
@@ -470,16 +490,12 @@ export function createDashboard({ client, overview }) {
   };
 }
 
-// Matches the router's DISPLAY_QUOTA_STALE_MS: an open dashboard has it
-// reprobe readings this old, so older ones are drawn as last known.
-const QUOTA_STALE_MS = 15 * 60_000;
-
 // One meter per window: label, used bar with a tick where usage would be on
 // an even pace, and the rounded percent. Elements are reused so values glide
 // instead of the row reflowing on every update. A reading kept from before a
 // restart, or not refreshed lately, is faded with its age until a probe lands;
 // the age sits over the bars so the row never changes height.
-function renderQuota(cell, windows, { at, checking, error }) {
+function renderQuota(cell: HTMLTableCellElement, windows: QuotaWindow[] | undefined, { at, checking, error }: { at: number; checking: boolean; error: string | undefined }) {
   const shown = (windows ?? []).filter(w => w.usedPercent != null);
   if (!shown.length) {
     const text = checking ? "checking…" : error ? "check failed" : "not checked";
@@ -494,10 +510,10 @@ function renderQuota(cell, windows, { at, checking, error }) {
     cell.replaceChildren(wrapper);
     cell.title = "";
   }
-  const [list, noteElement] = wrapper.children;
-  const existing = new Map([...list.children].map(m => [m.dataset.bucket, m]));
+  const list = wrapper.children[0] as HTMLElement, noteElement = wrapper.children[1] as HTMLElement;
+  const existing = new Map([...list.children].map(m => [(m as HTMLElement).dataset.bucket, m as HTMLElement]));
   if ([...existing.keys()].join() !== shown.map(w => w.bucket).join()) list.replaceChildren(...shown.map(w => existing.get(w.bucket) ?? meter(w.bucket)));
-  shown.forEach((w, i) => updateMeter(list.children[i], w));
+  shown.forEach((w, i) => updateMeter(list.children[i] as HTMLElement, w));
   const stale = !(Date.now() - at < QUOTA_STALE_MS);
   list.classList.toggle("stale", stale);
   const note = checking ? "checking…" : stale ? (Number.isFinite(at) ? `as of ${ago(at)}` : "age unknown") : "";
@@ -505,7 +521,7 @@ function renderQuota(cell, windows, { at, checking, error }) {
   noteElement.hidden = !note;
 }
 
-function meter(bucket) {
+function meter(bucket: string) {
   const row = element("div", undefined, "meter");
   row.dataset.bucket = bucket;
   const track = element("span", undefined, "meter-track");
@@ -514,10 +530,10 @@ function meter(bucket) {
   return row;
 }
 
-function updateMeter(row, w) {
-  const used = Math.min(100, w.usedPercent);
-  const [label, track, value] = row.children;
-  const [fill, tick] = track.children;
+function updateMeter(row: HTMLElement, w: QuotaWindow) {
+  const used = Math.min(100, w.usedPercent!);
+  const [label, track, value] = row.children as unknown as [HTMLElement, HTMLElement, HTMLElement];
+  const [fill, tick] = track.children as unknown as [HTMLElement, HTMLElement];
   label.textContent = quotaLabel(w);
   value.textContent = `${Math.round(used)}%`;
   fill.style.width = `${used}%`;
@@ -528,41 +544,4 @@ function updateMeter(row, w) {
   row.title = [`${w.bucket}: ${tenth(used)}% used, ${tenth(Math.max(0, 100 - used))}% left`,
     w.resetsAt ? `resets ${new Date(w.resetsAt).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "reset time unknown",
     ...(pace === null ? [] : [`mark: ${Math.round(pace)}% of the window has passed`])].join(" · ");
-}
-
-// five_hour → 5h, seven_day_opus → 7d opus, codex:primary over 300 minutes → 5h.
-function quotaLabel(w) {
-  const name = w.bucket.replace(/^codex:/, "").replace(/^five_hour/, "5h").replace(/^seven_day/, "7d").replaceAll("_", " ");
-  const m = w.windowMinutes;
-  if (!/^(primary|secondary)$/.test(name) || !m) return name;
-  return m % 1440 === 0 ? `${m / 1440}d` : m % 60 === 0 ? `${m / 60}h` : `${m}m`;
-}
-
-const tenth = (value) => Math.round(value * 10) / 10;
-
-function elapsedPercent(w) {
-  if (!w.windowMinutes || !w.resetsAt) return null;
-  const elapsed = 1 - (Date.parse(w.resetsAt) - Date.now()) / (w.windowMinutes * 60_000);
-  return elapsed >= 0 && elapsed <= 1 ? elapsed * 100 : null;
-}
-
-// history.ts COST_* bits that make a cost partly estimated.
-const COST_ESTIMATED = 1 | 2 | 8;
-function formatCost(value) {
-  if (value >= 100) return `$${Math.round(value).toLocaleString()}`;
-  if (value >= 0.01 || value === 0) return `$${value.toFixed(2)}`;
-  return "<$0.01";
-}
-function costTitle(estimated, unpriced) {
-  return ["At the providers' published API prices; subscription accounts are not billed this.",
-    ...(estimated ? ["Partly estimated: cache writes recorded before the router noted their duration (priced as 1-hour), or output never reported."] : []),
-    ...(unpriced ? [`${unpriced} requests have no price for their model.`] : [])].join(" ");
-}
-
-function ago(at) {
-  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
-  if (seconds < 60) return `${seconds} s ago`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
-  if (seconds < 86_400) return `${Math.round(seconds / 3600)} h ago`;
-  return `${Math.round(seconds / 86_400)} d ago`;
 }

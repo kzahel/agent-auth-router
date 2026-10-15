@@ -154,7 +154,7 @@ pipe underneath differs.
   entry, matching the official CLI. This rule moved from Rust into the core.
   The headless CLI keeps its file default.
 
-The UI depends on a port (`desktop/ui/app-client.js`). A shared `AppClient`
+The UI depends on a port (`ui/src/protocol/client.ts`). A shared `AppClient`
 handles request IDs, subscriptions, change listeners and reconnection with
 backoff. Automatic reconnection never starts a stopped core.
 
@@ -202,10 +202,14 @@ specifies. Nothing in this document is served on the inference listener.
   `AAR_DASHBOARD_PORT`, or disable with `--no-dashboard`. A taken port fails
   startup with a message naming those options. The desktop app's
   `desktop-serve` and brief offline administration never open it.
-- **UI files:** the same files as the desktop. In a checkout they come from
-  `desktop/ui`; the desktop bundle copies the allowlisted assets to
-  `resources/ui`, so the bundled CLI can serve them too. Terminal-window
-  assets and vendored xterm are not served.
+- **UI files:** the same build as the desktop window, `ui/dist` in a
+  checkout (`npm run build:ui`). The desktop bundle copies it to
+  `resources/ui`, so the bundled CLI can serve it too, and the Docker image
+  builds it in a separate stage. The dashboard serves `index.html`, the
+  files its entry needs according to the build's Vite manifest, and the
+  license notices; terminal-window assets, including xterm, are not served.
+  Hashed assets are cached as immutable. Without a build, the router still
+  runs and `/` answers 503 naming `npm run build:ui`.
 - **Sign-in:** `aar serve` prints `http://127.0.0.1:<port>/#code=<code>`, and
   `aar dashboard url` prints a fresh link.
   - Codes are single-use, valid for an hour, and at most 16 are outstanding.
@@ -228,7 +232,7 @@ specifies. Nothing in this document is served on the inference listener.
   - JSON request bodies only, and no CORS headers.
   - A strict CSP with `'self'` scripts and `connect-src` limited to the
     page's own WebSocket origin. `nosniff`, `no-referrer`, frame denial and
-    `no-store` on every response.
+    `no-store` on every response except content-hashed assets.
 - **Desktop-only features in web mode:**
   - **Sign in** shows the official login command with a copy button, then
     **Check sign-in**.
@@ -236,12 +240,14 @@ specifies. Nothing in this document is served on the inference listener.
   - Stopping the router from the web UI follows the desktop's idle rules;
     restarting it needs the command line.
 - **Lifecycle:** closing the browser does not affect the router.
-- **Development:** UI files are read on each request with `no-store`, so a
-  browser refresh shows edits.
-  - `aar serve --dev` also watches the UI folder and sends signed-in
-    browsers a `ui-reload` event when a served file changes; desktop
-    sessions never receive it.
-  - `npm run dev` runs `aar serve --dev`. The router restarts only on
+- **Development:** files are read on each request, and `index.html` is
+  `no-store`, so a browser refresh after a rebuild shows edits.
+  - `aar serve --dev` also watches the build and sends signed-in browsers a
+    `ui-reload` event when a served file changes; desktop sessions never
+    receive it.
+  - `npm run dev` runs `vite build --watch` beside `aar serve --dev`. No
+    Vite dev server is used, so the session cookie and exact Host and Origin
+    checks apply unchanged. The router restarts only on
     request: after core edits, `aar restart` restarts it once idle (see
     [owner management](owner-management.md#restarting-aar-serve-2026-10-11)).
     The browser's session cookie keeps it signed in.
@@ -253,7 +259,7 @@ for that case.
 
 ## Dashboard tab
 
-`desktop/ui/dashboard.js` and `graph.js`. The Dashboard is the first tab; with
+`ui/src/dashboard.ts` and `ui/src/chart/traffic-graph.ts`. The Dashboard is the first tab; with
 no accounts it links to Accounts.
 
 - **Controls:** scope (All traffic, each pool, each account), range (2 min to

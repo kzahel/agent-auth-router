@@ -4,7 +4,7 @@
   "version": "0.1.13",
   "identifier": "com.graehlarts.agent-auth-router",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../../ui/dist"
   },
   "app": {
     "withGlobalTauri": true,
