@@ -2,6 +2,7 @@
 import { discoverProfiles, inspectProfile, physicalHome, profileHome, profileStore } from "./profiles.ts";
 import { deleteProfile, profileRemoval } from "./profile-removal.ts";
 import { TerminalLogin } from "./terminal-login.ts";
+import { diagnose, diagnosticOptions } from "./diagnostics.ts";
 import { BUILD_INFO } from "./build-info.ts";
 import { providerExecutable } from "./platform.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -198,6 +199,24 @@ export class OwnerService {
     });
   }
   async operation(operation: string, body: Record<string, unknown>): Promise<object> {
+    if (operation === "diagnostics") {
+      let options;
+      try { options = diagnosticOptions(body); } catch { throw new ControlError(400, "Choose an account for explicit diagnostic checks; options must be valid"); }
+      return diagnose(this.store, options, {
+        signIn: async account => {
+          const current = this.account({ id: account.id });
+          return (await (this.coordinators.get(current.id) ?? this.coordinator(current)).signIn()).state;
+        },
+        refresh: async account => {
+          const current = this.account({ id: account.id });
+          if (current.enabled === false) throw new Error("Account disabled");
+          await this.evidence.refresh(current.id);
+          if (this.evidence.get(current.id).error) throw new Error("Metadata unavailable");
+        },
+        observation: id => this.evidence.get(id),
+        status: id => this.coordinators.get(id)?.status(),
+      });
+    }
     if (operation === "providers") {
       const providers = await Promise.all(
         (["claude", "codex"] as const).map(async (provider) => {

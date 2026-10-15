@@ -16,7 +16,7 @@ export type AppKind = "desktop" | "web";
 
 /** Operations a UI may call. Dashboard session administration stays CLI-only. */
 export const UI_OPERATIONS: ReadonlySet<string> = new Set([
-  "overview", "providers", "profiles/discover", "profiles/inspect",
+  "overview", "providers", "diagnostics", "profiles/discover", "profiles/inspect",
   "accounts/add", "accounts/set-nickname", "accounts/set-enabled", "accounts/removal-preview", "accounts/remove",
   "accounts/refresh", "accounts/login", "accounts/login-status", "accounts/login-command", "accounts/open-login", "accounts/cancel-login",
   "pools/save", "pools/remove", "grants/save", "integrations/revoke", "stop",

@@ -4,6 +4,8 @@
 import { desktopStartupError } from "./desktop-lifecycle.ts";
 import { stopManagedProcesses } from "./process.ts";
 import { terminalLogin } from "./terminal-login.ts";
+import { diagnose, diagnosticOptions, type DiagnosticReport } from "./diagnostics.ts";
+import { assertPrivatePath } from "./control.ts";
 import { loginCommand, ownerRequest } from "./owner.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -30,6 +32,10 @@ const USAGE = `usage: aar [--state DIR] <command>
   account quotas [id]                    fetch quota percentages and reset times (JSON)
   account login-command <id>             print the official CLI login command
   renew <id>                             run the renewal helper once and verify
+  doctor [--account ID] [--check-login] [--refresh-usage] [--json]
+                                         diagnose without changing state; explicit checks
+                                         require an account; no inference is requested
+  terminal-login <id>                    interactive official login in a real TTY (e.g. tmux)
   client add <name> [--claude ACCT|--claude-pool POOL] [--codex ACCT|--codex-pool POOL]
                                          POOL is a pool id or name: each client session
                                          is pinned to the member the pool's policy picks
@@ -120,6 +126,10 @@ async function main(argv: string[]): Promise<void> {
       cancel: { type: "boolean" },
       "quiet-seconds": { type: "string" },
       help: { type: "boolean", short: "h" },
+      account: { type: "string" },
+      "check-login": { type: "boolean" },
+      "refresh-usage": { type: "boolean" },
+      json: { type: "boolean" },
     },
   });
   const [command, sub, arg] = positionals;
@@ -139,6 +149,26 @@ async function main(argv: string[]): Promise<void> {
   };
 
   switch (command) {
+    case "doctor": {
+      try {
+        if (sub !== undefined) throw new Error();
+        const options = diagnosticOptions({ ...(values.account ? { accountId: values.account } : {}),
+          ...(values["check-login"] ? { checkLogin: true } : {}), ...(values["refresh-usage"] ? { refreshUsage: true } : {}) });
+        let report: DiagnosticReport;
+        let reachable = false;
+        try { assertPrivatePath(store.dir); assertPrivatePath(join(store.dir, "control.sock"), true); reachable = true; } catch {}
+        if (reachable) {
+          try { report = await ownerRequest(store, "diagnostics", options); }
+          catch { report = await diagnose(store, options); }
+        } else report = await diagnose(store, options);
+        process.stdout.write(values.json ? JSON.stringify(report, null, 2) + "\n" : report.findings.map(f => `${f.status.toUpperCase()}\t${f.subject}\t${f.code}\t${f.message}`).join("\n") + "\n");
+        process.exitCode = report.exitCode;
+      } catch {
+        process.stderr.write("aar: diagnostics unavailable or invalid arguments; explicit checks require --account ID\n");
+        process.exitCode = 2;
+      }
+      return;
+    }
     case "init": {
       store.init();
       process.stdout.write(`state directory: ${store.dir}\n`);
