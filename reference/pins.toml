@@ -22,9 +22,9 @@ purpose = "macOS wrapper around CLIProxyAPI: bundling, request rewriting, signin
 required = false
 
 [[checkout]]
-name = "pi-mono"
-path = "reference/pi-mono"
-repository = "https://github.com/badlogic/pi-mono.git"
+name = "pi"
+path = "reference/pi"
+repository = "https://github.com/earendil-works/pi.git"
 revision = "dc939913f6142adce7c09da5707fdd6451b37fb0"
 purpose = "pi coding agent: provider clients, model registry and per-model API prices"
 required = true

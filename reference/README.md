@@ -8,7 +8,7 @@ gitignored; this README and `pins.toml` are tracked.
 python3 scripts/references.py sync       # clone or move checkouts to their pins
 python3 scripts/references.py status     # read-only validation
 python3 scripts/references.py upstream   # how far each pin trails upstream
-python3 scripts/references.py sync --only pi-mono
+python3 scripts/references.py sync --only pi
 ```
 
 The script needs Python 3.11 or newer and only the standard library. `sync`
@@ -30,7 +30,7 @@ revision on purpose when it records what was inspected at the time.
 | --- | --- | --- |
 | `cliproxyapi` | `8ef43e4df3b216a42493105d31c2873b69191473` (inspected 2026-10-04) | Provider protocols, OAuth ownership, routing policies, token counting. MIT. |
 | `vibeproxy` | `f2aa365523dd739a114fb7bc73a58353c3737c49` (inspected 2026-10-04) | macOS wrapper around CLIProxyAPI: bundling, request rewriting, signing, Sparkle updates. Optional. |
-| `pi-mono` | `dc939913f6142adce7c09da5707fdd6451b37fb0` (2026-10-15) | pi coding agent: provider clients, model registry and per-model API prices. |
+| `pi` | `dc939913f6142adce7c09da5707fdd6451b37fb0` (2026-10-15) | pi coding agent (earendil-works/pi, formerly badlogic/pi-mono): provider clients, model registry and per-model API prices. |
 
 Reading a project's source is not a claim that its behavior is stable or
 officially supported for this router. Before adapting code or data, record its
