@@ -23,21 +23,26 @@ const SERIES = {
   bytesUp: { label: "Uploaded", slot: 1 },
   bytesDown: { label: "Downloaded", slot: 4 },
 };
+// The view a new browser starts with, and what Reset view returns to.
+const DEFAULT_VIEW = { range: "2m", scope: "all", units: "tokens", activity: "requests", hidden: ["cacheRead"] };
+const VIEW_KEYS = ["dash-range", "dash-scope", "dash-units", "dash-activity", "dash-hidden"];
 const color = (slot) => getComputedStyle(document.documentElement).getPropertyValue(`--series-${slot}`).trim();
 const sent = (rate) => rate.input + rate.cacheRead + rate.cacheWrite;
 
 export function createDashboard({ client, overview }) {
   const graph = new TrafficGraph($("dash-graph"), $("dash-tooltip"));
   const quotaGraph = new TrafficGraph($("dash-quota-graph"), $("dash-quota-tooltip"));
-  let range = localStorage.getItem("dash-range") ?? "2m";
-  if (!RANGES.some(([key]) => key === range)) range = "2m";
-  let scope = localStorage.getItem("dash-scope") ?? "all";
-  let units = localStorage.getItem("dash-units") === "bytes" ? "bytes" : "tokens";
-  let activity = localStorage.getItem("dash-activity") === "sessions" ? "sessions" : "requests";
+  let range = localStorage.getItem("dash-range") ?? DEFAULT_VIEW.range;
+  if (!RANGES.some(([key]) => key === range)) range = DEFAULT_VIEW.range;
+  let scope = localStorage.getItem("dash-scope") ?? DEFAULT_VIEW.scope;
+  let units = localStorage.getItem("dash-units") === "bytes" ? "bytes" : DEFAULT_VIEW.units;
+  let activity = localStorage.getItem("dash-activity") === "sessions" ? "sessions" : DEFAULT_VIEW.activity;
   // Series switched off in the legend. Cache reads start off: nearly all of what
   // is sent and cheap, they would flatten the costlier tokens to a hairline.
   let hidden;
-  try { hidden = new Set(JSON.parse(localStorage.getItem("dash-hidden") ?? '["cacheRead"]')); } catch { hidden = new Set(["cacheRead"]); }
+  try { hidden = new Set(JSON.parse(localStorage.getItem("dash-hidden") ?? JSON.stringify(DEFAULT_VIEW.hidden))); } catch { hidden = new Set(DEFAULT_VIEW.hidden); }
+  const isDefaultView = () => range === DEFAULT_VIEW.range && scope === DEFAULT_VIEW.scope && units === DEFAULT_VIEW.units
+    && activity === DEFAULT_VIEW.activity && [...hidden].sort().join() === [...DEFAULT_VIEW.hidden].sort().join();
   let live, requests = [], visible = false, lastEvent = 0;
   let sessions, sessionsStored = true, sessionsTimer;
   const sparklines = new Map();
@@ -46,7 +51,7 @@ export function createDashboard({ client, overview }) {
   // Tokens share one axis: new input and output are of similar size. Bytes keep
   // two panes, since uploads (whole contexts) dwarf downloads.
   const panes = () => units === "tokens"
-    ? [{ title: "Tokens/s · output estimated while streaming", series: ["cacheRead", "cacheWrite", "input", "output"], line: ["output"], stacked: true, format: formatNumber, unit: "/s" }]
+    ? [{ title: "Tokens per second", series: ["cacheRead", "cacheWrite", "input", "output"], line: ["output"], stacked: true, format: formatNumber, unit: "/s" }]
     : [
       { title: "Uploaded · per second", series: ["bytesUp"], format: formatBytes, unit: "/s" },
       { title: "Downloaded · per second", series: ["bytesDown"], format: formatBytes, unit: "/s" },
@@ -54,6 +59,8 @@ export function createDashboard({ client, overview }) {
   const configure = () => {
     const shown = panes().filter(p => p.series.some(key => !hidden.has(key)));
     $("dash-graph").classList.toggle("single-pane", shown.length <= 1);
+    // Disabled rather than hidden, so the controls row never shifts.
+    $("dash-reset").disabled = isDefaultView();
     graph.configure((shown.length ? shown : panes().slice(0, 1)).map(p => ({ ...p,
       series: p.series.filter(key => !hidden.has(key)).map(key => ({ key, label: SERIES[key].label, color: color(SERIES[key].slot), line: p.line?.includes(key) })),
       context: p.series.filter(key => hidden.has(key)).map(key => ({ key, label: SERIES[key].label })) })), { live: LIVE_RANGES.has(range) });
@@ -227,6 +234,7 @@ export function createDashboard({ client, overview }) {
   }
 
   function renderActivity() {
+    $("dash-reset").disabled = isDefaultView();
     $("dash-activity-title").textContent = activity === "sessions" ? "Recent sessions" : "Recent requests";
     for (const button of $("dash-activity").children) button.setAttribute("aria-pressed", String(button.dataset.view === activity));
     renderRequests();
@@ -362,6 +370,17 @@ export function createDashboard({ client, overview }) {
       subscribe();
     };
   }
+  $("dash-reset").onclick = () => {
+    for (const key of VIEW_KEYS) localStorage.removeItem(key);
+    ({ range, scope, units, activity } = DEFAULT_VIEW);
+    hidden = new Set(DEFAULT_VIEW.hidden);
+    for (const b of rangeGroup.children) b.setAttribute("aria-pressed", String(b.dataset.range === range));
+    for (const b of $("dash-units").children) b.setAttribute("aria-pressed", String(b.dataset.units === units));
+    renderScopes();
+    renderAccounts();
+    renderActivity();
+    subscribe();
+  };
   $("dash-scope").onchange = () => { scope = $("dash-scope").value; localStorage.setItem("dash-scope", scope); renderAccounts(); renderRequests(); subscribe(); };
   for (const button of $("dash-activity").children) {
     button.onclick = () => {

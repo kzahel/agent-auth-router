@@ -257,7 +257,9 @@ for that case.
 no accounts it links to Accounts.
 
 - **Controls:** scope (All traffic, each pool, each account), range (2 min to
-  30 days) and units (tokens or bytes), remembered per browser.
+  30 days) and units (tokens or bytes), remembered per browser with the
+  legend's series and the Requests/Sessions choice. **Reset view** returns all
+  of these to the defaults; it is disabled while they already are.
 - **Summary tiles:** over the last minute, active sessions (distinct client
   session ids with a request running or finished within the minute; a
   session's parallel requests count once), sent and output tokens per
