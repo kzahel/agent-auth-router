@@ -195,3 +195,12 @@ test("response headers yield shared windows: Claude fractions and epoch resets, 
     { bucket: "codex:secondary", windowMinutes: null, usedPercent: 12.5, remainingPercent: 87.5, resetsAt: "2026-10-09T21:00:00.000Z" },
   ]);
 });
+
+test("percentages are rounded to a tenth so fraction scaling leaves no float noise", () => {
+  // Unrounded, 0.57 gives 56.99999999999999 used and 0.333 gives 66.69999999999999 remaining.
+  assert.deepEqual(normalizeResponseHeaderQuotas("claude", {
+    "anthropic-ratelimit-unified-5h-utilization": "0.57", "anthropic-ratelimit-unified-7d-utilization": "0.333",
+  }).map(w => [w.usedPercent, w.remainingPercent]), [[57, 43], [33.3, 66.7]]);
+  assert.deepEqual(normalizeClaudeQuotas({ five_hour: { utilization: 12.3456, resets_at: null } })
+    .map(w => [w.usedPercent, w.remainingPercent]), [[12.3, 87.7]]);
+});

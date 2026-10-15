@@ -99,7 +99,7 @@ export function createDashboard({ client, overview }) {
         if (!quotaGraph.update(message)) { subscribe(); return; }
         const keys = Object.keys(quotaGraph.data.series).filter(k => k.startsWith("quota:")).sort();
         $("dash-quota-empty").hidden = keys.some(k => quotaGraph.data.series[k].some(v => v !== null));
-        quotaGraph.configure([{ title: "Quota used · %", series: keys.slice(0, 4).map((key, i) => ({ key, label: key.slice(6).replaceAll("_", " "), color: color(i + 1) })),
+        quotaGraph.configure([{ title: "Quota used · %", series: keys.slice(0, 4).map((key, i) => ({ key, label: quotaLabel({ bucket: key.slice(6) }), color: color(i + 1) })),
           direction: "up", fill: false, maximum: 100, format: (v) => `${Math.round(v)}%`, unit: "" }], { live: LIVE_RANGES.has(range), rate: false });
       }));
     }
@@ -178,12 +178,11 @@ export function createDashboard({ client, overview }) {
       const s = scopeRate(`account:${a.id}`);
       const last = requests.find(r => r.accountId === a.id);
       // Proxied responses update quota between overview refreshes.
-      const quota = (live?.quota?.[a.id] ?? a.windows)?.filter(w => w.remainingPercent != null).map(w => `${w.bucket.replace(/^codex:/, "")} ${w.remainingPercent}%`).join(" · ");
       row.classList.toggle("selected", scope === `account:${a.id}`);
       row.cells[0].textContent = `${accountLabel(a.id)} · ${a.provider}${a.enabled ? "" : " · disabled"}`;
       row.cells[1].textContent = s ? `${formatNumber(sent(s.rate))} / ${formatNumber(s.rate.output)}` : "0 / 0";
       row.cells[2].textContent = s ? String(s.active) : "0";
-      row.cells[3].textContent = quota ? `${quota} left` : "not checked";
+      renderQuota(row.cells[3], live?.quota?.[a.id] ?? a.windows);
       row.cells[4].textContent = last ? ago(last.startedAt) : "–";
       sparkline(row.cells[5].firstChild, sparklines.get(`account:${a.id}`) ?? [], color(1));
       return row;
@@ -284,6 +283,63 @@ export function createDashboard({ client, overview }) {
     refresh() { renderScopes(); renderAccounts(); renderRequests(); },
     /** Reconnection repeats snapshots, so nothing else is needed here. */
   };
+}
+
+// One meter per window: label, used bar with a tick where usage would be on
+// an even pace, and the rounded percent. Elements are reused so values glide
+// instead of the row reflowing on every update.
+function renderQuota(cell, windows) {
+  const shown = (windows ?? []).filter(w => w.usedPercent != null);
+  if (!shown.length) {
+    if (cell.textContent !== "not checked" || cell.firstElementChild) cell.replaceChildren("not checked");
+    return;
+  }
+  let list = cell.firstElementChild;
+  if (!list?.classList.contains("meters")) { list = element("div", undefined, "meters"); cell.replaceChildren(list); }
+  const existing = new Map([...list.children].map(m => [m.dataset.bucket, m]));
+  if ([...existing.keys()].join() !== shown.map(w => w.bucket).join()) list.replaceChildren(...shown.map(w => existing.get(w.bucket) ?? meter(w.bucket)));
+  shown.forEach((w, i) => updateMeter(list.children[i], w));
+}
+
+function meter(bucket) {
+  const row = element("div", undefined, "meter");
+  row.dataset.bucket = bucket;
+  const track = element("span", undefined, "meter-track");
+  track.append(element("span", undefined, "meter-fill"), element("span", undefined, "meter-pace"));
+  row.append(element("span", undefined, "meter-label"), track, element("span", undefined, "meter-value"));
+  return row;
+}
+
+function updateMeter(row, w) {
+  const used = Math.min(100, w.usedPercent);
+  const [label, track, value] = row.children;
+  const [fill, tick] = track.children;
+  label.textContent = quotaLabel(w);
+  value.textContent = `${Math.round(used)}%`;
+  fill.style.width = `${used}%`;
+  row.dataset.level = used >= 95 ? "critical" : used >= 80 ? "warning" : "";
+  const pace = elapsedPercent(w);
+  tick.hidden = pace === null;
+  if (pace !== null) tick.style.left = `${pace}%`;
+  row.title = [`${w.bucket}: ${tenth(used)}% used, ${tenth(Math.max(0, 100 - used))}% left`,
+    w.resetsAt ? `resets ${new Date(w.resetsAt).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "reset time unknown",
+    ...(pace === null ? [] : [`mark: ${Math.round(pace)}% of the window has passed`])].join(" · ");
+}
+
+// five_hour → 5h, seven_day_opus → 7d opus, codex:primary over 300 minutes → 5h.
+function quotaLabel(w) {
+  const name = w.bucket.replace(/^codex:/, "").replace(/^five_hour/, "5h").replace(/^seven_day/, "7d").replaceAll("_", " ");
+  const m = w.windowMinutes;
+  if (!/^(primary|secondary)$/.test(name) || !m) return name;
+  return m % 1440 === 0 ? `${m / 1440}d` : m % 60 === 0 ? `${m / 60}h` : `${m}m`;
+}
+
+const tenth = (value) => Math.round(value * 10) / 10;
+
+function elapsedPercent(w) {
+  if (!w.windowMinutes || !w.resetsAt) return null;
+  const elapsed = 1 - (Date.parse(w.resetsAt) - Date.now()) / (w.windowMinutes * 60_000);
+  return elapsed >= 0 && elapsed <= 1 ? elapsed * 100 : null;
 }
 
 function ago(at) {

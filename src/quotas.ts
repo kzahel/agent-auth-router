@@ -91,10 +91,15 @@ function iso(value: unknown, seconds = false): string | null {
   return Number.isFinite(ms) && ms >= 0 && ms <= 8.64e15 ? new Date(ms).toISOString() : null;
 }
 
+// Header fractions scaled to percent carry float noise (0.57 * 100 is
+// 56.99999999999999); a tenth of a percent is ample for display and ranking.
+const tenth = (value: number) => Math.round(value * 10) / 10;
+
 function window(bucket: string, minutes: number | null, used: unknown, resetsAt: string | null): QuotaWindow {
-  const usedPercent = nonnegative(used);
+  const raw = nonnegative(used);
+  const usedPercent = raw === null ? null : tenth(raw);
   return { bucket, windowMinutes: minutes, usedPercent,
-    remainingPercent: usedPercent === null ? null : Math.max(0, 100 - usedPercent), resetsAt };
+    remainingPercent: usedPercent === null ? null : Math.max(0, tenth(100 - usedPercent)), resetsAt };
 }
 
 export function normalizeCodexQuotas(value: unknown): QuotaWindow[] {
