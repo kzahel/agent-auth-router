@@ -273,9 +273,12 @@ observed setup flow on those versions, not durable renewal.
 The session also exposed two setup defects: selecting Claude subscription
 login opened the default browser before asking the user, and the agent's
 preflight/status messages exposed excessive implementation detail. The skill
-now asks link-versus-open before starting login and keeps ordinary progress
-messages short. The terminal runner has an explicit browser choice with
-link-only default, covered by fake-CLI opener regression tests. Inspection of
+now gives the user a link by default without a browser-choice question and
+keeps ordinary progress messages short. Opening a browser requires an explicit
+request; the agent explains that it opens on the computer running AAR and
+clarifies an ambiguous "here" before proceeding. The terminal runner has an
+explicit browser choice with link-only default, covered by fake-CLI opener
+regression tests. Inspection of
 the installed macOS Claude browser helper found that it invokes the command
 selected by `BROWSER`; link mode supplies `/usr/bin/true`. This source evidence
 does not substitute for a future live check of link mode; the completed real

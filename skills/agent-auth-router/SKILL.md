@@ -19,9 +19,8 @@ process lifecycle. Give those details when requested or when they explain a
 problem the user needs to resolve. Suggest simple account labels rather than
 making the user design directory names or choose storage backends.
 
-For example: "Everything's ready. Let's sign in to Claude first. Would you
-like a link to open yourself, or should I open it on this computer?" After
-sign-in: "Claude is connected. Let's do Codex next." At the end: "Both
+For example: "Let's sign in to Claude first. Open this link and follow the
+steps." After sign-in: "Claude is connected. Let's do Codex next." At the end: "Both
 accounts are signed in, and I could check their usage."
 
 Keep precise verification evidence in diagnostics/notes. Don't recite caveats
@@ -75,20 +74,23 @@ Ensure the selected router is persistently running before login. `aar --state
 /absolute/state serve --no-dashboard` can run in its own task-owned tmux
 window. Never stop/restart a different router to make a port available.
 
-Start `aar --state /absolute/state terminal-login work` in a dedicated tmux
-pane. This existing runner provides the TTY, clean provider environment and
+Start `aar --state /absolute/state terminal-login work --browser link` in a
+dedicated tmux pane. This existing runner provides the TTY, clean provider environment and
 per-account login lease; do not bypass it by spawning a raw provider CLI with
 inherited gateway configuration. If the runner refuses the profile, diagnose
 the configuration rather than weakening that boundary.
 
-**Ask the user whether they want a link or an automatically opened browser
-before starting login.** This applies to browser openings caused by the CLI
-as well as ones you perform yourself. "Ready", permission bypass mode and
-approval to sign in do not choose a browser. If the user chooses a link,
-carry `--browser link` on the terminal-login command; if they explicitly ask
-to open it here, use `--browser open`. Reuse a stated preference for the rest
-of this setup unless the user changes it. Without an answer, wait. Never
-select a CLI option that might open a browser to discover what it does.
+**Give the user a sign-in link by default.** Use `--browser link` without
+asking them to choose how to open it. Never trigger a browser yourself or
+through the CLI without an explicit request. "Ready", permission bypass mode
+and approval to sign in do not authorize opening a browser.
+
+If the user asks to open it, explain that it opens on the computer running
+AAR, which may differ from the phone or computer they are using to chat.
+If their request is ambiguous about the computer, clarify before using
+`--browser open`; do not assume "here" means the AAR computer. Reuse an
+explicit preference for the rest of this setup unless the user changes it.
+Never select a CLI option that might open a browser to discover what it does.
 
 Link mode uses the official Codex device flow and suppresses Claude's browser
 opener while keeping its printed URL. The runner also asks for this choice if

@@ -77,8 +77,11 @@ runner maintains profile/environment isolation and its login lease. The user
 completes browser account selection, authentication and consent. The agent
 verifies persisted local status afterwards with a fresh doctor invocation.
 
-Before starting login, the agent asks whether the user wants a link or wants
-a browser opened on this computer. `--browser link` suppresses Claude's
+The agent gives the user a sign-in link by default, without asking for a
+browser preference. Opening a browser requires an explicit request and opens
+it on the computer running AAR, which may differ from the user's chat device.
+The agent explains this and clarifies an ambiguous "here" before opening it.
+`--browser link` suppresses Claude's
 browser opener and selects the official Codex device flow. `--browser open`
 is explicit opt-in to the CLI's usual browser behavior. If omitted, the
 runner asks and Enter chooses a link. This affects the managed terminal

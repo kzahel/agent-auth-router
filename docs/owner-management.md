@@ -53,8 +53,10 @@ loss or a ten-minute deadline, and escalates termination after three seconds.
 The earlier headless `accounts/login` API remains available to CLI callers.
 
 The terminal runner asks whether to show a sign-in link (Enter's default) or
-open a browser here. Agents carry the user's choice as `--browser link|open`;
-they must ask before selecting `open`. Link mode uses Codex device login and
+open a browser on the computer running AAR. Agents use `--browser link` by
+default without a preference question. They use `--browser open` only after
+an explicit request, clarifying which computer if needed: the AAR computer
+may differ from the user's chat device. Link mode uses Codex device login and
 sets Claude's supported `BROWSER` opener override to `/usr/bin/true`, retaining
 the CLI's printed URL without opening a browser. The override is scoped to
 that login child and is not inherited from arbitrary caller environment.
