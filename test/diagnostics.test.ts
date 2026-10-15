@@ -41,7 +41,9 @@ test("passive diagnostics never read credentials, run provider metadata, start a
   assert.deepEqual(fingerprint(store.dir), before);
   assert.equal(existsSync(join(store.dir, "control.sock")), false);
   const absent = new StateStore(join(store.dir, "absent"));
-  assert.equal((await diagnose(absent, {}, undefined, versions)).findings[0]!.code, "state-missing");
+  const missing = await diagnose(absent, {}, undefined, versions);
+  assert.equal(missing.findings[0]!.code, "state-missing");
+  assert.equal(missing.findings.filter(f => f.code === "provider-cli").length, 2);
   assert.equal(existsSync(absent.dir), false);
 });
 

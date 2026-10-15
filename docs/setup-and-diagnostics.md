@@ -1,9 +1,11 @@
 # Agent guided setup and diagnostics
 
-Status: proposed implementation plan, 2026-10-15. The diagnostic commands,
-management UI additions and setup skill below are not implemented. This plan
-replaces the earlier conversational proposal for a structured provider-login
-parser with an agent-operated tmux workflow.
+Status: implemented in source with synthetic acceptance, 2026-10-15.
+Supervised real Claude/Codex login acceptance remains pending. The current
+contract and commands are in [diagnostics](diagnostics.md); this document
+retains the implementation direction and live acceptance criteria. It replaces
+the earlier conversational proposal for a structured provider-login parser
+with an agent-operated tmux workflow.
 
 The setup skill teaches an agent to enroll accounts and configure access while
 watching and driving the official CLI in a real terminal. The agent observes
@@ -48,7 +50,7 @@ each caller. Reuse existing configuration validation, provider-version probes,
 profile checks, coordinator state and pool/grant evidence. Diagnostic reads
 must not reuse an administration path that implicitly starts a temporary router.
 
-Proposed CLI surface:
+CLI surface:
 
 | Command | Effect |
 | --- | --- |
@@ -239,7 +241,28 @@ persistence on those versions. It does not prove future CLI compatibility,
 every login method/platform, inference compatibility or durable token renewal.
 
 The live acceptance remains pending until both supervised exercises finish.
-No real login or credential read is part of writing this plan.
+Only synthetic credentials were used during implementation and rehearsal.
+
+### Implementation evidence
+
+On 2026-10-15 the full core check passed 199 tests. The UI passed typecheck,
+60 tests and its production build. The authenticated web diagnostic test
+passed desktop/375px phone layout, selected-account credential checks and
+sanitized copy output; all 29 sequential filter keystrokes were retained,
+with maximum input-to-frame acknowledgement of 7.9 ms during report arrival.
+The existing tab bar now wraps to avoid phone-width overflow.
+
+The agent manually drove the synthetic Claude and Codex CLI stand-ins through
+tmux, inspecting the pane between each answer. Both completed an extra prompt
+and delayed confirmation and persisted readable fixture credentials. Codex
+also exercised managed cancellation (cancelled/signed-out status and runner
+exit), followed by a successful retry. The owned terminal resources and router
+were stopped afterwards. No provider was contacted by that rehearsal.
+
+The skill metadata validator and reference-link checks pass. These results
+establish fixture and observed agent interaction behavior, not real-provider
+login or renewal. A new supervised YA session will exercise the skill with a
+separate state directory and user-completed official authentication.
 
 ## Implementation sequence
 

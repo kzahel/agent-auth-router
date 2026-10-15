@@ -100,6 +100,12 @@ export async function diagnose(store: StateStore, options: DiagnosticOptions = {
   const add = (code: string, status: DiagnosticFinding["status"], subject: string, message: string, action?: DiagnosticAction, observedAt = at) => {
     findings.push({ code, status, subject, observedAt, message, ...(action ? { action } : {}) });
   };
+  const checkProviders = async () => {
+    try {
+      for (const p of await bounded(providers)) add("provider-cli", p.available ? "ok" : "error", p.provider,
+        p.available ? `Official CLI is available${p.version ? ` (${p.version})` : "; version unknown"}.` : "Official CLI was not found or its version check failed.", p.available ? undefined : "install-cli");
+    } catch { incomplete = true; add("provider-check-failed", "unknown", "router", "CLI availability could not be checked."); }
+  };
   const finish = (): DiagnosticReport => {
     const mode = options.refreshUsage ? "refresh-usage" : options.checkLogin ? "check-login" : "passive";
     const aliases = new Map<string, string>();
@@ -121,7 +127,11 @@ export async function diagnose(store: StateStore, options: DiagnosticOptions = {
     if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== process.getuid?.() || (st.mode & 0o077)) throw new Error();
     add("state-private", "ok", "router", "State directory is private and owned by this user.");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") { incomplete = !!options.accountId; add("state-missing", "warning", "router", "State directory does not exist; no files were created.", "start-router"); }
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      incomplete = !!options.accountId;
+      add("state-missing", "warning", "router", "State directory does not exist; no files were created.", "start-router");
+      await checkProviders();
+    }
     else { incomplete = true; add("state-unsafe", "error", "router", "State directory is unsafe or unreadable; it was left unchanged."); }
     return finish();
   }
@@ -142,10 +152,7 @@ export async function diagnose(store: StateStore, options: DiagnosticOptions = {
   if (!options.accountId && (accounts?.length ?? 0) > 256) { incomplete = true; add("report-limit", "error", "router", "More than 256 accounts are enrolled; select one account for profile checks."); }
   add(runtime ? "router-running" : "router-offline", runtime ? "ok" : "warning", "router",
     runtime ? "Connected to the running router owner." : "Running router could not be reached; only local checks are available.", runtime ? undefined : "start-router");
-  try {
-    for (const p of await bounded(providers)) add("provider-cli", p.available ? "ok" : "error", p.provider,
-      p.available ? `Official CLI is available${p.version ? ` (${p.version})` : "; version unknown"}.` : "Official CLI was not found or its version check failed.", p.available ? undefined : "install-cli");
-  } catch { incomplete = true; add("provider-check-failed", "unknown", "router", "CLI availability could not be checked."); }
+  await checkProviders();
 
   const physical = new Set<string>();
   for (const account of selected.slice(0, 256)) {

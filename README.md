@@ -95,6 +95,7 @@ npm run aar -- client add ci --claude-pool Work # sessions spread across a pool
 npm run aar -- serve                            # prints a web dashboard sign-in link
 npm run aar -- dashboard url                    # a new single-use dashboard link
 npm run aar -- account quotas                   # quota percentages and resets (JSON)
+npm run aar -- doctor --json                    # passive local diagnostics
 npm run aar -- --help
 ```
 
@@ -145,7 +146,7 @@ service with its state on a volume. See [Running the router in Docker](docs/dock
 - [Prototype history and observations](docs/prototype.md)
 - [Source repositories and evidence](docs/sources.md)
 - [Running the router in Docker](docs/docker.md)
-- [Agent-guided setup and diagnostics proposal](docs/setup-and-diagnostics.md)
+- [Diagnostics and agent-guided setup skill](docs/diagnostics.md)
 
 ## License
 
