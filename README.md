@@ -145,6 +145,7 @@ service with its state on a volume. See [Running the router in Docker](docs/dock
 - [Prototype history and observations](docs/prototype.md)
 - [Source repositories and evidence](docs/sources.md)
 - [Running the router in Docker](docs/docker.md)
+- [Agent-guided setup and diagnostics proposal](docs/setup-and-diagnostics.md)
 
 ## License
 
