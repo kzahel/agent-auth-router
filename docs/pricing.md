@@ -84,11 +84,11 @@ A cost is exact when the provider reported everything it depends on. It is
 marked estimated (`~`) when:
 
 - the response did not report the five-minute/one-hour cache-write split.
-  Requests recorded before 2026-10-15 stored only the total. Their cache
-  writes are priced at the five-minute rate, and each such cost also stores
-  an upper bound with those writes priced as one-hour ($5 versus $8 per MTok
-  on Opus 5.5). Totals that include them show the range, such as
-  "$370–$414 at API rates";
+  Requests recorded before 2026-10-15 12:13 (local) stored only the total.
+  Their cache writes are priced as one-hour, which is what every Claude Code
+  request recorded with the split has used so far (see Findings). The
+  five-minute alternative is stored as `cost_low_usd` for audits ($5 versus
+  $8 per MTok on Opus 5.5);
 - output is still the live estimate (a stream that ended without the
   provider's final count).
 
@@ -109,8 +109,9 @@ repeats totals without the split):
 From Codex it records `service_tier`. All are metadata; no content is kept.
 
 `history.db` schema version 2 adds these to the `requests` table, with
-`cost_usd` and `cost_flags` computed when a request is stored; version 3 adds
-`cost_high_usd`, the upper bound above. An older database gains the columns
+`cost_usd` and `cost_flags` computed when a request is stored. Version 4 has
+`cost_low_usd`, the five-minute alternative above (version 3 briefly stored a
+one-hour upper bound in `cost_high_usd`, renamed by the migration). An older database gains the columns
 at startup. The router reprices every row when `PRICES_VERSION` (the vendored
 price commit plus a rules version in [src/pricing.ts](../src/pricing.ts))
 differs from the one recorded in the database, which includes the first start
@@ -118,17 +119,16 @@ after this change.
 
 ## Display
 
-- Requests and sessions tables: a Cost column, `~` when estimated, with the
-  upper bound in its tooltip.
-- Chart legend: the total for the selected range and scope, "$X at API rates",
-  "≈ $X" when estimated, or "$X–$Y" when cache durations are unknown; its
-  tooltip counts estimated and unpriced requests.
+- Requests and sessions tables: a Cost column, `~` when estimated.
+- Chart legend: the total for the selected range and scope, "$X at API
+  rates", "≈ $X" when part of it is estimated; its tooltip counts estimated
+  and unpriced requests.
 - Tooltips say the figures are API list prices, not what a subscription pays.
 
 ## Plan
 
 1. Record the cache-write split, speed, inference geography, web searches and
-   Codex service tier; schema migrations to versions 2 and 3. ✔
+   Codex service tier; schema migrations to versions 2 to 4. ✔
 2. Pin genai-prices as a reference, vendor the trimmed data with provenance,
    and write the calculator with tests (Opus flat above 200k, Haiku 5.5 tier,
    one-hour writes, unknown split, fast mode, US-only, Codex tiers and service
@@ -170,7 +170,52 @@ when the split started being recorded:
 - `inference_geo` was `global` and `speed` absent on every request, so no
   US-only or fast-mode multiplier applied.
 - Of the 14,139 requests stored when pricing began, 40.1M Opus 5.5 cache-write
-  tokens have no recorded duration: $200 at the five-minute rate, $321 at the
-  one-hour rate. This uncertainty leaves with retention (30 days by default).
-- Over the 24 hours before pricing began, traffic would have cost $370–$414
+  tokens have no recorded duration: $321 as one-hour (the stored cost), $200
+  as five-minute (`cost_low_usd`). These requests leave with retention (30
+  days by default).
+- Over the 24 hours before pricing began, traffic would have cost about $414
   at API rates, mostly cache reads (1.2B tokens at $0.20 per MTok).
+
+## Auditing estimates
+
+Start here when asked to audit or tighten the cost estimates. Everything is
+in `history.db` in the state directory (`~/.agent-auth-router` by default);
+open it read-only, for example with `node:sqlite`
+(`new DatabaseSync(path, { readOnly: true })`). It holds metadata only.
+
+1. **Is one-hour still the right assumption for unsplit cache writes?**
+   Compare durations where the split is known, by model, account and client:
+
+   ```sql
+   SELECT model, account_id, client, count(*) AS requests,
+          sum(cache_write) AS writes, sum(cache_write_1h) AS writes_1h
+   FROM requests WHERE cache_write_1h IS NOT NULL AND cache_write > 0
+   GROUP BY model, account_id, client;
+   ```
+
+   If some traffic writes five-minute entries, the rule in `priceRequest`
+   ([src/pricing.ts](../src/pricing.ts), the `hour` line) could use the
+   observed share per model instead of assuming one-hour; bump the rules
+   suffix of `PRICES_VERSION` so stored history is repriced.
+2. **How much is still estimated?** `cost_flags & 1` marks an unknown
+   cache-write duration, `& 2` an output estimate, `& 8` a fast-mode request
+   without a known fast price; `cost_usd IS NULL` is unpriced (`& 4`).
+
+   ```sql
+   SELECT count(*), sum(cost_usd), sum(cost_low_usd) FROM requests WHERE cost_flags & 1;
+   ```
+
+   The difference of the two sums is the most the assumption can be off by.
+   Once these rows pass retention, nothing in this category is estimated.
+3. **Are the prices current?** Run `python3 scripts/references.py upstream
+   --only genai-prices`. If the pin trails, move it, run
+   `node scripts/update-prices.mjs` and review the diff of
+   [src/prices-data.ts](../src/prices-data.ts); its header names the source
+   commit. Check new models in the traffic are matched:
+   `SELECT DISTINCT model FROM requests WHERE cost_usd IS NULL AND model IS NOT NULL`.
+4. **Rules outside genai-prices:** fast-mode prices and the US-only
+   multiplier live in [src/pricing.ts](../src/pricing.ts) with their source
+   URL; recheck them against Anthropic's pricing page.
+5. **Cross-check the calculator** against genai-prices' own `calcPrice`
+   (npm `@pydantic/genai-prices`) as in Verification, on rows sampled from
+   the database rather than random usages.

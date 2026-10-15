@@ -190,8 +190,8 @@ describe("metrics", () => {
     const store = new HistoryStore(path);
     const metrics = new Metrics({ history: store, now: () => now });
     const [restored] = metrics.recentRequests();
-    // Written before the split was recorded: cache writes at the five-minute rate, marked estimated.
-    assert.ok(Math.abs(restored!.cost! - (1000 * 4 + 100_000 * 0.2 + 2000 * 5 + 500 * 20) / 1e6) < 1e-12);
+    // Written before the split was recorded: cache writes priced as one-hour, marked estimated.
+    assert.ok(Math.abs(restored!.cost! - (1000 * 4 + 100_000 * 0.2 + 2000 * 8 + 500 * 20) / 1e6) < 1e-12);
     assert.equal(restored!.costFlags, COST_ESTIMATED_CACHE);
     const handle = metrics.begin({ provider: "claude", route: "/v1/messages", accountId: "a", client: "c", sessionId: "s", tapped: true });
     handle.model("claude-opus-5-5");
@@ -202,8 +202,8 @@ describe("metrics", () => {
     assert.ok(Math.abs(fresh.cost! - (1000 * 8 + 100 * 20) / 1e6) < 1e-12, "one-hour writes at the one-hour rate");
     assert.equal(fresh.costFlags, 0);
     const summary = metrics.costSummary(now - 120_000)!;
-    assert.deepEqual({ ...summary, cost: Math.round(summary.cost * 1e6), high: Math.round(summary.high * 1e6) },
-      { cost: 44_000 + 10_000, high: 44_000 + 2000 * 3 + 10_000, requests: 2, unpriced: 0, estimated: 1 });
+    assert.deepEqual({ ...summary, cost: Math.round(summary.cost * 1e6), low: Math.round(summary.low * 1e6) },
+      { cost: 50_000 + 10_000, low: 50_000 - 2000 * 3 + 10_000, requests: 2, unpriced: 0, estimated: 1 });
     assert.equal(metrics.sessions(now - 120_000)[0]!.cost.requests, 2);
     const unknown = metrics.begin({ provider: "claude", route: "/v1/messages", accountId: "a", client: "c", tapped: true });
     unknown.model("claude-unreleased");

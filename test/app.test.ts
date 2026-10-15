@@ -230,7 +230,7 @@ test("web dashboard: exact host and origin, single-use codes, sessions and logou
   assert.equal((await ownerRequest(store, "history/set-retention", { retentionDays: 14 })).retentionDays, 14);
   assert.deepEqual(await ownerRequest(store, "sessions/recent", { range: "24h", scope: "all" }), { stored: true, sessions: [] });
   const cost = await ownerRequest(store, "history/cost", { range: "24h", scope: "account:work" });
-  assert.deepEqual(cost.summary, { cost: 0, high: 0, requests: 0, unpriced: 0, estimated: 0 });
+  assert.deepEqual(cost.summary, { cost: 0, low: 0, requests: 0, unpriced: 0, estimated: 0 });
   assert.match(cost.prices.commit, /^[0-9a-f]{40}$/);
   await assert.rejects(ownerRequest(store, "sessions/recent", { range: "1y" }), /invalid range/);
   assert.equal(statSync(join(store.dir, "history.db")).mode & 0o777, 0o600);

@@ -299,12 +299,10 @@ export function createDashboard({ client, overview }) {
     const summary = rangeCost?.summary;
     target.hidden = !summary || !summary.requests;
     if (!summary) return;
-    const range = summary.high - summary.cost >= 0.005;
-    target.textContent = range ? `${formatCost(summary.cost)}–${formatCost(summary.high)} at API rates` : `${summary.estimated ? "≈ " : ""}${formatCost(summary.cost)} at API rates`;
+    target.textContent = `${summary.estimated ? "≈ " : ""}${formatCost(summary.cost)} at API rates`;
     target.title = [`Estimated cost of these ${summary.requests} requests at the providers' published API prices (genai-prices ${rangeCost.prices.date}).`,
       "Subscription accounts are not billed these amounts.",
-      ...(range ? [`The range is cache writes recorded before the router noted their duration: ${formatCost(summary.cost)} if all were 5-minute, ${formatCost(summary.high)} if all were 1-hour.`] : []),
-      ...(summary.estimated ? [`${summary.estimated} partly estimated: cache writes of unknown duration, or output never reported.`] : []),
+      ...(summary.estimated ? [`${summary.estimated} partly estimated: cache writes recorded before the router noted their duration (priced as 1-hour), or output never reported.`] : []),
       ...(summary.unpriced ? [`${summary.unpriced} unpriced: no price for their model.`] : [])].join(" ");
   }
 
@@ -334,7 +332,7 @@ export function createDashboard({ client, overview }) {
       row.cells[1].title = row.cells[1].textContent;
       row.cells[2].title = s.model ?? "";
       row.cells[3].title = `${s.requests} requests${s.errors ? `, ${s.errors} failed` : ""} since ${new Date(s.firstAt).toLocaleString()}`;
-      row.cells[6].title = costTitle(s.cost.estimated > 0, s.cost.unpriced, s.cost.cost, s.cost.high);
+      row.cells[6].title = costTitle(s.cost.estimated > 0, s.cost.unpriced);
       if (s.errors) row.cells[3].classList.add("danger");
       // Idle past the provider's five-minute prompt cache.
       row.classList.toggle("idle", !active && Date.now() - s.lastAt > 5 * 60_000);
@@ -366,7 +364,7 @@ export function createDashboard({ client, overview }) {
       ]) row.append(element("td", text));
       row.cells[1].title = row.cells[1].textContent;
       row.cells[2].title = r.model ?? r.route;
-      row.cells[5].title = r.outcome === "active" ? "Priced when the response ends" : r.cost === null || r.cost === undefined ? "No price for this model" : costTitle(r.costFlags & COST_ESTIMATED, 0, r.cost, r.costHigh);
+      row.cells[5].title = r.outcome === "active" ? "Priced when the response ends" : r.cost === null || r.cost === undefined ? "No price for this model" : costTitle(r.costFlags & COST_ESTIMATED, 0);
       if (r.outcome === "error") row.classList.add("error");
       return row;
     }));
@@ -553,10 +551,9 @@ function formatCost(value) {
   if (value >= 0.01 || value === 0) return `$${value.toFixed(2)}`;
   return "<$0.01";
 }
-function costTitle(estimated, unpriced, cost, high) {
+function costTitle(estimated, unpriced) {
   return ["At the providers' published API prices; subscription accounts are not billed this.",
-    ...(high - cost >= 0.005 ? [`Up to ${formatCost(high)} if its cache writes, recorded before their duration was, were 1-hour rather than 5-minute.`] : []),
-    ...(estimated ? ["Partly estimated: cache writes of unknown duration, or output never reported."] : []),
+    ...(estimated ? ["Partly estimated: cache writes recorded before the router noted their duration (priced as 1-hour), or output never reported."] : []),
     ...(unpriced ? [`${unpriced} requests have no price for their model.`] : [])].join(" ");
 }
 

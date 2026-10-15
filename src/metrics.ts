@@ -149,8 +149,6 @@ export interface RequestEntry {
   cost: number | null;
   /** history.ts COST_* bits. */
   costFlags: number;
-  /** The cost if cache writes of unknown duration were one-hour; equals cost when known. */
-  costHigh: number | null;
 }
 
 export interface RequestStart {
@@ -252,7 +250,7 @@ export class Metrics {
       id: ++this.seq, requestId: start.requestId ?? randomUUID(), startedAt: this.now(), endedAt: null, client: start.client, accountId: start.accountId, provider: start.provider,
       poolId: start.poolId ?? null, bindingId: start.bindingId ?? null, sessionId: start.sessionId ?? null,
       route: start.route, model: null, status: null, outcome: "active", bytesUp: 0, bytesDown: 0,
-      usage: zeroUsage(), estimated: false, cacheSplit: false, speed: null, inferenceGeo: null, serviceTier: null, cost: null, costFlags: 0, costHigh: null,
+      usage: zeroUsage(), estimated: false, cacheSplit: false, speed: null, inferenceGeo: null, serviceTier: null, cost: null, costFlags: 0,
     };
     this.recent.push(entry);
     if (this.recent.length > RECENT_LIMIT) this.recent.shift();
@@ -291,10 +289,9 @@ export class Metrics {
         const priced = priceRequest(entry);
         entry.cost = priced.cost;
         entry.costFlags = priced.flags;
-        entry.costHigh = priced.high;
         this.emit(entry);
         if (this.store) {
-          const { id: _id, endedAt, outcome: finished, cost: _cost, costFlags: _flags, costHigh: _high, ...stored } = entry;
+          const { id: _id, endedAt, outcome: finished, cost: _cost, costFlags: _flags, ...stored } = entry;
           try { this.store.putRequest({ ...stored, endedAt: endedAt!, outcome: finished as "ok" | "error" | "client_closed" }, priced); }
           catch (error) { log("metrics.request_save_failed", { error: errorText(error) }); }
         }

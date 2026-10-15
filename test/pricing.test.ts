@@ -32,14 +32,14 @@ test("Haiku 5.5 prices every token at the higher rate once total input passes 10
   close(priceRequest(request("claude-haiku-5-5", over)).cost, (1_001 * 0.5 + 90_000 * 0.05 + 9_000 * 0.625 + 2_000 * 2.5) / M);
 });
 
-test("one-hour cache writes cost more; an unreported split is priced at five minutes and marked", () => {
+test("one-hour cache writes cost more; an unreported split is priced as one-hour and marked", () => {
   close(priceRequest(request("claude-opus-5-5", { cacheWrite: 1_000, cacheWrite1h: 400 })).cost, (600 * 5 + 400 * 8) / M);
   const unknown = priceRequest(request("claude-opus-5-5", { cacheWrite: 1_000 }, { cacheSplit: false }));
-  close(unknown.cost, 1_000 * 5 / M);
-  close(unknown.high, 1_000 * 8 / M);
+  close(unknown.cost, 1_000 * 8 / M);
+  close(unknown.low, 1_000 * 5 / M);
   assert.equal(unknown.flags, COST_ESTIMATED_CACHE);
   const known = priceRequest(request("claude-opus-5-5", { cacheWrite: 1_000, cacheWrite1h: 400, output: 10 }));
-  assert.equal(known.high, known.cost, "a known split has no range");
+  assert.equal(known.low, known.cost, "a known split has no alternative");
   assert.equal(priceRequest(request("claude-opus-5-5", { input: 10 }, { cacheSplit: false })).flags, 0, "no writes, nothing to estimate");
   assert.equal(priceRequest(request("claude-opus-5-5", { output: 10 }, { estimated: true })).flags, COST_ESTIMATED_OUTPUT);
 });
@@ -65,9 +65,9 @@ test("Codex: cached input, the 272k tier and service tiers", () => {
 });
 
 test("unknown models are unpriced, never free; dated price lists apply from their start", () => {
-  assert.deepEqual(priceRequest(request("claude-unreleased-9", { input: 5 })), { cost: null, flags: COST_UNPRICED, high: null });
-  assert.deepEqual(priceRequest({ ...request("x", { input: 5 }), model: null }), { cost: null, flags: COST_UNPRICED, high: null });
-  assert.deepEqual(priceRequest({ ...request("x", {}), model: null }), { cost: 0, flags: 0, high: 0 }, "no tokens, nothing to price");
+  assert.deepEqual(priceRequest(request("claude-unreleased-9", { input: 5 })), { cost: null, flags: COST_UNPRICED, low: null });
+  assert.deepEqual(priceRequest({ ...request("x", { input: 5 }), model: null }), { cost: null, flags: COST_UNPRICED, low: null });
+  assert.deepEqual(priceRequest({ ...request("x", {}), model: null }), { cost: 0, flags: 0, low: 0 }, "no tokens, nothing to price");
   const providers: PriceProvider[] = [{ id: "anthropic", models: [{ id: "m", match: { equals: "m" }, prices: [
     { prices: { input_mtok: 1, output_mtok: 2 } },
     { constraint: { start_date: "2026-10-01" }, prices: { input_mtok: 3, output_mtok: 6 } },

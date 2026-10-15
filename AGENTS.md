@@ -32,6 +32,9 @@ Before relying on one, run `python3 scripts/references.py upstream` and, if
 the pin trails in the area you are reading, consider moving it as that README
 describes.
 
+Cost estimates at API rates are described in [docs/pricing.md](docs/pricing.md);
+to audit or tighten them, start with its "Auditing estimates" section.
+
 Source reuse must preserve applicable license notices. References to upstream
 code are not a claim that upstream behavior is stable or officially supported
 for this router.

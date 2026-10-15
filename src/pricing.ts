@@ -29,7 +29,7 @@ export interface PriceModel {
 export interface PriceProvider { id: string; models: PriceModel[] }
 
 /** Changes when stored costs must be recomputed: a new price table or new rules. */
-export const PRICES_VERSION = `${PRICES_SOURCE.commit}:rules-3`;
+export const PRICES_VERSION = `${PRICES_SOURCE.commit}:rules-4`;
 
 /**
  * Anthropic's fast-mode list prices (USD per million tokens), which genai-prices
@@ -97,11 +97,11 @@ const rate = (price: PriceValue, totalInput: number): number =>
 export function priceRequest(r: PricedRequest, providers: PriceProvider[] = PRICE_PROVIDERS): RequestCost {
   // Nothing billable: model listings, and requests that failed before any tokens.
   const u0 = r.usage;
-  if (!(u0.input + u0.cacheRead + u0.cacheWrite + u0.output + u0.webSearches)) return { cost: 0, flags: 0, high: 0 };
+  if (!(u0.input + u0.cacheRead + u0.cacheWrite + u0.output + u0.webSearches)) return { cost: 0, flags: 0, low: 0 };
   const model = r.model ? findModel(r.provider, r.model, providers) : undefined;
-  if (!model) return { cost: null, flags: COST_UNPRICED, high: null };
+  if (!model) return { cost: null, flags: COST_UNPRICED, low: null };
   const prices = activePrices(model, r.startedAt, r.serviceTier ? { service_tier: r.serviceTier } : {});
-  if (prices.input_mtok === undefined || prices.output_mtok === undefined) return { cost: null, flags: COST_UNPRICED, high: null };
+  if (prices.input_mtok === undefined || prices.output_mtok === undefined) return { cost: null, flags: COST_UNPRICED, low: null };
   const u = r.usage, totalInput = u.input + u.cacheRead + u.cacheWrite;
   let flags = 0;
   let inputSide = 1, outputSide = 1;
@@ -114,15 +114,16 @@ export function priceRequest(r: PricedRequest, providers: PriceProvider[] = PRIC
   const per = (price: PriceValue | undefined, tokens: number, scale: number) => tokens > 0 && price !== undefined ? rate(price, totalInput) * tokens * scale / 1e6 : 0;
   // A category without its own price is priced as its parent, as in genai-prices.
   const read = prices.cache_read_mtok ?? prices.input_mtok, write = prices.cache_write_mtok ?? prices.input_mtok;
-  const hour = r.cacheSplit ? Math.min(u.cacheWrite1h, u.cacheWrite) : 0;
+  // Without the split, every cache write is priced as one-hour, as Claude Code's
+  // recorded traffic has been; `low` keeps the five-minute alternative for audits.
+  const hour = r.cacheSplit ? Math.min(u.cacheWrite1h, u.cacheWrite) : u.cacheWrite;
   if (!r.cacheSplit && u.cacheWrite > 0) flags |= COST_ESTIMATED_CACHE;
   if (r.estimated) flags |= COST_ESTIMATED_OUTPUT;
   const cost = per(prices.input_mtok, u.input, inputSide) + per(read, u.cacheRead, inputSide)
     + per(write, u.cacheWrite - hour, inputSide) + per(prices.cache_write_1h_mtok ?? write, hour, inputSide)
     + per(prices.output_mtok, u.output, outputSide)
     + (u.webSearches > 0 && prices.web_searches_kcount !== undefined ? rate(prices.web_searches_kcount, totalInput) * u.webSearches / 1000 : 0);
-  // Without the split, cache writes are priced as five-minute; `high` bounds them as one-hour.
   const unknown = r.cacheSplit ? 0 : u.cacheWrite;
-  const high = cost + per(prices.cache_write_1h_mtok ?? write, unknown, inputSide) - per(write, unknown, inputSide);
-  return { cost, flags, high };
+  const low = cost - per(prices.cache_write_1h_mtok ?? write, unknown, inputSide) + per(write, unknown, inputSide);
+  return { cost, flags, low };
 }
