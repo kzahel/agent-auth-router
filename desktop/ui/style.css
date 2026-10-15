@@ -162,6 +162,7 @@ code { font-family: ui-monospace, monospace; font-size: 12px; }
 /* Totals keep a fixed width so the legend does not shift as they change. */
 .legend b { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 4ch; }
 .legend .context { color: var(--muted); }
+.legend-range { color: var(--muted); }
 .chart-values { margin-top: 4px; }
 .chart-values summary { font-size: 12px; }
 .chart-values .data-table { margin-top: 4px; }

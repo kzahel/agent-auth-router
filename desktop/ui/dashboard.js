@@ -54,11 +54,13 @@ export function createDashboard({ client, overview }) {
     renderLegend();
   };
   // Drawn series first, then context series, each with its total for the
-  // visible range; the full values table sits collapsed under the chart.
+  // selected range, which leads the legend so the totals are not read as
+  // running counts. The full values table sits collapsed under the chart.
   function renderLegend() {
     const panesNow = panes();
     const keys = [...panesNow.flatMap(p => p.series), ...panesNow.flatMap(p => p.context ?? [])];
-    $("dash-legend").replaceChildren(...keys.map(key => {
+    const span = RANGES.find(([key]) => key === range)[1].replace(/^1 /, "");
+    $("dash-legend").replaceChildren(element("span", `Last ${span}:`, "legend-range"), ...keys.map(key => {
       const drawn = panesNow.some(p => p.series.includes(key));
       const item = element("span", undefined, drawn ? "legend-item" : "legend-item context");
       item.dataset.key = key;
@@ -229,6 +231,8 @@ export function createDashboard({ client, overview }) {
     if (!data) return;
     const length = data.completeThrough - data.start + 1, perSecond = data.bucketMs / 1000;
     const format = units === "tokens" ? formatNumber : formatBytes;
+    // Totals are whole counts; the rate formatter would print 6 as "6.0".
+    const formatTotal = (value) => value < 10 ? String(Math.round(value)) : format(value);
     const drawn = new Set(panes().flatMap(p => p.series));
     body.replaceChildren(...panes().flatMap(p => [...p.series, ...(p.context ?? [])]).map(key => {
       const values = [];
@@ -245,9 +249,9 @@ export function createDashboard({ client, overview }) {
       for (const value of [values.length ? values.at(-1) / perSecond : null, values.length ? total / values.length / perSecond : null, values.length ? Math.max(...values) / perSecond : null]) {
         row.append(element("td", value === null ? "–" : `${format(value)}/s`));
       }
-      row.append(element("td", format(total)));
+      row.append(element("td", formatTotal(total)));
       const legendTotal = $("dash-legend").querySelector(`[data-key="${key}"] b`);
-      if (legendTotal) legendTotal.textContent = values.length ? format(total) : "–";
+      if (legendTotal) legendTotal.textContent = values.length ? formatTotal(total) : "–";
       return row;
     }));
   }
