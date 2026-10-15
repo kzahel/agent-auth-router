@@ -38,11 +38,12 @@ function HistorySettings({ visible }: { visible: boolean }) {
   const { api } = useApp();
   const [setting, setSetting] = useState<{ value: string; stored: boolean }>();
   const [status, setStatus] = useState("");
-  const load = useCallback(async () => {
+  // After a refused change, loading puts the stored value back and keeps the reason in view.
+  const load = useCallback(async (report = true) => {
     try {
       const { stored, retentionDays } = await api<{ stored: boolean; retentionDays: number | null }>("history/settings");
       setSetting({ value: retentionDays === null ? "forever" : String(retentionDays), stored });
-      setStatus(stored ? "" : "History is not stored: the router could not open its database.");
+      if (report) setStatus(stored ? "" : "History is not stored: the router could not open its database.");
     } catch (failure) { setStatus(errorText(failure)); }
   }, [api]);
   useEffect(() => { if (visible) void load(); }, [visible, load]);
@@ -58,7 +59,7 @@ function HistorySettings({ visible }: { visible: boolean }) {
           try {
             await api("history/set-retention", { retentionDays: value === "forever" ? null : Number(value) });
             setStatus("");
-          } catch (failure) { setStatus(errorText(failure)); void load(); }
+          } catch (failure) { setStatus(errorText(failure)); void load(false); }
         }}>
           {[...custom, ...RETENTION].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
@@ -74,11 +75,11 @@ function CompressionSettings({ visible }: { visible: boolean }) {
   const { api } = useApp();
   const [compression, setCompression] = useState<RequestCompression>({ claude: "off", codex: "off" });
   const [status, setStatus] = useState("");
-  const load = useCallback(async () => {
+  const load = useCallback(async (report = true) => {
     try {
       const { requestCompression } = await api<{ requestCompression: RequestCompression }>("settings/request-compression");
       setCompression({ claude: requestCompression.claude, codex: requestCompression.codex });
-      setStatus("");
+      if (report) setStatus("");
     } catch (failure) { setStatus(errorText(failure)); }
   }, [api]);
   useEffect(() => { if (visible) void load(); }, [visible, load]);
@@ -90,7 +91,7 @@ function CompressionSettings({ visible }: { visible: boolean }) {
         try {
           await api("settings/request-compression", { provider, value });
           setStatus("");
-        } catch (failure) { setStatus(errorText(failure)); void load(); }
+        } catch (failure) { setStatus(errorText(failure)); void load(false); }
       }}>
         {options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
       </select>

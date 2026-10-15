@@ -93,6 +93,7 @@ From the repository root:
 npm ci
 npm ci --prefix ui
 npm ci --prefix desktop
+npm --prefix ui run check
 npm --prefix desktop run dev
 npm --prefix desktop run build
 npm --prefix desktop run check

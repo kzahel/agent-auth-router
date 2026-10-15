@@ -1,6 +1,7 @@
 # UI migration: Vite, TypeScript, React and CSS Modules
 
-Status: in progress (2026-10-15).
+Status: done (2026-10-15). The outcome and the places it differs from the
+plan are at the end.
 
 The management UI (desktop window and web dashboard) was about 2,300 lines
 of unbundled browser JavaScript in `desktop/ui`: imperative DOM rendering,
@@ -77,3 +78,29 @@ changing the protocol, the security model or what the user sees.
 
 Each slice keeps `npm run check`, the UI checks and the desktop Playwright
 tests passing.
+
+## Outcome
+
+- Slice 1 (`3a01b13`), slice 2 (`3ada8fe`) and slice 3 (`436e7d2`) landed
+  as planned. CSS Modules arrived with each component rather than in a
+  separate slice; slice 4 added the remaining component tests and docs.
+- Side-by-side screenshots of the old and new builds (both color schemes,
+  both widths the Playwright tests use, every tab and the terminal window)
+  match, except for the deliberate changes below.
+- Deliberate changes in behavior:
+  - An account's More group stays open across router updates and folds
+    when one of its actions is chosen; it used to close on every update.
+  - A tab that fails to render shows its error instead of blanking the
+    window.
+  - A remembered pool or account scope survives reloading the page.
+  - Chart colors follow a switch between light and dark immediately.
+  - A refused History or compression change keeps its reason in view; it
+    used to be cleared by the reload that restores the stored value.
+- Tests: Vitest covers the protocol client, `RouterState`, formatting,
+  graph data handling and each tab's components against `fakeApp`, a
+  router behind a fake port. The Playwright tests changed only where they
+  relied on the old More behavior or on class names that CSS Modules now
+  hash; they find controls by role, id or data attributes.
+- Not done: sharing protocol types with the core (see Decisions), and a
+  Vite dev server with hot module replacement, which would need the core
+  to trust the dev server's origin in `--dev` mode.
