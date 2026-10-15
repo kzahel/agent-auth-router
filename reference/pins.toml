@@ -1,0 +1,30 @@
+schema_version = 1
+
+# Exact revisions keep source links in docs reproducible. Run
+# `python3 scripts/references.py upstream` to see how far each pin trails
+# upstream, and bump a pin (here, in reference/README.md and in the docs that
+# cite it) when you inspect a newer revision.
+
+[[checkout]]
+name = "cliproxyapi"
+path = "reference/cliproxyapi"
+repository = "https://github.com/router-for-me/CLIProxyAPI.git"
+revision = "8ef43e4df3b216a42493105d31c2873b69191473"
+purpose = "Provider protocols, OAuth ownership, routing policies and token counting in a mature multi-account proxy"
+required = true
+
+[[checkout]]
+name = "vibeproxy"
+path = "reference/vibeproxy"
+repository = "https://github.com/automazeio/vibeproxy.git"
+revision = "f2aa365523dd739a114fb7bc73a58353c3737c49"
+purpose = "macOS wrapper around CLIProxyAPI: bundling, request rewriting, signing and Sparkle updates"
+required = false
+
+[[checkout]]
+name = "pi-mono"
+path = "reference/pi-mono"
+repository = "https://github.com/badlogic/pi-mono.git"
+revision = "dc939913f6142adce7c09da5707fdd6451b37fb0"
+purpose = "pi coding agent: provider clients, model registry and per-model API prices"
+required = true

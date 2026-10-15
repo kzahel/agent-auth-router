@@ -26,6 +26,12 @@ balancing or YA integration. Those features are planned, not implemented here.
   executable changes need tests covering their actual security and lifecycle
   boundaries. Report verification and remaining uncertainty accurately.
 
+Related projects (CLIProxyAPI, VibeProxy, pi) can be checked out locally with
+`python3 scripts/references.py sync`; see [reference/README.md](reference/README.md).
+Before relying on one, run `python3 scripts/references.py upstream` and, if
+the pin trails in the area you are reading, consider moving it as that README
+describes.
+
 Source reuse must preserve applicable license notices. References to upstream
 code are not a claim that upstream behavior is stable or officially supported
 for this router.

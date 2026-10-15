@@ -4,6 +4,8 @@ Initial research: 2026-10-02; follow-up inspections recorded through 2026-10-04.
 Repository revisions below identify the local source
 snapshots inspected during the discussion. They are research references, not
 runtime dependencies. Recheck the deployed CLI versions before implementation.
+Local checkouts at pinned revisions are managed by `scripts/references.py`; see
+[reference/README.md](../reference/README.md).
 
 ## CLIProxyAPI and VibeProxy
 

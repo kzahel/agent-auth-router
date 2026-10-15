@@ -23,3 +23,6 @@ config.local.*
 # Local OS/editor files
 .DS_Store
 .idea/
+
+# Reproducible external source references (see reference/README.md)
+/reference/*/
