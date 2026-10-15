@@ -11,7 +11,7 @@ import type { QuotaWindow } from "./quotas.ts";
 import type { Provider } from "./types.ts";
 import { USAGE_FIELDS, zeroUsage, type UsageAttributes, type UsageFigures } from "./usage.ts";
 
-export const COUNTERS = ["requests", "errors", "input", "cacheRead", "cacheWrite", "output", "reasoning", "cacheWrite1h", "webSearches", "bytesUp", "bytesDown", "unreported"] as const;
+export const COUNTERS = ["requests", "errors", "input", "cacheRead", "cacheWrite", "output", "reasoning", "cacheWrite1h", "webSearches", "bytesUp", "bytesSent", "bytesDown", "unreported"] as const;
 export type Counter = (typeof COUNTERS)[number];
 
 export const RANGES = {
@@ -28,7 +28,7 @@ export const isRange = (value: unknown): value is RangeName => typeof value === 
 const isGauge = (metric: string) => metric.startsWith("quota:");
 const SCOPE = /^(all|account:[a-z0-9][a-z0-9-]{0,62}|pool:[a-f0-9-]{36})$/;
 export const isScope = (value: unknown): value is string => typeof value === "string" && SCOPE.test(value);
-const METRIC = /^(requests|errors|input|cacheRead|cacheWrite|output|reasoning|cacheWrite1h|webSearches|bytesUp|bytesDown|unreported|quota:[a-z0-9_:-]{1,40})$/;
+const METRIC = /^(requests|errors|input|cacheRead|cacheWrite|output|reasoning|cacheWrite1h|webSearches|bytesUp|bytesSent|bytesDown|unreported|quota:[a-z0-9_:-]{1,40})$/;
 export const isMetric = (value: unknown): value is string => typeof value === "string" && METRIC.test(value);
 const RECENT_LIMIT = 200;
 const SAVE_INTERVAL_MS = 60_000;
@@ -168,7 +168,10 @@ export interface RequestHandle {
   model(model: string): void;
   attributes(values: UsageAttributes): void;
   usage(change: UsageFigures, estimated: boolean, final: boolean): void;
+  /** Request bytes received from the client. */
   bytesUp(bytes: number): void;
+  /** Request bytes sent upstream: fewer than bytesUp when the router compresses, more when it retries. */
+  bytesSent(bytes: number): void;
   bytesDown(bytes: number): void;
   end(status: number, outcome?: string): void;
 }
@@ -272,6 +275,7 @@ export class Metrics {
         final ||= isFinal;
       },
       bytesUp: (bytes) => { if (!ended) { entry.bytesUp += bytes; this.add(scopes, "bytesUp", bytes); } },
+      bytesSent: (bytes) => { if (!ended) this.add(scopes, "bytesSent", bytes); },
       bytesDown: (bytes) => { if (!ended) { entry.bytesDown += bytes; this.add(scopes, "bytesDown", bytes); } },
       end: (status, outcome) => {
         if (ended) return;

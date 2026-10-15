@@ -32,7 +32,7 @@ const claude: ProviderAdapter = {
     { method: "GET", path: "/v1/models", upstreamPath: "/v1/models" },
   ],
   forwardHeader: (name) =>
-    ["content-type", "accept", "user-agent", "x-app"].includes(name) ||
+    ["content-type", "content-encoding", "accept", "user-agent", "x-app"].includes(name) ||
     name.startsWith("anthropic-") ||
     name.startsWith("x-stainless-") ||
     name.startsWith("x-claude-code-"),
@@ -59,7 +59,7 @@ const codex: ProviderAdapter = {
     { method: "GET", path: "/models", upstreamPath: "/backend-api/codex/models" },
   ],
   forwardHeader: (name) =>
-    ["content-type", "accept", "user-agent", "originator", "version", "session_id", "conversation_id", "openai-beta"].includes(
+    ["content-type", "content-encoding", "accept", "user-agent", "originator", "version", "session_id", "conversation_id", "openai-beta"].includes(
       name,
     ) || name.startsWith("x-codex-"),
   upstreamHeaders(credential) {

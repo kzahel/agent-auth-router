@@ -87,6 +87,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   let control: Awaited<ReturnType<typeof startControl>> | undefined;
   let dashboard: Dashboard | undefined;
   const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, observer: metrics,
+    requestCompression: provider => store.loadSettings().requestCompression[provider] ?? "off",
     describeClient: client => control?.registry.describeClient(client) ?? { name: client.name },
     sessionAccount: ({ client, provider, poolId, sessionId, model }) => control
       ? control.registry.sessionAccount(client, provider, poolId, sessionId, model, control.evidence)

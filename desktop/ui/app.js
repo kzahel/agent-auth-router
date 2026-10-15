@@ -616,7 +616,7 @@ function selectTab(tab) {
     $(item.getAttribute("aria-controls")).hidden = !selected;
   }
   dashboard.show(tab.id === "tab-dashboard");
-  if (tab.id === "tab-app") loadRetention();
+  if (tab.id === "tab-app") { loadRetention(); loadCompression(); }
 }
 
 // History retention is stored by the router, so the CLI, web and desktop share it.
@@ -628,6 +628,22 @@ async function loadRetention() {
     if (document.activeElement !== $("retention")) $("retention").value = retentionDays ?? "";
     $("retention-status").textContent = retentionDays === null ? "History is not stored: the router could not open its database." : "";
   } catch (failure) { $("retention-status").textContent = text(failure); }
+}
+// Request compression per provider; off sends bodies upstream as received.
+async function loadCompression() {
+  try {
+    const { requestCompression } = await api("settings/request-compression");
+    for (const provider of ["claude", "codex"]) $(`compress-${provider}`).value = requestCompression[provider];
+    $("compression-status").textContent = "";
+  } catch (failure) { $("compression-status").textContent = text(failure); }
+}
+for (const provider of ["claude", "codex"]) {
+  $(`compress-${provider}`).onchange = async () => {
+    try {
+      await api("settings/request-compression", { provider, value: $(`compress-${provider}`).value });
+      $("compression-status").textContent = "Saved; applies to the next request.";
+    } catch (failure) { $("compression-status").textContent = text(failure); void loadCompression(); }
+  };
 }
 $("retention").onchange = async () => {
   const days = Number($("retention").value);

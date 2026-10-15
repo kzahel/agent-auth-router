@@ -43,6 +43,8 @@ export interface RecordedRequest {
   url: string | undefined;
   headers: IncomingHttpHeaders;
   body: string;
+  /** The body's bytes, for encodings text would corrupt. */
+  raw: Buffer;
 }
 
 export interface MockUpstream {
@@ -59,7 +61,8 @@ export async function mockUpstream(
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
-      const recorded = { method: req.method, url: req.url, headers: req.headers, body: Buffer.concat(chunks).toString() };
+      const raw = Buffer.concat(chunks);
+      const recorded = { method: req.method, url: req.url, headers: req.headers, body: raw.toString(), raw };
       upstream.requests.push(recorded);
       res.on("close", () => {
         if (!res.writableFinished) upstream.closedEarly++;

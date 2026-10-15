@@ -23,6 +23,8 @@ const SERIES = {
   input: { label: "Uncached input", slot: 3 },
   output: { label: "Output", slot: 1 },
   bytesUp: { label: "Uploaded", slot: 1 },
+  // What the router sent on: smaller than Uploaded when it compresses requests.
+  bytesSent: { label: "Sent upstream", slot: 2 },
   bytesDown: { label: "Downloaded", slot: 4 },
 };
 // The view a new browser starts with, and what Reset view returns to.
@@ -66,7 +68,7 @@ export function createDashboard({ client, overview }) {
   const panes = () => units === "tokens"
     ? [{ title: "Tokens per second", series: ["cacheRead", "cacheWrite", "input", "output"], line: ["output"], stacked: true, format: formatNumber, unit: "/s" }]
     : [
-      { title: "Uploaded · per second", series: ["bytesUp"], format: formatBytes, unit: "/s" },
+      { title: "Uploaded · per second", series: ["bytesUp", "bytesSent"], format: formatBytes, unit: "/s" },
       { title: "Downloaded · per second", series: ["bytesDown"], format: formatBytes, unit: "/s" },
     ];
   const configure = () => {
@@ -121,7 +123,7 @@ export function createDashboard({ client, overview }) {
     rangeCost = undefined;
     configure();
     loadStored(0);
-    const metrics = units === "tokens" ? ["cacheRead", "cacheWrite", "input", "output"] : ["bytesUp", "bytesDown"];
+    const metrics = panes().flatMap(p => p.series);
     const history = { range, scope, metrics };
     stop.push(client.subscribe("history", history, (message) => {
       if (message.type === "error") return;

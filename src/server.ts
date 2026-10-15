@@ -7,6 +7,7 @@ import { CredentialUnavailable, type CredentialCoordinator } from "./coordinator
 import { clientSessionId } from "./events.ts";
 import { errorText, log } from "./log.ts";
 import type { RequestHandle, RequestStart } from "./metrics.ts";
+import { compressForUpstream, contentEncoding, decodeForInspection, type RequestCompression } from "./compression.ts";
 import { tapsUsage, UsageTap } from "./usage.ts";
 import { ADAPTERS, parseUpstreamOrigin, relayableResponseHeaders, type ProviderAdapter, type Route } from "./providers.ts";
 import { DEFAULT_LIMITS, isProvider, type GatewayClientRecord, type Limits, type Provider, type RouterConfig, type UpstreamCredential } from "./types.ts";
@@ -21,6 +22,8 @@ export interface RouterDeps {
   observer?: { begin(start: RequestStart): RequestHandle };
   /** Display name, pool and binding attribution for an authenticated gateway client. */
   describeClient?: (client: GatewayClientRecord) => { name: string; poolId?: string | undefined; bindingId?: string | undefined };
+  /** Request compression the router applies upstream per provider; "off" passes bodies through. */
+  requestCompression?: (provider: Provider) => RequestCompression;
   /** The pool member for a pool-backed client's request; rejects with a `status`. */
   sessionAccount?: (input: { client: GatewayClientRecord; provider: Provider; poolId: string; sessionId: string | undefined; model: () => string | undefined }) => Promise<string>;
 }
@@ -136,11 +139,20 @@ export function createRouter(deps: RouterDeps): RouterServer {
     if (!decision.ok) throw new HttpError(decision.status, decision.message);
     meta.client = decision.client.name;
     let body: Buffer | undefined;
+    // A client-compressed body is forwarded as sent; metadata comes from a bounded decoded copy.
+    const clientEncoding = contentEncoding(req.headers);
+    let inspected: Buffer | undefined;
+    const readRequest = async () => {
+      const read = await readBody(req, limits.maxBodyBytes);
+      inspected = clientEncoding ? await decodeForInspection(read, clientEncoding, limits.maxBodyBytes) ?? Buffer.alloc(0) : read;
+      return read;
+    };
     let accountId: string;
     if (decision.poolId === undefined) accountId = decision.accountId;
     else {
       const poolId = decision.poolId;
-      const read = body = await readBody(req, limits.maxBodyBytes);
+      body = await readRequest();
+      const read = inspected!;
       meta.poolId = poolId;
       if (!deps.sessionAccount) throw new HttpError(503, "gateway pools are unavailable");
       accountId = await deps.sessionAccount({ client: decision.client, provider, poolId, sessionId: clientSessionId(provider, req.headers, read), model: () => requestModel(read) })
@@ -152,7 +164,8 @@ export function createRouter(deps: RouterDeps): RouterServer {
       throw new HttpError(503, "assigned upstream account is not available");
     }
 
-    body ??= await readBody(req, limits.maxBodyBytes);
+    body ??= await readRequest();
+    const outgoing = await compressForUpstream(body, deps.requestCompression?.(provider) ?? "off", clientEncoding);
     let clientClosed = false;
     res.once("close", () => {
       clientClosed = !res.writableFinished;
@@ -162,21 +175,21 @@ export function createRouter(deps: RouterDeps): RouterServer {
       const described = deps.describeClient?.(decision.client) ?? { name: decision.client.name };
       try {
         tracking.handle = deps.observer.begin({ provider, route: route.path, accountId, client: described.name, poolId: described.poolId ?? decision.poolId, bindingId: described.bindingId,
-          requestId: String(meta.requestId), sessionId: clientSessionId(provider, req.headers, body), tapped: tapsUsage(provider, route.path) });
+          requestId: String(meta.requestId), sessionId: clientSessionId(provider, req.headers, inspected!), tapped: tapsUsage(provider, route.path) });
         tracking.handle.bytesUp(body.length);
       } catch (error) { log("metrics.error", { error: errorText(error) }); }
     }
     const observed = tracking.handle;
 
     let credential = await coordinator.credential();
-    let attempt = await forward(adapter, route, origins.get(provider)!, credential, req, body, res, meta, observed);
+    let attempt = await forward(adapter, route, origins.get(provider)!, credential, req, outgoing, res, meta, observed);
     if (attempt.kind === "unauthorized") {
       // Rejected before generation: one coordinated recovery, one retry.
       const recovered = clientGone() ? undefined : await coordinator.recoverFromUnauthorized(credential);
       if (recovered) {
         meta.retried = 1;
         credential = recovered;
-        attempt = await forward(adapter, route, origins.get(provider)!, credential, req, body, res, meta, observed);
+        attempt = await forward(adapter, route, origins.get(provider)!, credential, req, outgoing, res, meta, observed);
       }
       if (attempt.kind === "unauthorized") {
         coordinator.markRejected("upstream rejected the account credential", credential);
@@ -227,7 +240,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
     origin: URL,
     credential: UpstreamCredential,
     req: IncomingMessage,
-    body: Buffer,
+    outgoing: { body: Buffer; encoding?: string },
     res: ServerResponse,
     meta: Record<string, string | number | undefined>,
     observed?: RequestHandle,
@@ -237,7 +250,10 @@ export function createRouter(deps: RouterDeps): RouterServer {
       if (value !== undefined && adapter.forwardHeader(name)) headers[name] = value;
     }
     Object.assign(headers, adapter.upstreamHeaders(credential, req.headers));
+    const body = outgoing.body;
+    if (outgoing.encoding) headers["content-encoding"] = outgoing.encoding;
     headers["content-length"] = String(body.length);
+    observed?.bytesSent(body.length);
     const query = new URL(req.url ?? "/", "http://router.invalid").search;
     const transport = origin.protocol === "https:" ? https : http;
 

@@ -9,6 +9,7 @@ import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { COMPRESSION_CHOICES, type RequestCompression } from "./compression.ts";
 import { MAX_RETENTION_DAYS } from "./history.ts";
 import { PRICES_SOURCE } from "./prices-data.ts";
 import { COUNTERS, isMetric, isRange, isScope, RANGES, type Metrics } from "./metrics.ts";
@@ -299,6 +300,18 @@ export class OwnerService {
       const since = Date.now() - RANGES[range].count * RANGES[range].bucketMs;
       const filter = scope.startsWith("account:") ? { accountId: scope.slice(8) } : scope.startsWith("pool:") ? { poolId: scope.slice(5) } : {};
       return { summary: this.metrics().costSummary(since, filter), prices: PRICES_SOURCE };
+    }
+    if (operation === "settings/request-compression") {
+      // Off passes request bodies through; see docs/compression.md.
+      const current = this.store.loadSettings();
+      if (body.provider !== undefined || body.value !== undefined) {
+        const provider = body.provider, value = body.value;
+        if (!isProvider(provider)) throw new ControlError(400, "invalid provider");
+        if (typeof value !== "string" || !(COMPRESSION_CHOICES[provider] as readonly string[]).includes(value)) throw new ControlError(400, `compression for ${provider} must be one of ${COMPRESSION_CHOICES[provider].join(", ")}`);
+        this.store.saveSettings({ ...current, requestCompression: { ...current.requestCompression, [provider]: value as RequestCompression } });
+      }
+      const saved = this.store.loadSettings().requestCompression;
+      return { requestCompression: { claude: saved.claude ?? "off", codex: saved.codex ?? "off" }, choices: COMPRESSION_CHOICES };
     }
     if (operation === "history/settings") return { retentionDays: this.metrics().retentionDays(), maxRetentionDays: MAX_RETENTION_DAYS };
     if (operation === "history/set-retention") {

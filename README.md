@@ -37,7 +37,9 @@ input and output tokens, cache hits, and recent requests or sessions, with
 history from 2 minutes to 30 days. History is kept in `history.db` in the state
 directory for 30 days by default, adjustable on the App tab. Requests,
 sessions and ranges show what the traffic would cost at the providers'
-published API prices ([pricing](docs/pricing.md)). See the
+published API prices ([pricing](docs/pricing.md)). Request bodies pass
+through unchanged by default; the App tab can have the router compress them
+upstream ([compression](docs/compression.md)). See the
 [desktop guide](desktop/README.md) for details.
 
 ## How it works

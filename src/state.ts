@@ -6,11 +6,17 @@ import { randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, openSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { COMPRESSION_CHOICES, type RequestCompression } from "./compression.ts";
 import { parseUpstreamOrigin } from "./providers.ts";
 import { isProvider, type AccountConfig, type GatewayClientRecord, type RouterConfig } from "./types.ts";
 
 export function defaultStateDir(env: NodeJS.ProcessEnv = process.env): string {
   return resolve(env.AAR_STATE_DIR ?? join(homedir(), ".agent-auth-router"));
+}
+
+export interface RouterSettings {
+  /** Absent providers pass request bodies through ("off"). */
+  requestCompression: Partial<Record<"claude" | "codex", RequestCompression>>;
 }
 
 export function ensurePrivateDir(path: string): void {
@@ -72,6 +78,25 @@ export class StateStore {
         save(value);
       }
     }
+  }
+
+  get settingsPath(): string {
+    return join(this.dir, "settings.json");
+  }
+  private settingsCache: RouterSettings | undefined;
+  /** Owner-adjustable router settings; the router reads them per request, so they are cached. */
+  loadSettings(): RouterSettings {
+    if (this.settingsCache) return this.settingsCache;
+    const raw = readJsonFile<{ version?: number; requestCompression?: Record<string, unknown> }>(this.settingsPath, {});
+    const compression: RouterSettings["requestCompression"] = {};
+    for (const [provider, value] of Object.entries(raw.requestCompression ?? {})) {
+      if (isProvider(provider) && typeof value === "string" && (COMPRESSION_CHOICES[provider] as readonly string[]).includes(value)) compression[provider] = value as RequestCompression;
+    }
+    return this.settingsCache = { requestCompression: compression };
+  }
+  saveSettings(settings: RouterSettings): void {
+    writePrivateJson(this.settingsPath, { version: 1, ...settings });
+    this.settingsCache = settings;
   }
 
   loadConfig(): RouterConfig {

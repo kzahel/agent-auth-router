@@ -8,6 +8,8 @@ import { generateGatewayToken, hashGatewayToken } from "../src/gateway-auth.ts";
 import type { RenewalHelper } from "../src/helpers.ts";
 import { createRouter } from "../src/server.ts";
 import type { AccountConfig, GatewayClientRecord, Limits } from "../src/types.ts";
+import { gunzipSync, gzipSync, zstdDecompressSync } from "node:zlib";
+import type { RequestStart } from "../src/metrics.ts";
 import { captureLogs, fakeJwt, listen, mockUpstream, tempDir, waitFor, writeClaudeCredentials, writeCodexAuth, type MockUpstream } from "./support.ts";
 
 const CLAUDE_ACCESS = "SECRET-CLAUDE-ACCESS-1";
@@ -26,7 +28,8 @@ interface Harness {
 
 async function harness(
   upstream: MockUpstream,
-  options: { limits?: Partial<Limits>; claudeHelper?: RenewalHelper; onProviderResponse?: Parameters<typeof createRouter>[0]["onProviderResponse"] } = {},
+  options: { limits?: Partial<Limits>; claudeHelper?: RenewalHelper; onProviderResponse?: Parameters<typeof createRouter>[0]["onProviderResponse"];
+    requestCompression?: Parameters<typeof createRouter>[0]["requestCompression"]; observer?: Parameters<typeof createRouter>[0]["observer"] } = {},
 ): Promise<Harness> {
   const claude: AccountConfig = { id: "claude-a", provider: "claude", home: tempDir() };
   const codex: AccountConfig = { id: "codex-a", provider: "codex", home: tempDir() };
@@ -61,6 +64,8 @@ async function harness(
     clients: () => clients,
     coordinators,
     ...(options.onProviderResponse ? { onProviderResponse: options.onProviderResponse } : {}),
+    ...(options.requestCompression ? { requestCompression: options.requestCompression } : {}),
+    ...(options.observer ? { observer: options.observer } : {}),
   });
   const origin = await listen(router.server);
   return { origin, token, clients, claude, codex, coordinators, helperRuns: () => runs, active: router.activeRequests };
@@ -347,3 +352,74 @@ describe("upstream authentication failures", () => {
     for (const secret of ["SECRET-PROMPT", "SECRET-RESPONSE-BODY", CLAUDE_ACCESS, h.token]) assert.ok(!all.includes(secret), secret);
   });
 });
+
+describe("request body encodings", () => {
+  const conversation = JSON.stringify({ model: "claude-x", metadata: { user_id: JSON.stringify({ session_id: "11111111-2222-4333-8444-555555555555" }) },
+    messages: [{ role: "user", content: "the same context again ".repeat(400) }] });
+  // Records what the router saw: the session it attributed and the bytes it sent upstream.
+  const observer = () => {
+    const seen: { sessionId?: string | undefined; sent: number[] } = { sent: [] };
+    return { seen, observer: { begin: (start: RequestStart) => { seen.sessionId = start.sessionId; return {
+      model() {}, attributes() {}, usage() {}, bytesUp() {}, bytesDown() {}, end() {}, bytesSent: (n: number) => seen.sent.push(n) }; } } };
+  };
+
+  test("a client-compressed body is forwarded byte for byte with its encoding, and still read for metadata", async () => {
+    const upstream = await mockUpstream((_req, res) => res.end("{}"));
+    const { seen, observer: watch } = observer();
+    const h = await harness(upstream, { observer: watch, requestCompression: () => "gzip" });
+    const compressed = gzipSync(conversation);
+    const response = await fetch(`${h.origin}/claude/v1/messages`, { method: "POST", body: compressed,
+      headers: { authorization: `Bearer ${h.token}`, "content-type": "application/json", "content-encoding": "gzip" } });
+    assert.equal(response.status, 200);
+    const sent = upstream.requests[0]!;
+    assert.equal(sent.headers["content-encoding"], "gzip");
+    assert.deepEqual(sent.raw, compressed, "not recompressed or decoded");
+    assert.equal(seen.sessionId, "11111111-2222-4333-8444-555555555555", "metadata from the decoded copy");
+    // An unreadable body is still forwarded; the upstream decides.
+    const garbage = Buffer.from("not gzip");
+    await fetch(`${h.origin}/claude/v1/messages`, { method: "POST", body: garbage,
+      headers: { authorization: `Bearer ${h.token}`, "content-type": "application/json", "content-encoding": "gzip" } });
+    assert.deepEqual(upstream.requests[1]!.raw, garbage);
+  });
+
+  test("decoding for metadata is bounded by the body limit", async () => {
+    const upstream = await mockUpstream((_req, res) => res.end("{}"));
+    const { seen, observer: watch } = observer();
+    const h = await harness(upstream, { observer: watch, limits: { maxBodyBytes: 16_384 } });
+    // Small on the wire, far larger once decoded: forwarded, but not expanded past the limit.
+    const bomb = gzipSync(Buffer.concat([Buffer.from(conversation), Buffer.alloc(5_000_000, 32)]));
+    assert.ok(bomb.length < 16_384);
+    const response = await fetch(`${h.origin}/claude/v1/messages`, { method: "POST", body: bomb,
+      headers: { authorization: `Bearer ${h.token}`, "content-type": "application/json", "content-encoding": "gzip" } });
+    assert.equal(response.status, 200);
+    assert.equal(seen.sessionId, undefined);
+  });
+
+  test("with compression on, the router gzips Claude bodies and zstd-compresses Codex bodies; off passes them through", async () => {
+    const upstream = await mockUpstream((_req, res) => res.end("{}"));
+    const { seen, observer: watch } = observer();
+    let mode: "off" | "gzip" | "zstd" = "gzip";
+    const h = await harness(upstream, { observer: watch, requestCompression: () => mode });
+    await post(`${h.origin}/claude/v1/messages`, { authorization: `Bearer ${h.token}` }, conversation);
+    let sent = upstream.requests.at(-1)!;
+    assert.equal(sent.headers["content-encoding"], "gzip");
+    assert.equal(gunzipSync(sent.raw).toString(), conversation);
+    assert.equal(Number(sent.headers["content-length"]), sent.raw.length);
+    assert.equal(seen.sent.at(-1), sent.raw.length, "bytes sent counts the compressed body");
+    assert.ok(sent.raw.length < conversation.length / 5);
+    mode = "zstd";
+    await post(`${h.origin}/codex/responses`, { authorization: `Bearer ${h.token}` }, conversation);
+    sent = upstream.requests.at(-1)!;
+    assert.equal(sent.headers["content-encoding"], "zstd");
+    assert.equal(zstdDecompressSync(sent.raw).toString(), conversation);
+    mode = "gzip";
+    await post(`${h.origin}/claude/v1/messages`, { authorization: `Bearer ${h.token}` }, "{}");
+    assert.equal(upstream.requests.at(-1)!.headers["content-encoding"], undefined, "small bodies stay plain");
+    mode = "off";
+    await post(`${h.origin}/claude/v1/messages`, { authorization: `Bearer ${h.token}` }, conversation);
+    sent = upstream.requests.at(-1)!;
+    assert.equal(sent.headers["content-encoding"], undefined);
+    assert.equal(sent.body, conversation);
+  });
+});
+
