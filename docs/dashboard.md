@@ -263,7 +263,8 @@ no accounts it links to Accounts.
 - **Summary tiles:** over the last minute, active sessions (distinct client
   session ids with a request running or finished within the minute; a
   session's parallel requests count once), sent and output tokens per
-  second, cache hit ratio, requests and errors. Each tile names its window,
+  second (uploaded and downloaded bytes in Bytes mode), cache hit ratio,
+  requests and errors. Each tile names its window,
   and the tiles follow the scope, not the selected range. Requests in flight
   show as streams in the Accounts table and as "streaming" in Recent
   requests.
@@ -283,7 +284,7 @@ no accounts it links to Accounts.
   table view, and as relief for two light-mode colours below 3:1 contrast.
 - **Quota graph** (account scope): used percent per window, holding the last
   sample until the next one.
-- **Accounts table:** live sent/output rates, streams, quota meters, time
+- **Accounts table:** live sent/output rates (uploaded/downloaded in Bytes mode), streams, quota meters, time
   since the last request, and a sparkline of tokens per second (sent and output)
   over the selected range from the router's history, on one scale shared by
   every row; its header names the range, and hovering shows the account's

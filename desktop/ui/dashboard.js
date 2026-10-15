@@ -87,6 +87,7 @@ export function createDashboard({ client, overview }) {
     const span = rangeSpan();
     const series = shownSeries().map(key => SERIES[key].label.toLowerCase());
     $("dash-spark-head").textContent = `${units === "tokens" ? "Tokens" : "Bytes"}/s · last ${span}`;
+    $("dash-rate-head").textContent = units === "tokens" ? "Sent / output per s" : "Uploaded / downloaded per s";
     $("dash-spark-head").title = series.length
       ? `Per second for each account, on one scale shared by every row: ${series.join(", ")}, as shown in the chart`
       : "No series is shown in the chart";
@@ -188,8 +189,14 @@ export function createDashboard({ client, overview }) {
       // uploads its context in about a second, so a 5-second rate mostly read 0.
       // Sessions count conversations, however many requests each runs at once.
       ["Sessions · 1 min", s ? String(s.sessions ?? 0) : "0"],
-      ["Sent · 1 min", s ? `${formatNumber(sent(s.minute) / 60)}/s` : "0/s"],
-      ["Output · 1 min", s ? `${formatNumber(s.minute.output / 60)}/s` : "0/s"],
+      // The two traffic tiles follow Tokens/Bytes; cache hit is a token measure either way.
+      ...(units === "tokens" ? [
+        ["Sent · 1 min", s ? `${formatNumber(sent(s.minute) / 60)}/s` : "0/s"],
+        ["Output · 1 min", s ? `${formatNumber(s.minute.output / 60)}/s` : "0/s"],
+      ] : [
+        ["Uploaded · 1 min", `${formatBytes(s ? s.minute.bytesUp / 60 : 0)}/s`],
+        ["Downloaded · 1 min", `${formatBytes(s ? s.minute.bytesDown / 60 : 0)}/s`],
+      ]),
       ["Cache hit · 1 min", s && sent(s.minute) ? `${Math.round((s.minute.cacheRead / sent(s.minute)) * 100)}%` : "–"],
       ["Requests · 1 min", s ? String(s.minute.requests) : "0"],
       ["Errors · 1 min", s ? String(s.minute.errors) : "0"],
@@ -198,7 +205,10 @@ export function createDashboard({ client, overview }) {
     if (tiles.children.length !== stats.length) {
       tiles.replaceChildren(...stats.map(([label]) => { const tile = element("div", undefined, "stat"); tile.append(element("span", label, "stat-label"), element("strong", "")); return tile; }));
     }
-    stats.forEach(([, value], i) => { tiles.children[i].querySelector("strong").textContent = value; });
+    stats.forEach(([label, value], i) => {
+      tiles.children[i].querySelector(".stat-label").textContent = label;
+      tiles.children[i].querySelector("strong").textContent = value;
+    });
     renderAccounts();
     graph.stale = Date.now() - lastEvent > 3000;
   }
@@ -225,7 +235,9 @@ export function createDashboard({ client, overview }) {
       // Proxied responses update quota between overview refreshes.
       row.classList.toggle("in-scope", inScope(a.id));
       row.cells[0].textContent = `${accountLabel(a.id)} · ${a.provider}${a.enabled ? "" : " · disabled"}`;
-      row.cells[1].textContent = s ? `${formatNumber(sent(s.rate))} / ${formatNumber(s.rate.output)}` : "0 / 0";
+      row.cells[1].textContent = units === "tokens"
+        ? (s ? `${formatNumber(sent(s.rate))} / ${formatNumber(s.rate.output)}` : "0 / 0")
+        : `${formatBytes(s?.rate.bytesUp ?? 0)} / ${formatBytes(s?.rate.bytesDown ?? 0)}`;
       row.cells[2].textContent = s ? String(s.active) : "0";
       const recent = live?.quota?.[a.id];
       renderQuota(row.cells[3], recent ?? a.windows, { at: recent ? live.quotaAt?.[a.id] : Date.parse(a.quota?.observedAt ?? ""),
