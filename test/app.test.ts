@@ -11,6 +11,8 @@ import { ownerRequest } from "../src/owner.ts";
 import { startRouter } from "../src/runtime.ts";
 import { StateStore } from "../src/state.ts";
 import { servedFiles, startDashboard } from "../src/dashboard.ts";
+import { AppHub, UI_OPERATIONS } from "../src/app.ts";
+import { Metrics } from "../src/metrics.ts";
 import { captureLogs, mockUpstream, tempDir, uiBuild, waitFor, writeClaudeCredentials } from "./support.ts";
 
 const skip = process.platform === "win32";
@@ -39,14 +41,16 @@ function appSocket(path: string) {
 }
 
 /** Minimal masked-frame WebSocket client with explicit headers. */
-function webSocket(origin: string, headers: Record<string, string>): Promise<{ status: number; send(text: string): void; messages: any[]; close(): void }> {
+function webSocket(origin: string, headers: Record<string, string>): Promise<{ status: number; send(text: string): void; messages: any[]; close(): void; closed(): boolean }> {
   return new Promise((resolve, reject) => {
     const url = new URL("/v1/app/ws", origin);
     const req = http.request({ host: url.hostname, port: url.port, path: url.pathname, headers: { connection: "Upgrade", upgrade: "websocket", "sec-websocket-version": "13", "sec-websocket-key": randomBytes(16).toString("base64"), ...headers } });
-    req.on("response", (res) => { res.resume(); resolve({ status: res.statusCode!, send() {}, messages: [], close() {} }); });
-    req.on("error", (error: NodeJS.ErrnoException) => error.code === "ECONNRESET" ? resolve({ status: 0, send() {}, messages: [], close() {} }) : reject(error));
+    req.on("response", (res) => { res.resume(); resolve({ status: res.statusCode!, send() {}, messages: [], close() {}, closed: () => true }); });
+    req.on("error", (error: NodeJS.ErrnoException) => error.code === "ECONNRESET" ? resolve({ status: 0, send() {}, messages: [], close() {}, closed: () => true }) : reject(error));
     req.on("upgrade", (res, socket: Duplex, head: Buffer) => {
       const messages: any[] = [];
+      let closed = false;
+      socket.on("close", () => { closed = true; });
       let buffer = Buffer.alloc(0);
       const read = (chunk: Buffer) => {
         buffer = Buffer.concat([buffer, chunk]);
@@ -70,6 +74,7 @@ function webSocket(origin: string, headers: Record<string, string>): Promise<{ s
           socket.write(Buffer.concat([header, mask, Buffer.from(payload.map((b, i) => b ^ mask[i & 3]!))]));
         },
         close: () => socket.destroy(),
+        closed: () => closed,
       });
     });
     req.end();
@@ -98,7 +103,7 @@ function claudeStream(res: http.ServerResponse) {
   setTimeout(() => { send({ type: "message_delta", usage: { output_tokens: 33 } }); res.end(); }, 50);
 }
 
-async function fixture(t: { after(fn: () => unknown): void }, upstreamHandler: (req: http.IncomingMessage, res: http.ServerResponse) => void = (_req, res) => claudeStream(res), dashboard: { uiDir?: string; dev?: boolean } = {}) {
+async function fixture(t: { after(fn: () => unknown): void }, upstreamHandler: (req: http.IncomingMessage, res: http.ServerResponse) => void = (_req, res) => claudeStream(res), dashboard: { uiDir?: string; dev?: boolean; publicReadonly?: boolean } = {}) {
   captureLogs();
   const upstream = await mockUpstream(upstreamHandler);
   const store = new StateStore(tempDir("aa-"));
@@ -255,6 +260,93 @@ test("web dashboard: exact host and origin, single-use codes, sessions and logou
   assert.match(String(logout.headers["set-cookie"]), /Max-Age=0/);
   assert.equal((await webSocket(origin, { host, cookie, origin })).status, 401, "logout ends the session on the server");
   assert.equal((await ownerRequest(store, "dashboard/sessions")).sessions.length, 0);
+});
+
+test("public dashboard allows passive HTTP and WebSocket reads, but management requires sign-in", { skip }, async t => {
+  const { store, router, upstream, ownerToken } = await fixture(t, undefined, { publicReadonly: true });
+  const origin = router.dashboard!.origin, host = new URL(origin).host;
+  const status = JSON.parse((await httpRequest(origin, "/auth/status")).text);
+  assert.equal(status.authenticated, false);
+  assert.equal(status.publicReadonly, true);
+  assert.ok(status.loginCommand.startsWith(`'${process.execPath}' `));
+  assert.ok(status.loginCommand.endsWith(`--state '${store.dir}' dashboard url`));
+  const call = (operation: string, body: object = {}, extra: Record<string, string> = {}) => httpRequest(origin, `/v1/app/${operation}`, {
+    method: "POST", headers: { host, origin, "content-type": "application/json", ...extra }, body: JSON.stringify(body),
+  });
+  assert.equal((await call("overview", {}, { origin: "http://evil.example" })).status, 403);
+  assert.equal((await call("overview", {}, { host: "evil.example" })).status, 403);
+  assert.equal((await call("overview", {}, { origin: "" })).status, 403);
+  assert.equal((await call("overview", {}, { authorization: "Bearer invalid" })).status, 401, "invalid owner auth cannot downgrade to viewer");
+  const passiveOperations = ["overview", "metrics/snapshot", "metrics/history", "requests/recent", "sessions/recent", "history/cost"];
+  for (const operation of passiveOperations) {
+    assert.equal((await call(operation)).status, 200, operation);
+  }
+  const ws = await webSocket(origin, { host, origin }); t.after(() => ws.close());
+  assert.equal(ws.status, 101);
+  await waitFor(() => ws.messages.some(m => m.hello?.access === "viewer"));
+  assert.equal((await webSocket(origin, { host, origin: "http://evil.example" })).status, 403);
+  let id = 0;
+  for (const operation of UI_OPERATIONS) {
+    if (passiveOperations.includes(operation)) continue;
+    const body = { id: "work", nickname: "unauthorized", revision: 0, access: "owner", requestCompression: { claude: "gzip" } };
+    assert.equal((await call(operation, body)).status, 401, operation);
+    const requestId = ++id;
+    ws.send(JSON.stringify({ id: requestId, call: operation, body }));
+    await waitFor(() => ws.messages.some(m => m.id === requestId));
+    assert.equal(ws.messages.find(m => m.id === requestId).error.status, 401, operation);
+  }
+  ws.send(JSON.stringify({ id: ++id, hello: { token: ownerToken } }));
+  await waitFor(() => ws.messages.some(m => m.id === id));
+  assert.equal(ws.messages.find(m => m.id === id).error.status, 409, "a viewer cannot upgrade its socket with an owner hello");
+  const liveId = ++id;
+  ws.send(JSON.stringify({ id: liveId, subscribe: "live" }));
+  await waitFor(() => ws.messages.some(m => m.sub === liveId), 3000);
+  assert.deepEqual(upstream.requests, [], "viewer calls and live subscriptions do not contact providers");
+  assert.deepEqual(store.loadSettings().requestCompression, {});
+
+  // Tauri's private owner connection stays authenticated even in public web mode.
+  const desktop = appSocket(join(store.dir, "app.sock")); t.after(() => desktop.close());
+  desktop.send({ hello: { token: ownerToken } });
+  assert.equal((await desktop.next(m => m.hello)).hello.access, "owner");
+  desktop.send({ id: 1, call: "history/settings" });
+  assert.equal((await desktop.next(m => m.id === 1)).result.retentionDays, 30);
+
+  const code = new URL((await ownerRequest(store, "dashboard/code")).url).hash.slice("#code=".length);
+  const exchange = await httpRequest(origin, "/auth/exchange", { method: "POST", headers: { host, origin, "content-type": "application/json" }, body: JSON.stringify({ code }) });
+  assert.equal(exchange.status, 200);
+  const cookie = String(exchange.headers["set-cookie"]).split(";")[0]!;
+  assert.equal((await call("accounts/set-nickname", { id: "work", nickname: "Owner edit", revision: 0 }, { cookie })).status, 200);
+  const signedIn = await webSocket(origin, { host, origin, cookie }); t.after(() => signedIn.close());
+  await waitFor(() => signedIn.messages.some(m => m.hello?.access === "owner"));
+  signedIn.send(JSON.stringify({ id: 1, call: "accounts/set-nickname", body: { id: "work", nickname: "Socket edit", revision: 1 } }));
+  await waitFor(() => signedIn.messages.some(m => m.id === 1));
+  assert.ok(signedIn.messages.find(m => m.id === 1).result);
+  assert.equal((await call("accounts/set-nickname", { id: "work", nickname: "Unauthenticated edit", revision: 2 })).status, 401);
+  await ownerRequest(store, "dashboard/revoke", {});
+  assert.equal((await call("accounts/set-nickname", { id: "work", nickname: "Revoked edit", revision: 2 }, { cookie })).status, 401);
+  signedIn.send(JSON.stringify({ id: 2, call: "accounts/set-nickname", body: { id: "work", nickname: "Revoked socket edit", revision: 2 } }));
+  // Synchronize with the socket's close handshake, then verify no write ran.
+  await waitFor(signedIn.closed);
+  assert.equal(store.loadAccounts()[0]!.nickname, "Socket edit");
+});
+
+test("viewer live subscriptions never schedule provider probes; owner subscriptions still do", t => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"] });
+  let probes = 0;
+  const metrics = new Metrics();
+  const hub = new AppHub({ refreshStaleQuota: () => { probes++; }, quotaChecking: () => [] } as never, metrics, () => "synthetic");
+  t.after(() => { hub.close(); metrics.close(); });
+  const transport = { send() {}, close() {} };
+  const viewer = hub.open("web", transport, true, "viewer");
+  viewer.receive(JSON.stringify({ id: 1, subscribe: "live" }));
+  t.mock.timers.tick(31_000);
+  assert.equal(probes, 0);
+  const owner = hub.open("web", transport, true);
+  owner.receive(JSON.stringify({ id: 1, subscribe: "live" }));
+  assert.equal(probes, 1);
+  owner.close();
+  t.mock.timers.tick(31_000);
+  assert.equal(probes, 1, "remaining viewers do not keep provider probing alive");
 });
 
 test("dev mode reloads signed-in browsers when a served UI file changes", { skip }, async (t) => {

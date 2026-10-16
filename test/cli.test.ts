@@ -57,6 +57,28 @@ test("quota CLI selects an enrolled account, reports unavailable metadata and ex
   assert.match(unknown.stderr, /unknown account/);
 });
 
+test("serve exposes public viewing only with --dashboard-public-readonly", { skip: process.platform === "win32" }, async t => {
+  for (const publicReadonly of [false, true]) {
+    const state = tempDir("aview-");
+    writeFileSync(join(state, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }), { mode: 0o600 });
+    const child = spawn(process.execPath, ["src/cli.ts", "--state", state, "serve", ...(publicReadonly ? ["--dashboard-public-readonly"] : [])], { stdio: ["ignore", "pipe", "pipe"] });
+    const exited = new Promise(resolve => child.once("exit", resolve));
+    t.after(() => { child.kill("SIGTERM"); return exited; });
+    let output = "";
+    child.stdout.on("data", chunk => { output += chunk; }); child.stderr.resume();
+    await waitFor(() => output.includes("Web dashboard:"), 10_000);
+    const origin = output.match(/Web dashboard: (http:\/\/127\.0\.0\.1:\d+)/)![1]!;
+    const status = await fetch(`${origin}/auth/status`).then(r => r.json()) as { publicReadonly: boolean; authenticated: boolean; loginCommand: string };
+    assert.equal(status.publicReadonly, publicReadonly);
+    assert.equal(status.authenticated, false);
+    assert.match(status.loginCommand, /dashboard url$/);
+    const read = await fetch(`${origin}/v1/app/overview`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: "{}" });
+    assert.equal(read.status, publicReadonly ? 200 : 401);
+    child.kill("SIGTERM");
+    await exited;
+  }
+});
+
 test("repeated Ctrl-C finishes cleanup, and serve sets aside a stale socket", { skip: process.platform === "win32" }, async () => {
   const state = tempDir("acli-");
   writeFileSync(join(state, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }), { mode: 0o600 });

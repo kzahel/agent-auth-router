@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { AccountsTab } from "../accounts/AccountsTab.tsx";
 import { ConnectionsTab } from "../connections/ConnectionsTab.tsx";
 import { PanelBoundary } from "../components/PanelBoundary.tsx";
+import { ActionButton } from "../components/ActionButton.tsx";
 import { DashboardTab } from "../dashboard/DashboardTab.tsx";
 import { PoolsTab } from "../pools/PoolsTab.tsx";
 import { SettingsTab, type TerminalPresentation } from "../settings/SettingsTab.tsx";
@@ -18,9 +19,10 @@ import { useLocalStorage } from "./use-local-storage.ts";
  * browser uses the web dashboard's WebSocket. `signedOut` carries why a
  * browser is not signed in.
  */
-export function App({ signedOut }: { signedOut?: string | undefined }) {
+export function App({ signedOut, loginCommand = "aar dashboard url" }: { signedOut?: string | undefined; loginCommand?: string | undefined }) {
   const { native, router } = useApp();
-  const { overview } = useRouterView();
+  const { overview, access } = useRouterView();
+  const readOnly = !native && access === "viewer";
   const [tab, setTab] = useState<TabId>("dashboard");
   const [presentation, setPresentation] = useLocalStorage<TerminalPresentation>("terminal-presentation", stored => stored === "embedded" ? "embedded" : "external");
   const panel = (id: TabId, content: ReactNode) => (
@@ -35,19 +37,18 @@ export function App({ signedOut }: { signedOut?: string | undefined }) {
         <StatusBanner />
         {signedOut !== undefined ? (
           <section id="signed-out" className={styles.signedOut}>
-            <h2>Sign in to the dashboard</h2>
-            <p id="signed-out-detail" className={ui.hint}>{signedOut}</p>
-            <p className={ui.hint}>Open the link that <code>aar serve</code> printed, or run <code>aar dashboard url</code> on this machine for a new one. Each link signs in one browser.</p>
+            <SignInGuide command={loginCommand} detail={signedOut} />
           </section>
         ) : (
           <div id="app-shell">
+            {readOnly && <p className={styles.viewOnly}>View only · <button type="button" onClick={() => setTab("settings")}>Sign in to manage</button></p>}
             <Tabs selected={tab} onSelect={setTab} />
             <ErrorLine />
             {panel("dashboard", <DashboardTab visible={tab === "dashboard"} onAddAccount={() => setTab("accounts")} />)}
-            {panel("accounts", <AccountsTab presentation={presentation} />)}
-            {panel("pools", <PoolsTab />)}
-            {panel("integrations", <ConnectionsTab />)}
-            {panel("settings", <SettingsTab visible={tab === "settings"} presentation={presentation} onPresentation={setPresentation} onNavigate={setTab} />)}
+            {panel("accounts", readOnly ? <SignInGuide command={loginCommand} manage /> : <AccountsTab presentation={presentation} />)}
+            {panel("pools", readOnly ? <SignInGuide command={loginCommand} manage /> : <PoolsTab />)}
+            {panel("integrations", readOnly ? <SignInGuide command={loginCommand} manage /> : <ConnectionsTab />)}
+            {panel("settings", readOnly ? <SignInGuide command={loginCommand} manage /> : <SettingsTab visible={tab === "settings"} presentation={presentation} onPresentation={setPresentation} onNavigate={setTab} />)}
           </div>
         )}
         <footer>
@@ -60,6 +61,19 @@ export function App({ signedOut }: { signedOut?: string | undefined }) {
         </footer>
       </main>
     </ConfirmProvider>
+  );
+}
+
+function SignInGuide({ command, detail, manage }: { command: string; detail?: string; manage?: boolean }) {
+  return (
+    <div className={styles.signedOut}>
+      <h2>{manage ? "Sign in to manage the router" : "Sign in to the dashboard"}</h2>
+      {detail && <p id="signed-out-detail" className={ui.hint}>{detail}</p>}
+      <p className={ui.hint}>Run this command in a terminal on the computer running the router:</p>
+      <pre className={styles.loginCommand}><code>{command}</code></pre>
+      <div><ActionButton action={() => navigator.clipboard.writeText(command)}>Copy command</ActionButton></div>
+      <p className={ui.hint}>Open the link it prints in this browser to sign in. Each link signs in one browser. You can also use the sign-in link printed by <code>aar serve</code>.</p>
+    </div>
   );
 }
 

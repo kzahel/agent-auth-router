@@ -13,6 +13,12 @@ import type { OwnerService } from "./owner.ts";
 
 export const APP_PROTOCOL = 1;
 export type AppKind = "desktop" | "web";
+export type AppAccess = "owner" | "viewer";
+
+/** Passive reads only: no provider probes, credential reads or settings writes. */
+export const VIEWER_OPERATIONS: ReadonlySet<string> = new Set([
+  "overview", "metrics/snapshot", "metrics/history", "requests/recent", "sessions/recent", "history/cost",
+]);
 
 /** Operations a UI may call. Dashboard session administration stays CLI-only. */
 export const UI_OPERATIONS: ReadonlySet<string> = new Set([
@@ -68,8 +74,8 @@ export class AppHub {
   }
   /** In-flight calls; long-lived idle connections do not count as busy. */
   inflight(): number { return this.calls; }
-  open(kind: AppKind, transport: AppTransport, authenticated: boolean): AppSession {
-    const session = new AppSession(this, kind, transport, authenticated);
+  open(kind: AppKind, transport: AppTransport, authenticated: boolean, access: AppAccess = "owner"): AppSession {
+    const session = new AppSession(this, kind, transport, authenticated, access);
     this.sessions.add(session);
     if (authenticated) session.hello();
     return session;
@@ -100,8 +106,9 @@ export class AppHub {
     if (typeof token !== "string" || token.length > 200) throw new ControlError(401, "local owner credential required");
     this.owner.authenticate(`Bearer ${token}`);
   }
-  async call(kind: AppKind, operation: unknown, body: unknown): Promise<unknown> {
+  async call(kind: AppKind, operation: unknown, body: unknown, access: AppAccess = "owner"): Promise<unknown> {
     if (typeof operation !== "string" || !(kind === "desktop" ? DESKTOP_OPERATIONS : UI_OPERATIONS).has(operation)) throw new ControlError(404, "unknown app operation");
+    if (access === "viewer" && !VIEWER_OPERATIONS.has(operation)) throw new ControlError(401, "Sign in to manage the router");
     const input = body === undefined ? {} : record(body);
     if (!input) throw new ControlError(400, "expected object");
     this.calls++;
@@ -126,7 +133,7 @@ export class AppHub {
       this.tick = setInterval(() => {
         const live = this.snapshot();
         for (const session of this.sessions) session.periodicTick(live);
-        if ([...this.sessions].some(s => s.watchesLive())) this.demandQuota();
+        if ([...this.sessions].some(s => s.access === "owner" && s.watchesLive())) this.demandQuota();
       }, 1000);
       this.tick.unref();
     } else if (!needed && this.tick) {
@@ -157,15 +164,17 @@ function adjust(_kind: AppKind, operation: string, body: Record<string, unknown>
 export class AppSession {
   private readonly hub: AppHub;
   readonly kind: AppKind;
+  readonly access: AppAccess;
   private readonly transport: AppTransport;
   private authenticated: boolean;
   private closed = false;
   private inflight = 0;
   private readonly subscriptions = new Map<number, Subscription>();
   private readonly helloTimer: NodeJS.Timeout | undefined;
-  constructor(hub: AppHub, kind: AppKind, transport: AppTransport, authenticated: boolean) {
+  constructor(hub: AppHub, kind: AppKind, transport: AppTransport, authenticated: boolean, access: AppAccess) {
     this.hub = hub;
     this.kind = kind;
+    this.access = access;
     this.transport = transport;
     this.authenticated = authenticated;
     if (!authenticated) {
@@ -174,7 +183,7 @@ export class AppSession {
     }
   }
   hello(): void {
-    this.send({ hello: { protocol: APP_PROTOCOL, routerId: this.hub.id, kind: this.kind, revision: this.hub.currentRevision } });
+    this.send({ hello: { protocol: APP_PROTOCOL, routerId: this.hub.id, kind: this.kind, revision: this.hub.currentRevision, access: this.access } });
   }
   private send(message: object): void {
     if (this.closed) return;
@@ -213,7 +222,7 @@ export class AppSession {
   private async call(id: number, operation: unknown, body: unknown): Promise<void> {
     if (this.inflight >= MAX_INFLIGHT) { this.fail(id, 503, "too many concurrent calls"); return; }
     this.inflight++;
-    try { this.send({ id, result: await this.hub.call(this.kind, operation, body) }); }
+    try { this.send({ id, result: await this.hub.call(this.kind, operation, body, this.access) }); }
     catch (error) {
       if (error instanceof ControlError) this.fail(id, error.status, error.message);
       else { log("app.call_failed", { operation: typeof operation === "string" ? operation.slice(0, 60) : "invalid", error: errorText(error) }); this.fail(id, 503, "operation unavailable"); }
@@ -226,7 +235,7 @@ export class AppSession {
     if (kind === "live") {
       this.subscriptions.set(id, { kind: "live" });
       this.send({ id, result: this.hub.snapshot() });
-      this.hub.demandQuota(true);
+      if (this.access === "owner") this.hub.demandQuota(true);
     } else if (kind === "requests") {
       this.subscriptions.set(id, { kind: "requests" });
       this.send({ id, result: { requests: this.hub.recent() } });

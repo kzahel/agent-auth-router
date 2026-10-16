@@ -10,6 +10,7 @@ import type { Overview } from "../protocol/types.ts";
 
 export interface RouterView {
   overview: Overview | undefined;
+  access: "owner" | "viewer";
   /** Shown only when something is wrong; `startable` offers Start router in the desktop app. */
   status: { message: string; startable: boolean };
   error: string;
@@ -18,7 +19,7 @@ export interface RouterView {
 export class RouterState {
   #client: AppClient;
   #desktop: boolean;
-  #view: RouterView = { overview: undefined, status: { message: "Connecting to the router…", startable: false }, error: "" };
+  #view: RouterView = { overview: undefined, access: "viewer", status: { message: "Connecting to the router…", startable: false }, error: "" };
   #listeners = new Set<() => void>();
   #generation = 0;
   #dirty = false;
@@ -73,7 +74,7 @@ export class RouterState {
       throw failure;
     }
     if (generation !== this.#generation) return;
-    this.#set({ overview: next, status: { message: "", startable: false } });
+    this.#set({ overview: next, access: this.#client.hello?.access ?? "owner", status: { message: "", startable: false } });
   }
 
   /** Something changed in the router: fetch the overview again, coalescing bursts. */

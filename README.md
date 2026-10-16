@@ -110,6 +110,12 @@ app.
 session lasts until you log out or run `aar dashboard revoke`. It is
 loopback-only. See [the dashboard design](docs/dashboard.md).
 
+For local viewing without signing in, use `npm run aar -- serve
+--dashboard-public-readonly`. The Dashboard tab shows traffic and stored usage;
+management tabs show a command to get a sign-in link. Editing still requires
+sign-in. This option applies to the headless web server; the Tauri app uses
+its native owner connection.
+
 For UI work, `npm run dev` rebuilds the UI in `ui/` whenever its source changes
 and runs `aar serve --dev`, which reloads signed-in browsers after each rebuild.
 The UI is React and TypeScript built with Vite; see [ui/README.md](ui/README.md).

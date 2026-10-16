@@ -3,7 +3,8 @@
 // requests arrive live, and the link cannot be reused.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { createServer } from "node:http";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -13,6 +14,60 @@ import { chromium } from "@playwright/test";
 
 const root = resolve(import.meta.dirname, "../..");
 const cli = join(root, "src/cli.ts");
+
+test("public viewing gates management tabs, signs in with the displayed command and returns to viewing on logout", async t => {
+  // A quote in the state path verifies the command is safe to copy into a shell.
+  const state = mkdtempSync(join(tmpdir(), "aar-view-'"));
+  let browser, router, exited;
+  t.after(async () => {
+    await browser?.close();
+    router?.kill("SIGTERM");
+    await exited;
+    rmSync(state, { recursive: true, force: true });
+  });
+  writeFileSync(join(state, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }), { mode: 0o600 });
+  router = spawn(process.execPath, [cli, "--state", state, "serve", "--dashboard-public-readonly"], { stdio: ["ignore", "pipe", "pipe"] });
+  exited = new Promise(resolve => router.once("exit", resolve));
+  let output = "";
+  router.stdout.on("data", chunk => { output += chunk; }); router.stderr.resume();
+  for (let i = 0; i < 100 && !output.includes("Web dashboard:"); i++) await new Promise(r => setTimeout(r, 50));
+  const origin = new URL(output.match(/Web dashboard: (\S+)/)[1]).origin;
+  browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 900, height: 1000 } });
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  await page.goto(origin);
+  await page.getByText("View only", { exact: false }).waitFor();
+  await page.waitForFunction(() => document.getElementById("status")?.hidden === true);
+  const captures = process.env.AAR_UI_CAPTURE_DIR;
+  if (captures) {
+    await mkdir(captures, { recursive: true });
+    await page.screenshot({ path: join(captures, "web-dashboard-view-only.png"), fullPage: true });
+  }
+  for (const name of ["Accounts", "Pools", "Connections", "Settings"]) {
+    await page.getByRole("tab", { name, exact: true }).click();
+    await page.getByRole("heading", { name: "Sign in to manage the router" }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Add account", exact: true }).isVisible(), false);
+  }
+  const command = await page.getByRole("tabpanel").locator("pre").textContent();
+  if (captures) await page.screenshot({ path: join(captures, "web-dashboard-management-sign-in.png"), fullPage: true });
+  // The command works from another folder and mints a link for this exact state.
+  const result = await promisify(execFile)("/bin/sh", ["-c", command], { cwd: tmpdir() });
+  const link = result.stdout.match(/http:\/\/127\.0\.0\.1:\d+\/#code=[A-Za-z0-9_-]+/)[0];
+  assert.equal(new URL(link).origin, origin);
+  await page.goto(link);
+  await page.getByText("View only", { exact: false }).waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.getElementById("status")?.hidden === true);
+  assert.equal(await page.getByText("View only", { exact: false }).isVisible(), false);
+  await page.getByRole("tab", { name: "Accounts", exact: true }).click();
+  await page.getByRole("tabpanel").locator("summary").filter({ hasText: /^Add account$/ }).click();
+  await page.getByRole("button", { name: "Add account", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Log out", exact: true }).click();
+  await page.getByText("View only", { exact: false }).waitFor();
+  await page.getByRole("tab", { name: "Accounts", exact: true }).click();
+  await page.getByRole("heading", { name: "Sign in to manage the router" }).waitFor();
+  assert.deepEqual(errors, []);
+});
 
 /** Claude-shaped SSE: usage at message_start and message_delta, text deltas between. */
 function claudeStream(res, { deltas = 12, delayMs = 60 } = {}) {

@@ -42,11 +42,14 @@ const USAGE = `usage: aar [--state DIR] <command>
                                          is pinned to the member the pool's policy picks
   client list
   client revoke <id-or-name>
-  serve [--dashboard-port N] [--no-dashboard] [--dev] [--no-event-log]
+  serve [--dashboard-port N] [--no-dashboard] [--dashboard-public-readonly]
+        [--dev] [--no-event-log]
                                          run the router on the configured loopback port,
                                          with the web dashboard on 127.0.0.1:${DEFAULT_DASHBOARD_PORT};
                                          --dev reloads browsers when UI files change;
                                          --no-event-log skips the analysis log in events/
+                                         --dashboard-public-readonly allows viewing without sign-in;
+                                         management still requires a sign-in link
   restart [--quiet-seconds N] [--cancel] restart aar serve with the current code once nothing
                                          has been in flight for N seconds (default 5)
   dashboard url                          print a new single-use dashboard access link
@@ -121,6 +124,7 @@ async function main(argv: string[]): Promise<void> {
       "codex-pool": { type: "string" },
       "dashboard-port": { type: "string" },
       "no-dashboard": { type: "boolean" },
+      "dashboard-public-readonly": { type: "boolean" },
       "no-event-log": { type: "boolean" },
       dev: { type: "boolean" },
       all: { type: "boolean" },
@@ -341,12 +345,12 @@ async function main(argv: string[]): Promise<void> {
       const desktop = command === "desktop-serve";
       if (!desktop && process.env.AAR_SERVE_CHILD !== "1") return supervise();
       // The desktop app uses its private socket; only the CLI opens the web dashboard.
-      let dashboard: { port: number; dev?: boolean } | undefined;
+      let dashboard: { port: number; dev?: boolean; publicReadonly?: boolean } | undefined;
       if (!desktop && !values["no-dashboard"]) {
         const raw = values["dashboard-port"] ?? process.env.AAR_DASHBOARD_PORT;
         if (raw !== undefined && (!/^\d{1,5}$/.test(raw) || Number(raw) > 65535)) fail("dashboard port must be a number from 0 to 65535");
         // A test configuration with an ephemeral inference port gets an ephemeral dashboard too.
-        dashboard = { port: raw !== undefined ? Number(raw) : store.loadConfig().listen.port === 0 ? 0 : DEFAULT_DASHBOARD_PORT, dev: values.dev === true };
+        dashboard = { port: raw !== undefined ? Number(raw) : store.loadConfig().listen.port === 0 ? 0 : DEFAULT_DASHBOARD_PORT, dev: values.dev === true, publicReadonly: values["dashboard-public-readonly"] === true };
       }
       let parentClosed = false;
       let router: Awaited<ReturnType<typeof startRouter>> | undefined;
@@ -383,6 +387,7 @@ async function main(argv: string[]): Promise<void> {
       }
       if (router.dashboard) {
         process.stdout.write(`Web dashboard: ${router.dashboard.mintCode().url}\n  This link signs in one browser. Run \`aar dashboard url\` for another.\n`);
+        if (dashboard?.publicReadonly) process.stdout.write(`  View without signing in: ${router.dashboard.origin}/ (view only)\n`);
         if (dashboard?.dev) process.stdout.write("  Dev mode: signed-in browsers reload when the UI build in ui/dist changes.\n");
       }
       if (parentClosed) shutdown();

@@ -21,6 +21,7 @@ export function overview(change: Partial<Overview> = {}): Overview {
 
 export async function fakeApp(handlers: Record<string, Handler> = {}, options: {
   native?: Partial<DesktopShell>;
+  access?: "owner" | "viewer";
   /** Snapshots for subscriptions by kind; others get an empty object. */
   snapshots?: Record<string, Handler>;
 } = {}) {
@@ -29,7 +30,7 @@ export async function fakeApp(handlers: Record<string, Handler> = {}, options: {
   let deliver: (message: Inbound) => void = () => {};
   const port: Port = {
     kind: options.native ? "desktop" : "web",
-    connect: async () => ({ protocol: 1, routerId: "fixture", kind: options.native ? "desktop" : "web" }),
+    connect: async () => ({ protocol: 1, routerId: "fixture", kind: options.native ? "desktop" : "web", access: options.access ?? "owner" }),
     send: (message) => {
       if ("subscribe" in message) {
         const body = message.body as Record<string, unknown>;

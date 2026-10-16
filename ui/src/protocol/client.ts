@@ -11,7 +11,7 @@ export class AppError extends Error {
   }
 }
 
-export interface Hello { protocol: number; routerId: string; kind: "desktop" | "web" }
+export interface Hello { protocol: number; routerId: string; kind: "desktop" | "web"; access?: "owner" | "viewer" }
 
 /** A message from the core: a reply, a subscription event or a broadcast. */
 export interface Inbound {
@@ -90,7 +90,7 @@ export async function tauriPort(): Promise<Port> {
 
 export interface WebPort extends Port {
   /** Signs in with a `#code=` link if present, then reports the session state. */
-  authenticate(): Promise<{ authenticated: boolean; error?: string }>;
+  authenticate(): Promise<{ authenticated: boolean; publicReadonly?: boolean; loginCommand?: string; error?: string }>;
 }
 
 /** Browser: exchanges a one-time access code for a session cookie, then uses a WebSocket. */
@@ -111,8 +111,8 @@ export function webSocketPort(): WebPort {
         history.replaceState(null, "", location.pathname + location.search);
         try { await post("/auth/exchange", { code }); } catch (failure) { return { authenticated: false, error: (failure as Error).message }; }
       }
-      const status = await fetch("/auth/status", { credentials: "same-origin" }).then(r => r.json()) as { authenticated?: boolean };
-      return { authenticated: !!status.authenticated };
+      const status = await fetch("/auth/status", { credentials: "same-origin" }).then(r => r.json()) as { authenticated?: boolean; publicReadonly?: boolean; loginCommand?: string };
+      return { authenticated: !!status.authenticated, publicReadonly: !!status.publicReadonly, loginCommand: status.loginCommand };
     },
     connect: () => new Promise((resolve, reject) => {
       socket?.close();

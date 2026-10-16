@@ -10,7 +10,7 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AppHub, MAX_MESSAGE_CHARS } from "./app.ts";
+import { AppHub, MAX_MESSAGE_CHARS, type AppAccess } from "./app.ts";
 import { ControlError } from "./control.ts";
 import { errorText, log } from "./log.ts";
 import type { DashboardControl } from "./owner.ts";
@@ -74,8 +74,12 @@ export interface Dashboard extends DashboardControl {
   close(): Promise<void>;
 }
 
-export async function startDashboard(options: { store: StateStore; hub: AppHub; authenticateOwner: (header: string | undefined) => void; port: number; uiDir?: string; dev?: boolean }): Promise<Dashboard> {
+export async function startDashboard(options: { store: StateStore; hub: AppHub; authenticateOwner: (header: string | undefined) => void; port: number; uiDir?: string; dev?: boolean; publicReadonly?: boolean }): Promise<Dashboard> {
   const { store, hub } = options;
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  // Use this installation and state even when aar is not on the shell's PATH.
+  const cli = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./cli.ts" : "./cli.js", import.meta.url));
+  const loginCommand = `${quote(process.execPath)} ${quote(cli)} --state ${quote(store.dir)} dashboard url`;
   const uiDir = options.uiDir ?? defaultUiDir();
   // A source checkout may run the router before building the UI; the page then says so.
   if (!existsSync(join(uiDir, MANIFEST))) log("dashboard.ui_missing", { uiDir, hint: "npm run build:ui" });
@@ -185,7 +189,10 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
         res.end(`The dashboard UI is not built. In a source checkout, run npm run build:ui.\n`);
         return;
       }
-      if (path === "/auth/status" && req.method === "GET") return json(res, 200, { authenticated: !!session(req) });
+      if (path === "/auth/status" && req.method === "GET") return json(res, 200, {
+        authenticated: !!session(req), publicReadonly: options.publicReadonly === true,
+        loginCommand,
+      });
       if (path === "/auth/exchange" && req.method === "POST") {
         if (!originAllowed(req)) return json(res, 403, { error: "invalid origin" });
         const body = await readJson(req);
@@ -212,6 +219,7 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
         return json(res, 200, { authenticated: false }, { "set-cookie": `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
       }
       if (path.startsWith("/v1/app/") && req.method === "POST") {
+        let access: AppAccess = "owner";
         // Browsers need the session cookie and an exact Origin. Scripts may
         // instead present the owner credential; browsers cannot send it
         // cross-origin without a CORS preflight this server never grants.
@@ -220,10 +228,13 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
           try { options.authenticateOwner(req.headers.authorization); } catch { return json(res, 401, { error: "local owner credential required" }); }
         } else {
           if (!originAllowed(req)) return json(res, 403, { error: "invalid origin" });
-          if (!session(req)) return json(res, 401, { error: "dashboard session required" });
+          if (!session(req)) {
+            if (!options.publicReadonly) return json(res, 401, { error: "dashboard session required" });
+            access = "viewer";
+          }
         }
         const body = await readJson(req);
-        return json(res, 200, { result: await hub.call("web", path.slice("/v1/app/".length), body) });
+        return json(res, 200, { result: await hub.call("web", path.slice("/v1/app/".length), body, access) });
       }
       json(res, req.method === "GET" || req.method === "POST" ? 404 : 405, { error: "not found" });
     })().catch((error: unknown) => {
@@ -236,16 +247,22 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
   server.headersTimeout = 10_000;
   server.on("upgrade", (req, socket, head) => {
     const deny = (status: number, reason: string) => socket.end(`HTTP/1.1 ${status} ${reason}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`);
-    // Browsers apply no CORS to WebSockets: Origin and cookie are both required.
+    // Browsers apply no CORS to WebSockets: exact Origin is required even for
+    // public viewing. A session cookie upgrades the connection to owner access.
     if (!hostAllowed(req) || !originAllowed(req)) return deny(403, "Forbidden");
     if (new URL(req.url ?? "/", "http://dashboard.invalid").pathname !== "/v1/app/ws") return deny(404, "Not Found");
-    if (!session(req)) return deny(401, "Unauthorized");
+    const access: AppAccess = session(req) ? "owner" : "viewer";
+    if (access === "viewer" && !options.publicReadonly) return deny(401, "Unauthorized");
     if (sockets.size >= 32) return deny(503, "Service Unavailable");
     const ws = acceptWebSocket(req, socket, head, MAX_MESSAGE_CHARS * 4);
     if (!ws) return;
     sockets.add(socket);
-    const app = hub.open("web", { send: text => ws.send(text), close: () => ws.close() }, true);
-    ws.onMessage(text => app.receive(text));
+    const app = hub.open("web", { send: text => ws.send(text), close: () => ws.close() }, true, access);
+    ws.onMessage(text => {
+      // A revoked browser session must not retain management access on its socket.
+      if (access === "owner" && !session(req)) { app.close(); return; }
+      app.receive(text);
+    });
     ws.onClose(() => { sockets.delete(socket); app.close(); });
   });
 

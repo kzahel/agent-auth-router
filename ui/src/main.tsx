@@ -13,9 +13,16 @@ const port = desktop ? await tauriPort() : webSocketPort();
 const client = new AppClient(port);
 const router = new RouterState(client, desktop);
 let signedOut: string | undefined;
+let loginCommand: string | undefined;
 if (!desktop) {
+  // Opening a sign-in link in this tab can change only the fragment. Reload
+  // so the one-time code is exchanged before opening a new owner connection.
+  window.addEventListener("hashchange", () => {
+    if (new URLSearchParams(location.hash.slice(1)).has("code")) location.reload();
+  });
   const session = await (port as WebPort).authenticate();
-  if (!session.authenticated) {
+  loginCommand = session.loginCommand;
+  if (!session.authenticated && !session.publicReadonly) {
     signedOut = session.error ?? "This browser is not signed in.";
     router.setStatus("");
   }
@@ -23,7 +30,7 @@ if (!desktop) {
 if (client.shell.native) void client.shell.onLifecycleError((payload) => { router.setError(payload); router.setStatus("Router could not stop"); });
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <AppProvider client={client} router={router}><App signedOut={signedOut} /></AppProvider>
+    <AppProvider client={client} router={router}><App signedOut={signedOut} loginCommand={loginCommand} /></AppProvider>
   </StrictMode>,
 );
 // The first load may start a stopped desktop core; reconnection never does.

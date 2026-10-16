@@ -186,7 +186,8 @@ backoff. Automatic reconnection never starts a stopped core.
 - **Plain HTTP:** `POST /v1/app/<operation>` on the dashboard listener runs
   the same dispatch, for scripts and `curl`. It needs either the session
   cookie with an exact `Origin`, or `Authorization: Bearer` with the owner
-  credential.
+  credential. With `--dashboard-public-readonly`, passive dashboard reads
+  also work without a cookie, still with an exact `Origin`.
 - **Windows:** Unix sockets are not used on Windows yet. The desktop pipe
   there would use a named pipe with the same line protocol, tracked with
   Windows parity.
@@ -212,6 +213,8 @@ specifies. Nothing in this document is served on the inference listener.
   runs and `/` answers 503 naming `npm run build:ui`.
 - **Sign-in:** `aar serve` prints `http://127.0.0.1:<port>/#code=<code>`, and
   `aar dashboard url` prints a fresh link.
+  The signed-out page shows a copyable command for this installation and state
+  directory; it also works when `aar` is not on the shell's PATH.
   - Codes are single-use, valid for an hour, and at most 16 are outstanding.
   - The code travels in the fragment, so it is not in request lines, logs or
     `Referer`. The page removes it from history before exchanging it.
@@ -224,6 +227,25 @@ specifies. Nothing in this document is served on the inference listener.
   - Cookies are not isolated by port, so other local services on
     `127.0.0.1` receive this cookie. Those services run as local users;
     loopback-only binding stays the boundary.
+- **Optional public viewing:** `aar serve --dashboard-public-readonly` lets
+  local browsers view the Dashboard tab without a session cookie. The page
+  says **View only**; Accounts, Pools, Connections and Settings show the
+  sign-in command until the browser signs in. Signed-in browsers retain the
+  normal management controls. Logging out returns to viewing.
+  - The server enforces a viewer allowlist on both HTTP calls and WebSocket
+    calls: `overview`, `metrics/snapshot`, `metrics/history`,
+    `requests/recent`, `sessions/recent` and `history/cost`. Chart subscriptions
+    are available. Other UI operations require a signed-in session, including
+    provider sign-in, profile inspection, usage refresh and settings writes.
+  - Viewer live subscriptions never trigger usage probes or credential
+    renewal. They display stored observations and traffic as it arrives.
+    Owner live subscriptions retain their normal automatic usage checks.
+  - Viewing exposes dashboard metadata (including account labels/profile
+    paths, model names and request/session metadata) to local viewers. Host
+    and Origin checks and the loopback-only listener remain in force.
+  - This flag defaults off, is carried through `aar restart`, and applies
+    only to the headless web dashboard. The Tauri app authenticates through
+    its native owner bridge and keeps full access without browser sign-in.
 - **Request checks:**
   - Exact `Host` (`127.0.0.1:<port>` or `localhost:<port>`) on every request,
     which defeats DNS rebinding.
