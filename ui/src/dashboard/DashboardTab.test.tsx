@@ -85,8 +85,8 @@ describe("DashboardTab", () => {
   it("names accounts by nickname or folder, and highlights those in scope", async () => {
     await dashboard();
     const accounts = document.getElementById("dash-accounts")!;
-    expect(within(accounts).getByText("Work · codex")).toBeTruthy();
-    expect(within(accounts).getByText("home · codex")).toBeTruthy();
+    expect(within(accounts).getByText("Work").closest("td")!.title).toBe("Work · codex");
+    expect(within(accounts).getByText("home").closest("td")!.title).toBe("home · codex");
     await userEvent.selectOptions(screen.getByRole("combobox"), "Pool · Team");
     const rows = within(accounts).getAllByRole("row").slice(1);
     expect(rows.map(r => !!r.className)).toEqual([true, false]);

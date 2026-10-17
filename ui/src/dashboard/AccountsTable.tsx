@@ -35,43 +35,50 @@ export function AccountsTable({ accounts, live, traffic, requests, units, span, 
     ? `Per second for each account, on one scale shared by every row: ${seriesNames.join(", ")}, as shown in the chart`
     : "No series is shown in the chart";
   return (
-    <table id="dash-accounts" className={`${ui.dataTable} ${styles.accounts}`}>
-      <thead>
-        <tr>
-          <th scope="col">Account</th>
-          <th scope="col">{units === "tokens" ? "Input / output per s" : "Uploaded / downloaded per s"}</th>
-          <th scope="col">Streams</th>
-          <th scope="col" title="Share of each quota window used. The mark shows how much of the window has passed.">Quota used</th>
-          <th scope="col">Last request</th>
-          <th scope="col" title={series}>{`${units === "tokens" ? "Tokens" : "Bytes"}/s · last ${span}`}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {accounts.map(a => {
-          const s = live?.scopes[`account:${a.id}`];
-          const last = requests.find(r => r.accountId === a.id);
-          // Proxied responses update quota between overview refreshes.
-          const recent = live?.quota?.[a.id];
-          const values = traffic?.accounts[a.id] ?? [];
-          const total = values.reduce<number>((sum, v) => sum + (v ?? 0), 0) * (traffic?.bucketMs ?? 0) / 1000;
-          return (
-            <tr key={a.id} className={inScope(a.id) ? styles.inScope : undefined}>
-              <td>{`${accountName(a)} · ${a.provider}${a.enabled ? "" : " · disabled"}`}</td>
-              <td>{units === "tokens"
-                ? (s ? `${formatNumber(sent(s.rate))} / ${formatNumber(s.rate.output)}` : "0 / 0")
-                : `${formatBytes(s?.rate.bytesUp ?? 0)} / ${formatBytes(s?.rate.bytesDown ?? 0)}`}</td>
-              <td>{s ? String(s.active) : "0"}</td>
-              <QuotaCell windows={recent ?? a.windows} at={recent ? live?.quotaAt?.[a.id] ?? NaN : Date.parse(a.quota?.observedAt ?? "")}
-                checking={!!live?.quotaChecking?.includes(a.id)} error={a.error ?? undefined} />
-              <td>{last ? ago(last.startedAt) : "–"}</td>
-              <td title={traffic ? `${accountName(a)}: ${format(total)}${units === "tokens" ? " tokens" : ""}, peak ${format(Math.max(0, ...values.map(v => v ?? 0)))}/s, in the last ${span} (${seriesNames.join(", ") || "no series shown"})` : ""}>
-                <Sparkline values={values} max={peak} scheme={scheme} />
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className={ui.tableScroll}>
+      <table id="dash-accounts" className={`${ui.dataTable} ${styles.accounts}`}>
+        <thead>
+          <tr>
+            <th scope="col">Account</th>
+            <th scope="col" title={units === "tokens" ? "Input / output tokens per second" : "Uploaded / downloaded per second"}>
+              {units === "tokens" ? "In / out per s" : "Up / down per s"}</th>
+            <th scope="col">Streams</th>
+            <th scope="col" title="Share of each quota window used. The mark shows how much of the window has passed.">Quota used</th>
+            <th scope="col">Last request</th>
+            <th scope="col" title={series}>{`${units === "tokens" ? "Tokens" : "Bytes"}/s · last ${span}`}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {accounts.map(a => {
+            const s = live?.scopes[`account:${a.id}`];
+            const last = requests.find(r => r.accountId === a.id);
+            // Proxied responses update quota between overview refreshes.
+            const recent = live?.quota?.[a.id];
+            const values = traffic?.accounts[a.id] ?? [];
+            const total = values.reduce<number>((sum, v) => sum + (v ?? 0), 0) * (traffic?.bucketMs ?? 0) / 1000;
+            const detail = `${a.provider}${a.enabled ? "" : " · disabled"}`;
+            return (
+              <tr key={a.id} className={inScope(a.id) ? styles.inScope : undefined}>
+                <td title={`${accountName(a)} · ${detail}`}>
+                  <div className={styles.accountName}>{accountName(a)}</div>
+                  <div className={styles.accountDetail}>{detail}</div>
+                </td>
+                <td>{units === "tokens"
+                  ? (s ? `${formatNumber(sent(s.rate))} / ${formatNumber(s.rate.output)}` : "0 / 0")
+                  : `${formatBytes(s?.rate.bytesUp ?? 0)} / ${formatBytes(s?.rate.bytesDown ?? 0)}`}</td>
+                <td>{s ? String(s.active) : "0"}</td>
+                <QuotaCell windows={recent ?? a.windows} at={recent ? live?.quotaAt?.[a.id] ?? NaN : Date.parse(a.quota?.observedAt ?? "")}
+                  checking={!!live?.quotaChecking?.includes(a.id)} error={a.error ?? undefined} />
+                <td>{last ? ago(last.startedAt) : "–"}</td>
+                <td title={traffic ? `${accountName(a)}: ${format(total)}${units === "tokens" ? " tokens" : ""}, peak ${format(Math.max(0, ...values.map(v => v ?? 0)))}/s, in the last ${span} (${seriesNames.join(", ") || "no series shown"})` : ""}>
+                  <Sparkline values={values} max={peak} scheme={scheme} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

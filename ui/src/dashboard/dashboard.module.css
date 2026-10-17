@@ -38,18 +38,22 @@
 .inScope { background: var(--hover); box-shadow: inset 3px 0 var(--accent); }
 .errorRow td:last-child { color: var(--danger); }
 .idle td { color: var(--muted); }
-.sparkline { display: block; width: 90px; height: 22px; }
+.sparkline { display: block; width: 80px; height: 22px; }
 
 /* Fixed columns, right-aligned figures: streaming rows, ticking durations
-   and changing values do not shift the tables. */
-.accounts { table-layout: fixed; }
-.accounts td:first-child { white-space: normal; overflow-wrap: anywhere; }
+   and changing values do not shift the tables. The account column takes the
+   rest, but never less than about 120px: a narrower window scrolls the table
+   rather than squeezing the names. */
+.accounts { table-layout: fixed; min-width: 640px; }
 .accounts thead th { white-space: normal; vertical-align: bottom; }
-.accounts th:nth-child(2) { width: 150px; }
-.accounts th:nth-child(3) { width: 64px; }
-.accounts th:nth-child(4) { width: 200px; }
-.accounts th:nth-child(5) { width: 92px; }
-.accounts th:nth-child(6) { width: 106px; }
+.accounts th:nth-child(2) { width: 108px; }
+.accounts th:nth-child(3) { width: 60px; }
+.accounts th:nth-child(4) { width: 168px; }
+.accounts th:nth-child(5) { width: 80px; }
+.accounts th:nth-child(6) { width: 96px; }
+/* Name over provider, each cut short rather than wrapped; the cell's title has both. */
+.accountName, .accountDetail { overflow: hidden; text-overflow: ellipsis; }
+.accountDetail { color: var(--muted); font-size: 11px; }
 .requests { table-layout: fixed; min-width: 720px; }
 .requests th:nth-child(1) { width: 92px; }
 .requests th:nth-child(3) { width: 116px; }
@@ -93,6 +97,7 @@
 @media (prefers-reduced-motion: reduce) { .meterFill, .meterPace { transition: none; } }
 @media (max-width: 560px) {
   .sparkline { width: 60px; }
+  .accounts { min-width: 420px; }
   .accounts th:nth-child(4), .accounts td:nth-child(4) { display: none; }
   .accounts th:nth-child(2) { width: 92px; }
   .accounts th:nth-child(3) { width: 58px; }
