@@ -107,6 +107,9 @@ uses its own temporary directory and reaps the shell and router. It removes
 system Node from `PATH` and verifies enrollment, router shutdown after app exit,
 relaunch and explicit Stop. Browser tests use bundled Playwright Chromium,
 48 synthetic accounts and per-keystroke latency assertions during reload.
+Test files run sequentially so other browser instances and fixture processes
+do not compete with those latency measurements. The 100 ms per-key limit
+still applies in CI.
 `AAR_UI_CAPTURE_DIR` retains screenshots for inspection.
 
 The package script checks committed SHA-256 pins before extracting Node and

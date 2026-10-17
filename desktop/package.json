@@ -8,7 +8,7 @@
     "dev": "npm run prepare:bundle && tauri dev",
     "build": "npm run prepare:bundle && tauri build --bundles app",
     "check": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
     "pretest": "npm --prefix ../ui run build"
   },
   "devDependencies": {
