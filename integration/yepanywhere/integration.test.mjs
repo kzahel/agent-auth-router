@@ -919,7 +919,7 @@ for (const provider of ["codex", "claude"]) {
 
 
 for (const provider of ["claude", "codex"]) {
-  test(`${provider}: Most remaining refreshes cold admission and retains its pin after restart`, { timeout: 180_000 }, async t => {
+  test(`${provider}: Most remaining discovers accounts, admits and retains its pin after restart`, { timeout: 180_000 }, async t => {
     const f = await fixture(t, provider);
     await f.connect({ socketPath: f.router().socket });
     f.setAccountQuota("selected", 90);
@@ -931,11 +931,17 @@ for (const provider of ["claude", "codex"]) {
     const overview = await f.api("/agent-auth-router/overview", { poolId: pool.id, model: "synthetic-model" });
     assert.ok(overview.value.supportedPolicies.includes("most-remaining"));
     assert.equal(overview.value.selection.decisions[0].reason, "catalog-unknown");
+    assert.ok(overview.value.accounts.every(a => a.quota === null), "the initial overview is passive");
     const discovered = await f.api("/agent-auth-router/selection", { provider });
     assert.equal(discovered.status, 200);
     assert.equal(discovered.value.pools[0].id, pool.id);
     assert.ok(discovered.value.accounts.every(a => a.models[0].supportedReasoningEfforts.some(e => e.reasoningEffort === (provider === "codex" ? "ultra" : "max"))));
-    assert.ok(discovered.value.accounts.every(a => a.quota === null), "selection discovers models without reading quotas");
+    if (provider === "claude") {
+      assert.deepEqual(discovered.value.accounts.map(a => a.quota.windows[0].remainingPercent), [10, 70], "Claude CLI discovery records its usage probe's quota");
+      assert.ok(discovered.value.accounts.every(a => Array.isArray(a.cliModels) && a.cliModelsAt), "Claude discovery records CLI model rows and their timestamp");
+    } else {
+      assert.ok(discovered.value.accounts.every(a => a.quota === null), "Codex catalog discovery does not read quotas");
+    }
     const startPath = `/projects/${Buffer.from(f.project).toString("base64url")}/sessions`;
     const start = await f.api(startPath, { message: "most-remaining", provider, model: "synthetic-model", routerPoolId: pool.id, thinking: "on:max", mode: "bypassPermissions" });
     const idle = await eventually(async () => (await f.api("/processes")).value.processes.find(p => p.id === start.value.processId && p.state === "idle"), "Most remaining native turn finishes");

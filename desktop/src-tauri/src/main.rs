@@ -407,7 +407,13 @@ fn open_project(window: tauri::WebviewWindow) -> Result<(), String> {
         .arg(PROJECT_URL)
         .status()
         .map_err(|_| "Could not open the project page".to_string())
-        .and_then(|status| if status.success() { Ok(()) } else { Err("Could not open the project page".into()) })
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err("Could not open the project page".into())
+            }
+        })
 }
 
 #[tauri::command]
@@ -517,7 +523,10 @@ async fn install_update(
     .await
     .map_err(|_| "Router stop failed")??;
     if update.install(bytes).is_err() {
-        return Err("Update installation failed. Choose Start router to restart the existing router.".into());
+        return Err(
+            "Update installation failed. Choose Start router to restart the existing router."
+                .into(),
+        );
     }
     app.restart();
 }

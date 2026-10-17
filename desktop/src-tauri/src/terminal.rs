@@ -681,6 +681,11 @@ process.stdin.once('data',()=>process.exit(0));
             pty.write("2\n").unwrap();
             until(|| {
                 drain(&pty, &mut output);
+                output.contains("Browser [1/2]")
+            });
+            pty.write("1\n").unwrap();
+            until(|| {
+                drain(&pty, &mut output);
                 output.contains("SYNTHETIC_CONFIRM")
             });
             pty.write("yes\n").unwrap();

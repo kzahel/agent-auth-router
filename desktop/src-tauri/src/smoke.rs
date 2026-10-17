@@ -59,8 +59,8 @@ pub fn loaded(webview: &tauri::Webview, payload: &tauri::webview::PageLoadPayloa
           const wait=async(check)=>{for(let i=0;i<200;i++){if(check())return;await new Promise(r=>setTimeout(r,50));}throw Error();};
           try {
             window.confirm=()=>{throw Error('Browser dialog used');};
-            await wait(()=>document.querySelector('#status')?.textContent.includes('requests'));
-            document.querySelector('#tab-app').click();
+            await wait(()=>document.querySelector('#tab-settings') && document.querySelector('#check-update'));
+            document.querySelector('#tab-settings').click();
             document.querySelector('#check-update').click();
             await wait(()=>!document.querySelector('#install-update').hidden);
             const install=document.querySelector('#install-update'), dialog=document.querySelector('#confirmation-dialog');
@@ -128,6 +128,8 @@ pub fn loaded(webview: &tauri::Webview, payload: &tauri::webview::PageLoadPayloa
             denied=false; try { await invoke('app_send',{message:{id:1,call:'overview'}}); } catch { denied=true; }
             if(!denied) throw Error();
             await invoke('terminal',{action:'write',data:'2\r'});
+            await wait(()=>document.querySelector('.xterm-rows')?.textContent.includes('Browser [1/2]'));
+            await invoke('terminal',{action:'write',data:'1\r'});
             await wait(()=>document.querySelector('.xterm-rows')?.textContent.includes('SYNTHETIC_CONFIRM'));
             await invoke('terminal',{action:'write',data:'yes\r'});
             await wait(()=>document.querySelector('#terminal-status')?.textContent.startsWith('Command finished'));

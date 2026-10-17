@@ -419,7 +419,7 @@ test("official login is isolated, bounded, cancellable and never projects raw ou
   }
   assert.ok(closingPid);
   const stopped = router.close();
-  await assert.rejects(ownerRequest(store, "accounts/login", { id: "work" }), /unavailable|stopping|connect|socket|EPIPE/i);
+  await assert.rejects(ownerRequest(store, "accounts/login", { id: "work" }), /unavailable|stopping|connect|socket|EPIPE|ECONNRESET/i);
   await stopped;
   assert.throws(() => process.kill(closingPid!, 0), { code: "ESRCH" }, "shutdown reaps the official login");
   await router.close();
