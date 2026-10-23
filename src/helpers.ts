@@ -58,7 +58,10 @@ export async function directProviderProblem(context: HelperContext): Promise<str
     return `profile ${file} references the router listener`;
   }
   if (account.provider === "codex") {
-    if (/^\s*(?:openai_base_url|chatgpt_base_url|model_provider)\s*=/m.test(text) || /^\s*base_url\s*=/m.test(text)) {
+    // `model_provider = "openai"` names the built-in default provider, which
+    // Codex does not let config redefine, so it is not an override.
+    const otherProvider = /^\s*model_provider\s*=(?!\s*["']openai["']\s*(?:#.*)?$)/m;
+    if (/^\s*(?:openai_base_url|chatgpt_base_url)\s*=/m.test(text) || otherProvider.test(text) || /^\s*base_url\s*=/m.test(text)) {
       return "profile config.toml overrides the provider endpoint";
     }
     return undefined;

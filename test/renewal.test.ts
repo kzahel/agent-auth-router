@@ -256,6 +256,14 @@ describe("codex app-server helper", () => {
     assert.ok(!existsSync(join(account.home, "rpc-log.jsonl")), "helper never started");
   });
 
+  test("codex built-in openai provider is not an endpoint override", async () => {
+    const account = codexAccount("codex-default-provider", "renew");
+    writeFileSync(join(account.home, "config.toml"), 'model_provider = "openai" # default\n[model_providers.openai-patient]\nname = "OpenAI"\n');
+    assert.equal(await directProviderProblem({ account, workDir: "/" }), undefined);
+    writeFileSync(join(account.home, "config.toml"), 'model_provider = "openai-patient"\n');
+    assert.match((await directProviderProblem({ account, workDir: "/" })) ?? "", /overrides the provider endpoint/);
+  });
+
   test("claude settings env overrides are detected", async () => {
     const account = claudeAccount("claude-override", "renew");
     writeFileSync(join(account.home, "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8417/claude" } }));
