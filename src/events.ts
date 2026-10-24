@@ -17,7 +17,7 @@ const FLUSH_INTERVAL_MS = 5_000;
 const MAX_PENDING_LINES = 5_000;
 const FILE = /^(\d{4})-(\d{2})-(\d{2})\.jsonl$/;
 
-export type EventType = "router" | "quota" | "rejection" | "request" | "binding";
+export type EventType = "router" | "quota" | "rejection" | "request" | "binding" | "cyber-access";
 
 /** AAR_EVENT_LOG=0|false|off|no disables the log; anything else leaves it on. */
 export function eventLogEnabled(env: NodeJS.ProcessEnv = process.env): boolean {

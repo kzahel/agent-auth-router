@@ -18,6 +18,8 @@ export interface RouterDeps {
   coordinators: ReadonlyMap<string, CredentialCoordinator>;
   /** Fires once upstream headers arrive, before the body is relayed. */
   onProviderResponse?: (accountId: string, status: number, retryAfter?: string, headers?: http.IncomingHttpHeaders, requestId?: string) => void;
+  /** HTTP outcomes for explicit Codex cyber access requests, separate from login health. */
+  onCyberAccessResponse?: (observation: { accountId: string; model: string; program: string; status: number; requestId: string }) => void;
   /** Passive traffic accounting; never sees request or response content. */
   observer?: { begin(start: RequestStart): RequestHandle };
   /** Display name, pool and binding attribution for an authenticated gateway client. */
@@ -165,6 +167,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
     }
 
     body ??= await readRequest();
+    const cyberAccess = provider === "codex" && route.path === "/responses" ? requestCyberAccess(inspected!) : undefined;
     const outgoing = await compressForUpstream(body, deps.requestCompression?.(provider) ?? "off", clientEncoding);
     let clientClosed = false;
     res.once("close", () => {
@@ -182,7 +185,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
     const observed = tracking.handle;
 
     let credential = await coordinator.credential();
-    let attempt = await forward(adapter, route, origins.get(provider)!, credential, req, outgoing, res, meta, observed);
+    let attempt = await forward(adapter, route, origins.get(provider)!, credential, req, outgoing, res, meta, observed, cyberAccess);
     if (attempt.kind === "unauthorized") {
       // Rejected before generation: one coordinated recovery, one retry.
       const recovered = clientGone() ? undefined : await coordinator.recoverFromUnauthorized(credential);
@@ -190,7 +193,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
       if (recovered) {
         meta.retried = 1;
         credential = recovered;
-        attempt = await forward(adapter, route, origins.get(provider)!, credential, req, outgoing, res, meta, observed);
+        attempt = await forward(adapter, route, origins.get(provider)!, credential, req, outgoing, res, meta, observed, cyberAccess);
       }
       if (attempt.kind === "unauthorized") {
         coordinator.markRejected("upstream rejected the account credential", credential);
@@ -246,6 +249,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
     res: ServerResponse,
     meta: Record<string, string | number | undefined>,
     observed?: RequestHandle,
+    cyberAccess?: { model: string; program: string },
   ): Promise<Attempt> {
     const headers: OutgoingHttpHeaders = {};
     for (const [name, value] of Object.entries(req.headers)) {
@@ -291,6 +295,9 @@ export function createRouter(deps: RouterDeps): RouterServer {
         clearTimeout(headerTimer);
         upstream.setTimeout(limits.streamIdleTimeoutMs, () => upstream.destroy(new Error("upstream stream idle timeout")));
         const status = upstreamRes.statusCode ?? 502;
+        if (cyberAccess && typeof meta.account === "string") {
+          deps.onCyberAccessResponse?.({ accountId: meta.account, ...cyberAccess, status, requestId: String(meta.requestId) });
+        }
         if (typeof meta.account === "string") deps.onProviderResponse?.(meta.account, status, typeof upstreamRes.headers["retry-after"] === "string" ? upstreamRes.headers["retry-after"] : undefined, upstreamRes.headers, String(meta.requestId));
         if (res.destroyed) {
           upstreamRes.destroy();
@@ -357,6 +364,20 @@ function requestModel(body: Buffer): string | undefined {
     const model = (JSON.parse(body.toString("utf8")) as { model?: unknown }).model;
     return typeof model === "string" && model.length > 0 && model.length <= 200 ? model : undefined;
   } catch { return undefined; }
+}
+
+/** Only allowlisted request metadata leaves the body inspection boundary. */
+function requestCyberAccess(body: Buffer): { model: string; program: string } | undefined {
+  try {
+    const value = JSON.parse(body.toString("utf8"));
+    const model: unknown = value?.model;
+    const program: unknown = value?.access_programs?.cyber;
+    if (typeof model === "string" && model.length > 0 && model.length <= 200 &&
+        typeof program === "string" && ["standard", "daybreak_blue", "daybreak_red"].includes(program)) {
+      return { model, program };
+    }
+  } catch { /* Uninspectable requests still relay unchanged. */ }
+  return undefined;
 }
 
 function statusOf(error: unknown): number | undefined {

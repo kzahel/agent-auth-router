@@ -89,6 +89,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, observer: metrics,
     requestCompression: provider => store.loadSettings().requestCompression[provider] ?? "off",
     describeClient: client => control?.registry.describeClient(client) ?? { name: client.name },
+    onCyberAccessResponse: (observation) => events?.write("cyber-access", observation),
     sessionAccount: ({ client, provider, poolId, sessionId, model }) => control
       ? control.registry.sessionAccount(client, provider, poolId, sessionId, model, control.evidence)
       : Promise.reject(Object.assign(new Error("gateway pools need the control socket"), { status: 503 })),
