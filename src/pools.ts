@@ -33,6 +33,8 @@ export interface Pool {
 }
 export const QUOTA_FRESH_MS = 120_000;
 const QUOTA_REFRESH_UNAVAILABLE = "Quota refresh unavailable";
+/** A failed quota probe, which a later successful quota observation clears. */
+const quotaRefreshFailed = (error: string | null | undefined) => !!error?.startsWith(QUOTA_REFRESH_UNAVAILABLE);
 export const CATALOG_FRESH_MS = 60_000;
 /** CLI model rows change with CLI releases, not per request. */
 export const CLI_MODELS_FRESH_MS = 3_600_000;
@@ -170,7 +172,7 @@ export class PoolEvidence {
     const carried = previous.quota?.windows.filter(w => !windows.some(n => n.bucket === w.bucket)) ?? [];
     this.values.set(id, { ...previous,
       quota: { accountId: id, provider, observedAt: new Date(now).toISOString(), status: "ok", windows: [...windows, ...carried], source: "inference" },
-      error: previous.error === QUOTA_REFRESH_UNAVAILABLE ? null : previous.error });
+      error: quotaRefreshFailed(previous.error) ? null : previous.error });
     this.onQuota?.(id, this.get(id), { source: "inference", windows, requestId });
     return true;
   }
@@ -262,7 +264,7 @@ export class PoolEvidence {
         if (generation !== this.generations.get(id)) return;
         const previous = this.get(id), snapshot = snapshotOf(read), ok = snapshot.status === "ok";
         this.values.set(id, { ...previous,
-          ...(ok ? { quota: { ...snapshot, source: "probe" }, error: previous.error === QUOTA_REFRESH_UNAVAILABLE ? null : previous.error } : {}),
+          ...(ok ? { quota: { ...snapshot, source: "probe" }, error: quotaRefreshFailed(previous.error) ? null : previous.error } : {}),
           ...(read.cliModels ? { cliModels: read.cliModels, cliModelsAt: new Date(Date.now()).toISOString() } : {}) });
         if (ok) this.onQuota?.(id, this.get(id), { source: "probe", windows: snapshot.windows });
         if (!read.cliModels) this.cliRetryAt.set(id, Date.now() + CLI_MODELS_RETRY_MS);
@@ -284,7 +286,10 @@ export class PoolEvidence {
       const previous = this.get(id), attemptedAt = new Date(Date.now()).toISOString();
       const snapshot = quota.status === "fulfilled" && quota.value.status === "ok" ? snapshotOf(quota.value) : null;
       const cliModels = quota.status === "fulfilled" ? quota.value.cliModels : undefined;
-      const error = catalog.status === "rejected" ? "Account catalog unavailable" : !snapshot ? QUOTA_REFRESH_UNAVAILABLE : null;
+      // The reader's error is fixed text plus an already-scrubbed excerpt.
+      const reason = quota.status === "fulfilled" ? quota.value.error : undefined;
+      const error = catalog.status === "rejected" ? "Account catalog unavailable"
+        : !snapshot ? (reason ? `${QUOTA_REFRESH_UNAVAILABLE}: ${reason}` : QUOTA_REFRESH_UNAVAILABLE) : null;
       const result: Observation = {
         quota: snapshot ? { ...snapshot, source: "probe" } : previous.quota,
         models: catalog.status === "fulfilled" ? catalog.value : previous.models,

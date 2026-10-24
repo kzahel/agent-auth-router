@@ -432,6 +432,9 @@ test("a proxied response records inference quota, keeps probed buckets, clears r
   const failing = new PoolEvidence(async () => [{ id: "m", name: "m" }], async () => { throw new Error("secret"); });
   await failing.refresh("b"); assert.equal(failing.get("b").error, "Quota refresh unavailable");
   failing.observe("b", "claude", headers); assert.equal(failing.get("b").error, null);
+  const crashed = new PoolEvidence(async () => [{ id: "m", name: "m" }], async accountId => ({ accountId, provider: "codex", observedAt: new Date(Date.now()).toISOString(), status: "unavailable", windows: [], error: "app-server quota process failed (exit 3)" }));
+  await crashed.refresh("d"); assert.equal(crashed.get("d").error, "Quota refresh unavailable: app-server quota process failed (exit 3)", "the reader's reason is kept");
+  crashed.observe("d", "claude", headers); assert.equal(crashed.get("d").error, null);
   const noCatalog = new PoolEvidence(async () => { throw new Error("secret"); }, async accountId => ({ accountId, provider: "claude", observedAt: new Date(Date.now()).toISOString(), status: "ok", windows: [] }));
   await noCatalog.refresh("c"); noCatalog.observe("c", "claude", headers); assert.equal(noCatalog.get("c").error, "Account catalog unavailable");
 });

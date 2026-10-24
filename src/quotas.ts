@@ -2,6 +2,7 @@
 import type { CliModel } from "./contract.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { directProviderProblem, probeClaudeCli } from "./helpers.ts";
+import { log, sanitize } from "./log.ts";
 import { helperEnv, startBounded } from "./process.ts";
 import type { AccountConfig, Provider } from "./types.ts";
 
@@ -148,7 +149,7 @@ async function codexUsage(account: AccountConfig, workDir: string, options: Quot
   if (await directProviderProblem({ account, workDir })) return { error: "profile overrides the provider endpoint" };
   const proc = startBounded({ command: options.codexCommand ?? "codex", args: options.codexArgs ?? ["app-server"],
     env: helperEnv("codex", account.home, options.env), cwd: workDir,
-    timeoutMs: options.timeoutMs ?? 15_000, maxStderrBytes: 0, killGraceMs: 100 });
+    timeoutMs: options.timeoutMs ?? 15_000, maxStderrBytes: 2048, killGraceMs: 100 });
   const { child } = proc;
   child.stdin?.on("error", () => {});
   const send = (message: unknown) => { if (child.stdin?.writable) child.stdin.write(JSON.stringify(message) + "\n"); };
@@ -195,13 +196,33 @@ async function codexUsage(account: AccountConfig, workDir: string, options: Quot
     if (read && !read.error) response = { value: read.result };
   }
   child.stdin?.end();
-  const grace = setTimeout(() => proc.terminate(), 1000);
+  // A complete read is kept when only our own shutdown grace stopped the
+  // process: a fresh profile can take longer than this to exit.
+  let shutdownKilled = false;
+  const grace = setTimeout(() => { shutdownKilled = true; proc.terminate(); }, 1000);
   const exit = await proc.done;
   clearTimeout(grace);
-  if (protocolError) return { error: protocolError };
-  if (exit.timedOut) return { error: "app-server quota read timed out" };
-  if (exit.code !== 0) return { error: "app-server quota process failed" };
-  return response;
+  const failed = (error: string): ReadResponse => {
+    log("quota.codex_read_failed", { account: account.id, error, code: exit.code, signal: exit.signal,
+      stderr: exit.stderrTail.slice(-280) || undefined });
+    return { error };
+  };
+  if (protocolError) return failed(protocolError);
+  if (exit.timedOut) return failed("app-server quota read timed out");
+  if ("value" in response && (exit.code === 0 || shutdownKilled)) return response;
+  if (exit.code === 0 && "error" in response) return failed(response.error);
+  // A crashed app-server is diagnosed from its last stderr line, shown to
+  // owners and integrations, so it is scrubbed of secrets and paths.
+  const how = exit.signal ? `killed by ${exit.signal}` : `exit ${exit.code}`;
+  const excerpt = stderrExcerpt(exit.stderrTail);
+  return failed(`app-server quota process failed (${how})${excerpt ? `: ${excerpt}` : ""}`);
+}
+
+/** The last non-empty stderr line, without secrets, paths or long text. */
+export function stderrExcerpt(stderr: string): string {
+  const line = stderr.split(/\r?\n/).map(l => l.trim()).filter(Boolean).at(-1) ?? "";
+  const scrubbed = sanitize(line.replace(/(?<=^|[\s"'`=(])(?:~|\.{1,2})?\/[^\s"'`:,;)]*/g, "[path]"));
+  return scrubbed.length > 160 ? `${scrubbed.slice(0, 160)}…` : scrubbed;
 }
 
 /** A quota read plus the model rows the Claude CLI reported during it. */

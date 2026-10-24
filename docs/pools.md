@@ -189,7 +189,11 @@ reports for that profile, not a verified statement of what the provider serves.
 
 Overview reads perform no provider I/O. Explicit account refresh coalesces quota
 and catalog reads, retains the last successful windows after a failed attempt,
-and exposes the failure and observation time. Evidence expires after 60 seconds
+and exposes the failure and observation time. A failed quota read's `error` is
+`Quota refresh unavailable`, followed for a Codex app-server crash by its exit
+and last stderr line with secrets and paths replaced, so an integration can
+show the cause; the router log keeps the stderr tail. A complete Codex read
+survives the app-server being slow to exit. Evidence expires after 60 seconds
 (catalog) / 120 seconds (quota). Restart starts with unknown evidence.
 
 Since 2026-10-05 every successful proxied inference response is also quota

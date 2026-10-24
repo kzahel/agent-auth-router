@@ -29,4 +29,12 @@ rl.on("line", (line) => {
     limitId: "codex", primary: { usedPercent: 50, windowDurationMins: 300, resetsAt: null },
   } } });
 });
-rl.on("close", () => { if (mode === "hang") setInterval(() => {}, 1000); });
+rl.on("close", () => {
+  if (mode === "hang") setInterval(() => {}, 1000);
+  // Answers, then is slow to exit after its input closes.
+  if (mode === "slow-exit") setTimeout(() => {}, 5000);
+  if (mode === "exit-stderr") {
+    process.stderr.write(`noise\nError: state db locked at ${home}/state_5.sqlite Bearer SECRET-bearer\n`);
+    process.exit(3);
+  }
+});

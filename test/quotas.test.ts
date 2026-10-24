@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fetchAccountQuotas, normalizeClaudeQuotas, readAccountQuotas, normalizeCodexQuotas, normalizeResponseHeaderQuotas } from "../src/quotas.ts";
 import type { AccountConfig } from "../src/types.ts";
-import { FIXTURES, tempDir, writeClaudeCredentials } from "./support.ts";
+import { captureLogs, FIXTURES, tempDir, writeClaudeCredentials } from "./support.ts";
 
 function profile(provider: "claude" | "codex"): AccountConfig {
   return { id: `synthetic-${provider}`, provider, home: tempDir() };
@@ -72,6 +72,22 @@ test("Codex reader bounds timeout, output and malformed protocol without leaking
     assert.doesNotMatch(JSON.stringify(snapshot), /SECRET/, mode);
     assert.deepEqual(snapshot.windows, []);
   }
+});
+
+test("Codex reader keeps a complete read when the app-server is slow to exit", async () => {
+  const snapshot = await fetchAccountQuotas(profile("codex"), tempDir(), fakeCodex("slow-exit", 10_000));
+  assert.equal(snapshot.status, "ok");
+  assert.equal(snapshot.windows[0]!.usedPercent, 25);
+});
+
+test("Codex app-server crash reports its scrubbed last stderr line", async () => {
+  const logs = captureLogs();
+  const account = profile("codex");
+  const snapshot = await fetchAccountQuotas(account, tempDir(), fakeCodex("exit-stderr"));
+  assert.equal(snapshot.status, "unavailable");
+  assert.equal(snapshot.error, "app-server quota process failed (exit 3): Error: state db locked at [path] Bearer [redacted]");
+  assert.doesNotMatch(JSON.stringify(snapshot), /SECRET|\/tmp|\/home/);
+  assert.ok(logs.some(l => l.includes("quota.codex_read_failed") && !l.includes("SECRET")));
 });
 
 test("Codex quota reader refuses endpoint overrides before spawning", async () => {
