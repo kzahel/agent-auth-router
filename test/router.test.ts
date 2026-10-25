@@ -303,6 +303,48 @@ describe("upstream authentication failures", () => {
     assert.equal(upstream.requests[1]!.body, '{"n":1}');
   });
 
+  test("a client that leaves during 401 recovery gets no retry and the router keeps serving", async () => {
+    captureLogs();
+    const upstream = await mockUpstream((req, res) => {
+      if (req.headers.authorization === `Bearer ${CLAUDE_ACCESS}`) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end('{"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}');
+        return;
+      }
+      res.end('{"ok":true}');
+    });
+    let h!: Harness;
+    let renewalStarted!: () => void;
+    const started = new Promise<void>((resolve) => (renewalStarted = resolve));
+    let finishRenewal!: () => void;
+    const renewed = new Promise<void>((resolve) => (finishRenewal = resolve));
+    h = await harness(upstream, {
+      claudeHelper: async () => {
+        renewalStarted();
+        await renewed;
+        writeClaudeCredentials(h.claude.home, "SECRET-CLAUDE-ACCESS-2", Date.now() + 3600_000);
+        return { outcome: "completed" };
+      },
+    });
+    const controller = new AbortController();
+    const abandoned = fetch(`${h.origin}/claude/v1/messages`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${h.token}`, "content-type": "application/json" },
+      body: "{}",
+      signal: controller.signal,
+    }).catch(() => undefined);
+    await started;
+    controller.abort();
+    await abandoned;
+    await waitFor(() => h.active() === 0);
+    finishRenewal();
+    await waitFor(() => h.coordinators.get("claude-a")!.status().helperRuns === 1);
+    const next = await post(`${h.origin}/claude/v1/messages`, { authorization: `Bearer ${h.token}` });
+    assert.equal(next.status, 200);
+    assert.deepEqual(upstream.requests.map((request) => request.headers.authorization),
+      [`Bearer ${CLAUDE_ACCESS}`, "Bearer SECRET-CLAUDE-ACCESS-2"]);
+  });
+
   test("a persistent 401 is relayed truthfully without a replay loop", async () => {
     const logs = captureLogs();
     const upstream = await mockUpstream((_req, res) => {

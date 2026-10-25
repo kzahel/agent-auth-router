@@ -186,6 +186,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
     if (attempt.kind === "unauthorized") {
       // Rejected before generation: one coordinated recovery, one retry.
       const recovered = clientGone() ? undefined : await coordinator.recoverFromUnauthorized(credential);
+      if (recovered && clientGone()) return;
       if (recovered) {
         meta.retried = 1;
         credential = recovered;
@@ -232,6 +233,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
 
   type Attempt =
     | { kind: "relayed" }
+    | { kind: "abandoned" }
     | { kind: "unauthorized"; headers: http.IncomingHttpHeaders; body: Buffer };
 
   function forward(
@@ -290,6 +292,11 @@ export function createRouter(deps: RouterDeps): RouterServer {
         upstream.setTimeout(limits.streamIdleTimeoutMs, () => upstream.destroy(new Error("upstream stream idle timeout")));
         const status = upstreamRes.statusCode ?? 502;
         if (typeof meta.account === "string") deps.onProviderResponse?.(meta.account, status, typeof upstreamRes.headers["retry-after"] === "string" ? upstreamRes.headers["retry-after"] : undefined, upstreamRes.headers, String(meta.requestId));
+        if (res.destroyed) {
+          upstreamRes.destroy();
+          done(() => resolve({ kind: "abandoned" }));
+          return;
+        }
 
         if (status === 401) {
           collectBounded(upstreamRes, MAX_RELAYED_ERROR_BYTES).then(
