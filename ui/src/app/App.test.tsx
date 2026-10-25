@@ -52,3 +52,37 @@ describe("dashboard access", () => {
     });
   }
 });
+
+describe("crash banner", () => {
+  const crash = (id: string, at: string) => ({ id, at, kind: "exception" as const, code: "ERR_STREAM_UNABLE_TO_PIPE",
+    message: "Error [ERR_STREAM_UNABLE_TO_PIPE]: Cannot pipe to a closed or destroyed stream", frame: "at done (~/aar/src/server.ts:266:9)" });
+
+  it("shows the latest unacknowledged crash until the owner dismisses it", async () => {
+    let crashes = [crash("a", "2026-10-25T15:10:00.000Z"), crash("b", "2026-10-25T15:18:24.000Z")];
+    const app = await fakeApp({ overview: () => overview({ crashes }), "crashes/acknowledge": () => { crashes = []; return { acknowledged: true }; } }, { snapshots });
+    await app.router.reload();
+    app.render(<App />);
+    const banner = screen.getByText(/The router crashed/).closest("#crash")!;
+    expect(banner.textContent).toMatch(/The router crashed at .*\(and 1 earlier time\)/);
+    expect(banner.textContent).toContain("Cannot pipe to a closed or destroyed stream · at done (~/aar/src/server.ts:266:9)");
+    expect(banner.textContent).toContain("aar logs --crashes");
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(app.called("crashes/acknowledge").map(c => c.body)).toEqual([{ id: "b" }]);
+    expect(screen.queryByText(/The router crashed/)).toBeNull();
+  });
+
+  it("shows crashes to viewers without a dismiss control", async () => {
+    const app = await fakeApp({ overview: () => overview({ crashes: [crash("a", "2026-10-25T15:18:24.000Z")] }) }, { access: "viewer", snapshots });
+    await app.router.reload();
+    app.render(<App />);
+    expect(screen.getByText(/The router crashed/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+  });
+
+  it("shows nothing without crashes", async () => {
+    const app = await fakeApp({}, { snapshots });
+    await app.router.reload();
+    app.render(<App />);
+    expect(screen.queryByText(/The router crashed/)).toBeNull();
+  });
+});

@@ -66,6 +66,17 @@ export interface Overview {
   pools: Pool[];
   integrations: Integration[];
   logins: { id: string; status: string }[];
+  /** Crashes the owner has not acknowledged, oldest first. Older routers omit it. */
+  crashes?: Crash[];
+}
+
+export interface Crash {
+  id: string;
+  at: string;
+  kind: "exception" | "exit";
+  code?: string;
+  message: string;
+  frame?: string;
 }
 
 export interface Usage {

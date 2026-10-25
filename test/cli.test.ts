@@ -169,6 +169,40 @@ test("aar restart waits for an idle period, then serve starts the current code a
   assert.match(restartCli(state).stderr, /not running/);
 });
 
+test("serve starts a killed router again, records the crash until it is acknowledged, and keeps a log file", { skip: process.platform === "win32" }, async (t) => {
+  const state = tempDir("arsc-"), store = new StateStore(state);
+  writeFileSync(join(state, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }), { mode: 0o600 });
+  const serve = serving(state);
+  t.after(() => { serve.child.kill("SIGKILL"); });
+  await waitFor(() => serve.out().includes("Web dashboard:"), 10_000);
+  const before = await ownerRequest(store, "overview");
+  assert.deepEqual(before.crashes, []);
+
+  const router = Number(execFileSync("pgrep", ["-P", String(serve.child.pid)], { encoding: "utf8" }).trim());
+  process.kill(router, "SIGKILL");
+  await waitFor(() => count(serve.out(), "Web dashboard:") === 2, 15_000);
+  assert.match(serve.out(), /the router crashed; starting it again in 1s/);
+  assert.equal(serve.child.exitCode, null);
+
+  const after = await ownerRequest(store, "overview");
+  assert.equal(after.routerId, before.routerId);
+  assert.equal(after.crashes.length, 1);
+  assert.equal(after.crashes[0].kind, "exit");
+  assert.equal(after.crashes[0].message, "router stopped by SIGKILL");
+  const crashes = spawnSync(process.execPath, ["src/cli.ts", "--state", state, "logs", "--crashes"], { encoding: "utf8" });
+  assert.match(crashes.stdout, /router stopped by SIGKILL/);
+  await ownerRequest(store, "crashes/acknowledge", { id: after.crashes[0].id });
+  assert.deepEqual((await ownerRequest(store, "overview")).crashes, []);
+  await assert.rejects(ownerRequest(store, "crashes/acknowledge", { id: "unknown" }), /crash not found/);
+
+  const logs = spawnSync(process.execPath, ["src/cli.ts", "--state", state, "logs", "--lines", "50"], { encoding: "utf8" });
+  assert.equal(count(logs.stdout, '"event":"router.listening"'), 2, logs.stdout);
+  assert.match(spawnSync(process.execPath, ["src/cli.ts", "--state", state, "logs", "--lines", "0"], { encoding: "utf8" }).stderr, /at least 1/);
+
+  serve.child.kill("SIGINT");
+  assert.equal(await serve.exited, 0, serve.out());
+});
+
 test("the desktop router refuses restart, and a killed serve parent takes its router down", { skip: process.platform === "win32" }, async (t) => {
   const state = tempDir("arsd-"), store = new StateStore(state);
   writeFileSync(join(state, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }), { mode: 0o600 });

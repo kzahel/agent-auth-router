@@ -7,13 +7,15 @@ import { terminalLogin } from "./terminal-login.ts";
 import { diagnose, diagnosticOptions, type DiagnosticReport } from "./diagnostics.ts";
 import { assertPrivatePath } from "./control.ts";
 import { loginCommand, ownerRequest } from "./owner.ts";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { existsSync } from "node:fs";
-import { constants as osConstants } from "node:os";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
+import { formatCrash, installCrashHandler, readCrashes } from "./crash.ts";
+import { installLogFile, logFiles, logsDir } from "./log-file.ts";
+import { READY_MESSAGE, RESTART_EXIT_CODE, Supervisor } from "./supervisor.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { generateGatewayToken, hashGatewayToken } from "./gateway-auth.ts";
 import { DEFAULT_DASHBOARD_PORT } from "./dashboard.ts";
@@ -52,36 +54,58 @@ const USAGE = `usage: aar [--state DIR] <command>
                                          management still requires a sign-in link
   restart [--quiet-seconds N] [--cancel] restart aar serve with the current code once nothing
                                          has been in flight for N seconds (default 5)
+  logs [--lines N] [--follow] [--crashes]
+                                         print the router log kept in logs/ (default 100 lines);
+                                         --crashes prints recorded crashes with stack frames
   dashboard url                          print a new single-use dashboard access link
   dashboard sessions                     list signed-in dashboard browsers
   dashboard revoke <session-id>|--all    sign out dashboard browsers
 
 State defaults to $AAR_STATE_DIR or ~/.agent-auth-router. The dashboard port can
-also be set with $AAR_DASHBOARD_PORT. AAR_EVENT_LOG=0 disables the event log.`;
+also be set with $AAR_DASHBOARD_PORT. AAR_EVENT_LOG=0 disables the event log;
+AAR_LOG_FILE=0 disables the log file.`;
 
 function fail(message: string): never {
   process.stderr.write(`aar: ${message}\n`);
   process.exit(1);
 }
 
-/** Exit status asking the `aar serve` parent to start the router again. */
-const RESTART_EXIT_CODE = 75;
+async function supervise(stateDir: string): Promise<void> {
+  const supervisor = new Supervisor({ stateDir,
+    spawn: () => spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: ["inherit", "inherit", "inherit", "ipc"], env: { ...process.env, AAR_SERVE_CHILD: "1" } }) });
+  process.on("SIGINT", () => supervisor.stop("SIGINT"));
+  process.on("SIGTERM", () => supervisor.stop("SIGTERM"));
+  process.exitCode = await supervisor.run();
+}
 
-/**
- * CLI serve runs the router in a child process so `aar restart` can load the
- * current code in the same terminal. Ctrl-C reaches both; the parent forwards
- * signals, never restarts after one, and exits with the router's status.
- */
-async function supervise(): Promise<void> {
-  let stopping = false, child: ChildProcess | undefined;
-  const forward = (signal: NodeJS.Signals) => { stopping = true; child?.kill(signal); };
-  process.on("SIGINT", () => forward("SIGINT"));
-  process.on("SIGTERM", () => forward("SIGTERM"));
+const LOG_POLL_MS = 500;
+
+/** Prints the last lines across the newest log files, then optionally follows the current one. */
+async function showLogs(stateDir: string, lines: number, follow: boolean): Promise<void> {
+  const dir = logsDir(stateDir);
+  const tail: string[] = [];
+  for (const name of logFiles(dir).reverse()) {
+    const content = readFileSync(join(dir, name), "utf8").split("\n").filter(Boolean);
+    tail.unshift(...content.slice(-(lines - tail.length)));
+    if (tail.length >= lines) break;
+  }
+  if (tail.length) process.stdout.write(tail.join("\n") + "\n");
+  if (!follow) return;
+  let path = logFiles(dir).at(-1), offset = path ? statSync(join(dir, path)).size : 0;
   for (;;) {
-    child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { stdio: ["inherit", "inherit", "inherit", "ipc"], env: { ...process.env, AAR_SERVE_CHILD: "1" } });
-    const [code, signal] = await once(child, "exit") as [number | null, NodeJS.Signals | null];
-    if (code !== RESTART_EXIT_CODE || stopping) { process.exitCode = code ?? (signal ? 128 + osConstants.signals[signal] : 1); return; }
-    process.stdout.write("aar: starting the router again\n");
+    await delay(LOG_POLL_MS);
+    const newest = logFiles(dir).at(-1);
+    if (newest !== path) { path = newest; offset = 0; }
+    if (!path) continue;
+    const size = statSync(join(dir, path)).size;
+    if (size <= offset) continue;
+    const fd = openSync(join(dir, path), "r");
+    try {
+      const chunk = Buffer.alloc(size - offset);
+      readSync(fd, chunk, 0, chunk.length, offset);
+      process.stdout.write(chunk);
+    } finally { closeSync(fd); }
+    offset = size;
   }
 }
 
@@ -136,6 +160,9 @@ async function main(argv: string[]): Promise<void> {
       "refresh-usage": { type: "boolean" },
       json: { type: "boolean" },
       browser: { type: "string" },
+      lines: { type: "string" },
+      follow: { type: "boolean", short: "f" },
+      crashes: { type: "boolean" },
     },
   });
   const [command, sub, arg] = positionals;
@@ -340,10 +367,23 @@ async function main(argv: string[]): Promise<void> {
       else process.stdout.write(`restart pending: aar serve restarts after ${result.quietSeconds} seconds with no requests, usage checks, renewals or sign-ins\n`);
       return;
     }
+    case "logs": {
+      if (values.crashes) {
+        const crashes = readCrashes(store.dir);
+        process.stdout.write(crashes.length ? crashes.map(formatCrash).join("\n\n") + "\n" : "no crashes recorded\n");
+        return;
+      }
+      const lines = values.lines ?? "100";
+      if (!/^\d{1,6}$/.test(lines) || Number(lines) < 1) fail("--lines must be a whole number of at least 1");
+      await showLogs(store.dir, Number(lines), values.follow === true);
+      return;
+    }
     case "serve":
     case "desktop-serve": {
       const desktop = command === "desktop-serve";
-      if (!desktop && process.env.AAR_SERVE_CHILD !== "1") return supervise();
+      if (!desktop && process.env.AAR_SERVE_CHILD !== "1") return supervise(store.dir);
+      store.init();
+      installLogFile(store.dir);
       // The desktop app uses its private socket; only the CLI opens the web dashboard.
       let dashboard: { port: number; dev?: boolean; publicReadonly?: boolean } | undefined;
       if (!desktop && !values["no-dashboard"]) {
@@ -380,6 +420,7 @@ async function main(argv: string[]): Promise<void> {
         now: () => { if (!router || stopping || restarting) return; restarting = true; void router.close(false); } };
       process.on("SIGINT", shutdown);
       process.on("SIGTERM", shutdown);
+      installCrashHandler(store.dir, () => router?.events?.flush());
       try { router = await startRouter(store, {}, { desktop, recoverStaleSocket: true, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(restarting ? RESTART_EXIT_CODE : 0), ...(desktop ? {} : { restart }), ...(dashboard ? { dashboard } : {}), ...(values["no-event-log"] ? { eventLog: false } : {}) }); }
       catch (error) {
         if (desktop) { process.stderr.write(`AAR_STARTUP_ERROR:${JSON.stringify({ message: desktopStartupError(error) })}\n`); process.exit(1); }
@@ -390,6 +431,7 @@ async function main(argv: string[]): Promise<void> {
         if (dashboard?.publicReadonly) process.stdout.write(`  View without signing in: ${router.dashboard.origin}/ (view only)\n`);
         if (dashboard?.dev) process.stdout.write("  Dev mode: signed-in browsers reload when the UI build in ui/dist changes.\n");
       }
+      process.send?.(READY_MESSAGE);
       if (parentClosed) shutdown();
       return;
     }

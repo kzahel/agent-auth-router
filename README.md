@@ -124,6 +124,12 @@ After editing `src/`, run `aar restart` (or
 has been in flight for five seconds, without interrupting a request. See
 [restarting `aar serve`](docs/owner-management.md#restarting-aar-serve-2026-10-11).
 
+`aar serve` starts the router again after a crash and records it; the
+dashboard shows the crash until you dismiss it. The router's log is kept in
+the state directory for seven days: `aar logs [--follow]` prints it and
+`aar logs --crashes` prints recorded crashes. See
+[crashes and the log file](docs/owner-management.md#crashes-and-the-log-file-2026-10-25).
+
 A [`Dockerfile`](Dockerfile) packages the headless router with pinned `claude`
 and `codex` CLIs, and [`docker/compose.yaml`](docker/compose.yaml) runs it as a
 service with its state on a volume. See [Running the router in Docker](docs/docker.md).

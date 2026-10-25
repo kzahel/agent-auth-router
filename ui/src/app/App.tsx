@@ -35,6 +35,7 @@ export function App({ signedOut, loginCommand = "aar dashboard url" }: { signedO
       <main>
         <header><h1>Agent Auth Router</h1></header>
         <StatusBanner />
+        <CrashBanner readOnly={readOnly} />
         {signedOut !== undefined ? (
           <section id="signed-out" className={styles.signedOut}>
             <SignInGuide command={loginCommand} detail={signedOut} />
@@ -85,6 +86,31 @@ function StatusBanner() {
     <div id="status" className={styles.statusBanner} role="status" hidden={!status.message}>
       <span id="status-text">{status.message}</span>
       {status.startable && <button id="start-router" type="button" disabled={pending} onClick={() => void run(() => router.reload(true))}>Start router</button>}
+    </div>
+  );
+}
+
+/** The latest unacknowledged crash stays visible until the owner dismisses it. */
+function CrashBanner({ readOnly }: { readOnly: boolean }) {
+  const { api, native, router } = useApp();
+  const { overview } = useRouterView();
+  const [pending, run] = useAction();
+  const crashes = overview?.crashes ?? [];
+  const latest = crashes.at(-1);
+  if (!latest) return null;
+  const earlier = crashes.length - 1;
+  return (
+    <div id="crash" className={styles.crashBanner} role="alert">
+      <div>
+        <strong>The router crashed at {new Date(latest.at).toLocaleString()}</strong>
+        {earlier > 0 && <span> (and {earlier} earlier {earlier === 1 ? "time" : "times"})</span>}
+        <div id="crash-message" className={styles.crashDetail}>{latest.message}{latest.frame && <> · {latest.frame}</>}</div>
+        <div className={styles.crashDetail}>{native ? <>Details: <code>crashes.json</code> in the router's state folder</> : <>Details: <code>aar logs --crashes</code></>}</div>
+      </div>
+      {!readOnly && <button id="dismiss-crash" type="button" disabled={pending} onClick={() => void run(async () => {
+        await api("crashes/acknowledge", { id: latest.id });
+        await router.reload();
+      })}>Dismiss</button>}
     </div>
   );
 }

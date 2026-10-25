@@ -169,10 +169,12 @@ request's quiet period.
   after any restart; automatic admission refreshes them.
 - **Process shape:** CLI `serve` is a small parent that runs the router as a
   child process (`AAR_SERVE_CHILD=1`, with an IPC channel). The child exits
-  with status 75 to ask for a restart; any other status, or a signal the parent
-  received, ends the parent with that status. The parent forwards SIGINT and
-  SIGTERM, and the child shuts down if the parent disappears, including after
-  SIGKILL. `desktop-serve` is unchanged and refuses `restart`.
+  with status 75 to ask for a restart. A crash after the child reported it was
+  serving starts it again (see [crashes](#crashes-and-the-log-file-2026-10-25));
+  status 0, a startup failure, or a signal the parent received ends the parent
+  with that status. The parent forwards SIGINT and SIGTERM, and the child shuts
+  down if the parent disappears, including after SIGKILL. `desktop-serve` is
+  unchanged and refuses `restart`.
 - **Gap:** new connections are refused from the moment the old router closes
   its listeners until the new one listens. Three local runs with a synthetic
   state measured 94 to 113 ms. A client request arriving then fails to connect;
@@ -186,6 +188,48 @@ request's quiet period.
 through the parent, identity and state carrying over, cancel, argument
 validation, refusal under `desktop-serve`, Ctrl-C, and a killed parent taking
 its router down.
+
+## Crashes and the log file (2026-10-25)
+
+A crash used to end `aar serve` for good: one request that hit an uncaught
+exception ([#1](https://github.com/kzahel/agent-auth-router/issues/1)) took
+down every routed session until someone restarted it by hand, and the stack
+survived only in the terminal's scrollback. Restarting now keeps the router
+available, and a crash record keeps each crash visible until it is fixed.
+
+- **Crash handler:** under `serve` and `desktop-serve`, an uncaught exception
+  or unhandled rejection is never survived. The router prints the sanitized
+  stack, logs `router.crash`, appends a record to `<state>/crashes.json`,
+  flushes the event log and exits with status 70.
+- **Records:** `crashes.json` keeps the latest 50 records: time, pid, build,
+  Node version, message and error code, and for exceptions up to 12 stack
+  frames. Text passes the log sanitizer, and the home directory is shown as
+  `~`. A router that dies without its handler (a signal, an abort, an
+  out-of-memory exit) is recorded by the `serve` parent with its exit status
+  or signal.
+- **Restart:** the `serve` parent starts a crashed router again after 1, 2, 4
+  and 8 seconds for the first to fourth crash within five minutes. The fifth
+  crash in that window stops it, with a message in the terminal. A child that
+  exits before it reports it is serving (an IPC `aar:ready` message) is a
+  startup failure, and the parent exits rather than retrying. A signal during
+  the wait stops `serve` without starting the router.
+- **Visibility:** the overview lists unacknowledged crashes (no stack beyond
+  the frame that threw). The dashboard shows the latest one in a banner until
+  an owner dismisses it with `crashes/acknowledge`, which acknowledges that
+  crash and every earlier one. `aar logs --crashes` prints every kept record
+  with its stack frames.
+- **Log file:** both serve modes copy every structured log line to
+  `<state>/logs/router-<UTC date>.log`, a private file kept for 7 days. These
+  are the same metadata-only, sanitized lines as stderr. `aar logs [--lines N]
+  [--follow]` prints it; `AAR_LOG_FILE=0` turns it off. A file that cannot be
+  written is reported once on stderr and then skipped.
+- **Desktop gap:** the desktop app records crashes and keeps the log file, but
+  does not yet start a crashed router again. The banner appears once it is
+  started.
+
+`test/crash.test.ts` covers records, sanitizing, acknowledgement, the log file
+and the restart policy; `test/cli.test.ts` kills a real `serve` child and
+checks the restart, the record, acknowledgement and `aar logs`.
 
 
 ## Account removal (0.1.5)

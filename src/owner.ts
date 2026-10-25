@@ -4,6 +4,7 @@ import { deleteProfile, profileRemoval } from "./profile-removal.ts";
 import { TerminalLogin } from "./terminal-login.ts";
 import { diagnose, diagnosticOptions } from "./diagnostics.ts";
 import { BUILD_INFO } from "./build-info.ts";
+import { acknowledgeCrashes, summarize, unacknowledgedCrashes } from "./crash.ts";
 import { providerExecutable } from "./platform.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
@@ -288,7 +289,12 @@ export class OwnerService {
         activeRequests: this.lifecycle.active(),
         integrations: this.registry.ownerIntegrations(),
         logins: [...this.logins, ...this.terminals].map(([id, login]) => ({ id, status: login.status })),
+        crashes: unacknowledgedCrashes(this.store.dir).map(summarize),
       };
+    if (operation === "crashes/acknowledge") {
+      if (typeof body.id !== "string" || !acknowledgeCrashes(this.store.dir, body.id)) throw new ControlError(404, "crash not found");
+      return { acknowledged: true };
+    }
     if (operation === "metrics/snapshot") return this.metrics().snapshot();
     if (operation === "metrics/history") {
       const range = body.range ?? "10m", scope = body.scope ?? "all", metrics = body.metrics ?? [...COUNTERS], after = body.after;
