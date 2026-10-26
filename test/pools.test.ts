@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ControlRegistry } from "../src/control.ts";
 import { hashGatewayToken, generateGatewayToken } from "../src/gateway-auth.ts";
-import { PoolEvidence, eligibility, rankCandidates, selectionEvidence, selectionReason, QUOTA_FRESH_MS, SHORT_RESERVE_PERCENT, type Observation } from "../src/pools.ts";
+import { PoolEvidence, eligibility, rankCandidates, selectionEvidence, selectionReason, PACE_BAND_POINTS, QUOTA_FRESH_MS, SHORT_RESERVE_PERCENT, type Observation } from "../src/pools.ts";
 import type { QuotaWindow } from "../src/quotas.ts";
 import { StateStore } from "../src/state.ts";
 import { tempDir } from "./support.ts";
@@ -220,9 +220,9 @@ function paceFixture(now: number) {
   const weekly = (used: number, resetIn: number | null, bucket = "seven_day"): QuotaWindow => ({ bucket, windowMinutes: 10080, usedPercent: used, remainingPercent: 100 - used, resetsAt: resetIn === null ? null : iso(now + resetIn) });
   const observed = (windows: QuotaWindow[], provider: "claude" | "codex" = "claude"): Observation => ({ models: [{ id: "claude-sonnet-fixture", name: "Fixture" }], catalogAt: iso(now), attemptedAt: iso(now), error: null,
     quota: { accountId: "x", provider, status: "ok", observedAt: iso(now), windows } });
-  const evidence = (windows: QuotaWindow[], reservations = 0) => selectionEvidence("claude", observed(windows), "claude-sonnet-fixture", reservations, now);
-  const rank = (accounts: Record<string, QuotaWindow[]>, reservations: Record<string, number> = {}) =>
-    rankCandidates("weekly-pace", Object.entries(accounts).map(([accountId, windows]) => ({ accountId, evidence: evidence(windows, reservations[accountId] ?? 0) }))).map(c => c.accountId);
+  const evidence = (windows: QuotaWindow[], reservations = 0, burn: Record<string, number> = {}) => selectionEvidence("claude", observed(windows), "claude-sonnet-fixture", reservations, now, burn);
+  const rank = (accounts: Record<string, QuotaWindow[]>, reservations: Record<string, number> = {}, burn: Record<string, Record<string, number>> = {}) =>
+    rankCandidates("weekly-pace", Object.entries(accounts).map(([accountId, windows]) => ({ accountId, evidence: evidence(windows, reservations[accountId] ?? 0, burn[accountId]) }))).map(c => c.accountId);
   return { short, weekly, observed, evidence, rank };
 }
 
@@ -255,6 +255,38 @@ test("Weekly pace starts unused weekly timers, keeps a short-window reserve, the
   assert.match(selectionReason("weekly-pace", evidence(tight)), /under the 30% short-window reserve; this one has the most \(29%\)/);
   assert.match(selectionReason("weekly-pace", evidence(expiring)), /51.4 points behind weekly pace; short-window headroom 90%/);
   assert.match(selectionReason("weekly-pace", evidence(fresh)), /1 points ahead/);
+});
+
+test("Weekly pace treats near-equal pace as even and reserves projected short-window headroom", () => {
+  const now = Date.now(), { short, weekly, evidence, rank } = paceFixture(now);
+  // Half the week has elapsed, so pace is 50 − percent used.
+  const busy = [short(50), weekly(38, 84 * HOUR)], idle = [short(90), weekly(40, 84 * HOUR)], ahead = [short(100), weekly(38 + PACE_BAND_POINTS + 1, 84 * HOUR)];
+  assert.deepEqual(rank({ busy, idle, ahead }), ["idle", "busy", "ahead"], "within the band, short-window headroom decides; outside it, pace still does");
+
+  const burning = [short(90), weekly(20, 84 * HOUR)], steady = [short(50), weekly(48, 84 * HOUR)];
+  assert.deepEqual([evidence(burning, 0, { five_hour: 70 }).shortProjectedHeadroomPercent, evidence(burning, 0, { five_hour: 70 }).shortBurnPercentPerHour], [20, 70], "90% left less an hour at 70 points/hour");
+  assert.deepEqual(rank({ burning, steady }), ["burning", "steady"], "with no burn known, pace decides");
+  assert.deepEqual(rank({ burning, steady }, {}, { burning: { five_hour: 70 } }), ["steady", "burning"], "projected under the reserve backs off despite headroom now");
+  assert.deepEqual(rank({ burning, worse: burning }, {}, { burning: { five_hour: 70 }, worse: { five_hour: 80 } }), ["burning", "worse"], "all under: most projected headroom");
+  assert.match(selectionReason("weekly-pace", evidence(steady, 0, { five_hour: 5 })), /short-window headroom 50%, 45% projected at reset at 5 points\/hour/);
+});
+
+test("burn rate comes from recent short-window observations and restarts with each window", () => {
+  const f = fixture(), evidence = new PoolEvidence(async () => [], async () => { throw new Error("must not read"); });
+  const now = Date.now(), reset = Math.floor((now + HOUR) / 1000);
+  const headers = (used: number, resetAt = reset) => ({ "anthropic-ratelimit-unified-5h-utilization": String(used / 100), "anthropic-ratelimit-unified-5h-reset": String(resetAt),
+    "anthropic-ratelimit-unified-7d-utilization": "0.5", "anthropic-ratelimit-unified-7d-reset": String(reset + 86_400) });
+  evidence.observe("a", "claude", headers(20), now - 50 * 60_000);
+  evidence.observe("a", "claude", headers(20), now - 20 * 60_000);
+  evidence.observe("a", "claude", headers(25), now - 15 * 60_000);
+  assert.deepEqual(evidence.burn("a"), {}, "five minutes of history is too little to project");
+  for (let i = 0; i < 200; i++) evidence.observe("a", "claude", headers(30), now - 199 + i);
+  assert.deepEqual(evidence.burn("a"), { five_hour: 30 }, "10 points over the last 20 minutes; the 50-minute-old sample has aged out");
+  const e = (f.registry.overview(f.integration, evidence, { poolId: f.pool.id, model: "claude-sonnet-fixture" }) as any).selection.decisions[0].evidence;
+  assert.equal(e.shortBurnPercentPerHour, 30, "the allocator passes the burn rate");
+  assert.ok(e.shortProjectedHeadroomPercent > 39 && e.shortProjectedHeadroomPercent <= 40, "70% left less about an hour at 30 points/hour");
+  evidence.observe("a", "claude", headers(2, reset + 5 * 3600), now + 60_000);
+  assert.deepEqual(evidence.burn("a"), {}, "a new window starts a new history");
 });
 
 test("Weekly pace needs no client support and persists its explanation through prepare and commit", async () => {

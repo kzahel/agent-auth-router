@@ -29,7 +29,9 @@ come from probes; the merged view the pool logic uses is not duplicated here.
 `eligibility` reason (the overview's reasons plus `thinking-unsupported`),
 its `rank` among eligible accounts (null when ineligible), and its selection
 evidence: `headroomPercent`, `limitingBuckets`, `reservations`, `catalogAt`,
-`quotaAt`. A refused prepare records the same list with the `error`
+`quotaAt`, and the Weekly pace fields `shortHeadroomPercent`,
+`shortProjectedHeadroomPercent`, `shortBurnPercentPerHour`, `weeklyUnstarted`
+and `weeklyPacePercent`. A refused prepare records the same list with the `error`
 message and the `requestedAccountId` for Manual. Replays of an existing
 binding are not recorded, and expiry of a prepared binding is not an event;
 derive it from `createdAt` plus the five-minute window.

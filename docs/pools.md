@@ -104,6 +104,47 @@ at different hours) but do not prove it. The event log can confirm it. The
 router never sends its own request to start a timer. Percentages are compared
 as if accounts had equal plans.
 
+## Weekly pace version 2: burn rate and pace band (2026-10-26)
+
+Bindings record `policyVersion` 2 for Weekly pace; other policies stay at 1.
+On 2026-10-26 one of three Claude accounts reached its five-hour limit at 31%
+weekly use. The event log showed why. Two accounts were within about a point
+of each other on pace, and the one with the earlier weekly reset won most of
+those near-ties: 17 of the 30 sessions that sent requests in its five-hour
+window. The third account was
+two points ahead of pace and ranked last every time, even with 90%+ five-hour
+headroom. The reserve only demoted an account below 30% headroom *now*, so
+the busy account took sessions down to 48%. Its pinned sessions then used up
+the rest within 90 minutes.
+
+Two changes to the tiers above:
+
+- **Projected reserve.** The reserve tier compares
+  `shortProjectedHeadroomPercent`: headroom less recent burn times the hours
+  until that window resets, the lowest across short windows. When every
+  candidate is under the reserve, the most projected headroom wins. Burn
+  (`shortBurnPercentPerHour`) is the change in a short window's used percentage
+  over its newest 30 minutes of samples, and needs at least 10 minutes of
+  history; otherwise the projection is the current headroom. Samples come
+  from every proxied 2xx's quota headers and every successful probe. The
+  router keeps at most one sample per 30 seconds per window, in memory. A
+  reset that moves by more than five minutes, or a drop of more than one
+  point, starts a new history. Burn is account-wide, so it covers pinned
+  sessions and use outside the router, and sessions that go quiet stop
+  counting.
+- **Pace band.** Among accounts that keep the reserve, those within
+  `PACE_BAND_POINTS` (5) of the furthest-behind account are even. They rank by
+  projected short-window headroom, then by pace. Accounts outside the band
+  follow, furthest behind first.
+
+A replay of that day's binding events through the new ranking chose a
+different account in 19 of 28 Claude decisions. From mid-morning it mostly
+chose the idle account. It uses the observed state at each decision, so it
+cannot show what the later usage would have been. Limits: restart forgets
+the samples. The projection assumes recent use continues until the reset, so
+it is pessimistic early in a window and right after a burst; a session that
+starts on an account still stays pinned to it.
+
 ## Default policy and per-session choice (2026-10-11)
 
 A pool's policy is its **default**. Any consumer granted the pool may override
