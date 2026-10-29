@@ -87,3 +87,36 @@ Verified on 2026-10-03 with isolated temporary YA/client homes: Claude Agent SDK
 same-pin resume. The complete YA HTTP Codex path also passed restart/resume and
 tool approval. These are live integration observations, not renewal or
 cross-account continuation proofs. The synthetic AAR suite has 70 passing tests.
+
+## Codex service tiers
+
+`service-tiers-v1` advertises additive `CatalogModel.serviceTiers` rows mapped
+from the account's upstream `service_tiers` (id, name and description). Missing
+metadata grants no paid tier. Unknown valid tier ids are preserved; duplicates,
+malformed rows and oversized lists/labels are bounded. Provider catalog defaults
+are not applied.
+
+Native integration `/v1/pools/prepare` and `/v1/bindings/prepare` accept optional
+`serviceTier`. Omitted, null or `default` means Standard. A non-standard tier
+must be advertised by the selected account's exact model. Automatic pool
+allocation filters incompatible accounts; manual admission refuses them. Speed
+participates in the durable retry identity and prepared pool bindings recheck it
+at commit. A committed session keeps its account; later speed changes cannot
+reselect it. Integrations validate those changes against the pinned catalog.
+Existing requests without a tier retain their original retry identity.
+
+This changes native integration admission. Gateway-client pool selection still
+uses its existing model/quota rules; it does not parse request speed for account
+selection. Inference request bodies continue to pass through unchanged by
+default, including `service_tier`.
+
+The manual official-CLI probe runs only synthetic credentials and loopback
+upstreams, separately from CI's fake-CLI integration suite:
+
+```sh
+node scripts/probe-codex-service-tiers.mjs /absolute/codex /absolute/matching-codex/codex-rs/models-manager/models.json
+```
+
+It checks account-specific model discovery and captured Fast → Standard → Ultra
+Fast requests through real AAR, including an explicit resumed turn. It does not
+contact a provider, prove live entitlement, measure latency or test renewal.

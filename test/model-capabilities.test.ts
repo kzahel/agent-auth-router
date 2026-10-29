@@ -49,3 +49,10 @@ test("discovery backs off failures and cancellation admits no queued account rea
   await assert.rejects(evidence.discover(Array.from({ length: 16 }, (_, n) => String(n)), abort.signal, () => true), /cancelled/);
   assert.equal(calls, 2);
 });
+
+test("speed tiers come only from bounded account metadata, including unknown ids", () => {
+  const tiers = modelCapabilities("codex", { service_tiers: [null, { id: "priority", name: "Fast", description: "paid" }, { id: "priority", name: "duplicate" }, { id: "ultrafast" }, { id: "default" }, { id: "invalid tier" }] });
+  assert.deepEqual(tiers.serviceTiers, [{ id: "priority", name: "Fast", description: "paid" }, { id: "ultrafast", name: "ultrafast", description: "" }]);
+  assert.equal(modelCapabilities("codex", {}).serviceTiers, undefined);
+  assert.equal(modelCapabilities("claude", { service_tiers: [{ id: "priority" }] }).serviceTiers, undefined);
+});

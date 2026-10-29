@@ -19,6 +19,16 @@ export function modelCapabilities(provider: Provider, value: unknown): Partial<C
     if (levels.includes(row.default_reasoning_level)) result.defaultReasoningEffort = row.default_reasoning_level;
     result.capabilitySource = "provider";
   }
+  if (provider === "codex" && Array.isArray(row.service_tiers)) {
+    const seen = new Set<string>();
+    result.serviceTiers = row.service_tiers.slice(0, 16).flatMap((value: unknown) => {
+      const tier = object(value);
+      if (!validServiceTier(tier.id) || tier.id === "default" || seen.has(tier.id)) return [];
+      seen.add(tier.id);
+      return [{ id: tier.id, name: typeof tier.name === "string" ? tier.name.slice(0, 100) : tier.id,
+        description: typeof tier.description === "string" ? tier.description.slice(0, 300) : "" }];
+    });
+  }
   if (provider === "claude") {
     const capabilities = object(row.capabilities), effort = object(capabilities.effort), thinking = object(capabilities.thinking);
     if (typeof effort.supported === "boolean") {
@@ -44,4 +54,12 @@ export function supportsThinking(model: CatalogModel | undefined, thinking: stri
   if (!validThinking(thinking) || model.supportsEffort === false || model.supportsAdaptiveThinking === false) return false;
   const effort = thinking.slice(3);
   return !!model.supportedReasoningEfforts?.some(r => r.reasoningEffort === effort || (effort === "max" && r.reasoningEffort === "ultra"));
+}
+
+/** Standard is implicit; opt-in tiers must come from this account's catalog. */
+export function validServiceTier(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(value);
+}
+export function supportsServiceTier(model: CatalogModel | undefined, tier: string | undefined): boolean {
+  return !!model && (!tier || tier === "default" || !!model.serviceTiers?.some(t => t.id === tier));
 }

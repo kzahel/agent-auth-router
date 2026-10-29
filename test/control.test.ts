@@ -219,3 +219,36 @@ test("session discovery reads only granted provider catalogs, coalesces and proj
   await ownerRequest(store, "grants/save", { id, revision: 2, poolIds: [], accountIds: [] });
   assert.equal((await request(socket, "/v1/selection", token, { provider: "claude" })).value.accounts.length, 0);
 });
+
+test("tier-aware pool admission preserves retries and pins and rechecks before commit", { skip: process.platform === "win32" }, async () => {
+  const { PoolEvidence } = await import("../src/pools.ts");
+  const store = storeFixture();
+  store.saveAccounts(["standard", "fast"].map(id => ({ id, provider: "codex", home: join(store.dir, id) })));
+  let registry = new ControlRegistry(store);
+  const token = ctlToken(), id = randomUUID();
+  registry.pair({ id, name: "Speed", tokenHash: hashGatewayToken(token) });
+  const pool = registry.savePool({ id: randomUUID(), name: "Mixed", provider: "codex", policy: "round-robin", accountIds: ["standard", "fast"], revision: 0 }) as { id: string };
+  registry.grant({ id, revision: 1, poolIds: [pool.id] });
+  let integration = registry.authenticate(`Bearer ${token}`);
+  const evidence = new PoolEvidence(async () => [], async () => { throw Error("unexpected quota read"); });
+  const standard = { id: "fixture", name: "Fixture" };
+  evidence.setCatalog("standard", [standard]);
+  evidence.setCatalog("fast", [{ ...standard, serviceTiers: [{ id: "priority", name: "Fast", description: "" }] }]);
+  for (const account of ["standard", "fast"]) evidence.observe(account, "codex", { "x-codex-primary-used-percent": "0", "x-codex-primary-window-minutes": "300" });
+  const request = { id: randomUUID(), poolId: pool.id, provider: "codex", model: "fixture", tokenHash: hashGatewayToken(generateGatewayToken()), serviceTier: "priority" };
+  const pin = registry.preparePool(integration, request, evidence) as { accountId: string };
+  assert.equal(pin.accountId, "fast");
+  assert.deepEqual(registry.preparePool(integration, request, evidence), pin);
+  assert.throws(() => registry.preparePool(integration, { ...request, serviceTier: "ultrafast" }, evidence), /conflicts/);
+  evidence.setCatalog("fast", [standard]);
+  assert.throws(() => registry.transition(integration, request.id, "commit", evidence), /evidence changed/);
+  registry.transition(integration, request.id, "cancel", evidence);
+  assert.throws(() => registry.preparePool(integration, { ...request, id: randomUUID() }, evidence), /no eligible/);
+  assert.throws(() => registry.preparePool(integration, { ...request, id: randomUUID(), serviceTier: [] }, evidence), /invalid service tier/);
+  evidence.setCatalog("fast", [{ ...standard, serviceTiers: [{ id: "priority", name: "Fast", description: "" }] }]);
+  const next = { ...request, id: randomUUID() };
+  registry.preparePool(integration, next, evidence); registry.transition(integration, next.id, "commit", evidence);
+  registry = new ControlRegistry(store); integration = registry.authenticate(`Bearer ${token}`);
+  assert.equal((registry.preparePool(integration, next, evidence) as { accountId: string }).accountId, "fast");
+  assert.equal(registry.clients().length, 1);
+});

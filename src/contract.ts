@@ -9,6 +9,7 @@ export interface CatalogModel {
   supportsAdaptiveThinking?: boolean;
   supportsEffort?: boolean;
   capabilitySource?: "provider";
+  serviceTiers?: { id: string; name: string; description: string }[];
 }
 
 /**
