@@ -8,9 +8,13 @@ import { setLogSink } from "../src/log.ts";
 
 export const FIXTURES = join(import.meta.dirname, "fixtures");
 
+// Root-level cleanup runs after test-scoped router/socket teardown. Registering
+// deletion inside tempDir made its earlier hook delete state before close().
+const temporaryDirectories: string[] = [];
+after(() => { for (const dir of temporaryDirectories) rmSync(dir, { recursive: true, force: true }); });
 export function tempDir(prefix = "aar-test-"): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
-  after(() => rmSync(dir, { recursive: true, force: true }));
+  temporaryDirectories.push(dir);
   return dir;
 }
 
