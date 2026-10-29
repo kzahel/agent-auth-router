@@ -10,8 +10,20 @@ export const POLICY_LABELS: Record<PoolPolicy, string> = { manual: "Manual", "ro
 /** English display names, so a consumer can offer every policy without knowing it. */
 export const POLICY_LIST = POOL_POLICIES.map(id => ({ id, label: POLICY_LABELS[id] }));
 export const WEEKLY_MINUTES = 10_080;
-/** Weekly pace backs off an account whose windows shorter than a week have less than this left. */
+/** Weekly pace backs off an account whose windows shorter than a week are projected to have less than this left at reset. */
 export const SHORT_RESERVE_PERCENT = 30;
+/** Weekly pace treats accounts within this many points of the furthest behind as even,
+ * and prefers the most projected short-window headroom among them. */
+export const PACE_BAND_POINTS = 5;
+/** Burn rate spans at most the newest 30 minutes of a short window's samples, and needs
+ * at least 10 so one burst is not extrapolated across the window. */
+const BURN_LOOKBACK_MS = 30 * 60_000, BURN_MIN_SPAN_MS = 10 * 60_000;
+/** Responses arrive many times a minute; keep one sample per this interval plus the latest. */
+const BURN_SAMPLE_MS = 30_000;
+const HOUR_MS = 3_600_000;
+const tenth = (n: number) => Math.round(n * 10) / 10;
+/** Version 2 of Weekly pace projects short-window burn and bands pace; the others are unchanged. */
+export const policyVersion = (policy: PoolPolicy) => policy === "weekly-pace" ? 2 : 1;
 export interface SelectionEvidence {
   headroomPercent: number | null;
   limitingBuckets: string[];
@@ -20,6 +32,11 @@ export interface SelectionEvidence {
   quotaAt: string | null;
   /** Tightest applicable window shorter than a week (Claude's five_hour); null when none is reported. */
   shortHeadroomPercent: number | null;
+  /** Lowest short-window headroom left at its reset if recent use continues; negative
+   * means it would run out first. Equals the headroom when no burn rate is known. */
+  shortProjectedHeadroomPercent: number | null;
+  /** Recent use of the window that sets the projection, in points per hour; null when unknown. */
+  shortBurnPercentPerHour: number | null;
   /** An applicable weekly window is unused with no reset time, so its timer starts on first use. */
   weeklyUnstarted: boolean;
   /** Lowest (share of the week elapsed − percent used) across started applicable weekly windows.
@@ -74,36 +91,48 @@ function applies(provider: Provider, window: QuotaWindow, model: string): boolea
 export function applicableWindows(provider: Provider, observation: Observation, model: string): QuotaWindow[] {
   return observation.quota?.windows.filter(w => applies(provider, w, model)) ?? [];
 }
-export function selectionEvidence(provider: Provider, observation: Observation, model: string, reservations: number, now = Date.now()): SelectionEvidence {
+/** `burn` holds recent use per short-window bucket in points per hour (PoolEvidence.burn). */
+export function selectionEvidence(provider: Provider, observation: Observation, model: string, reservations: number, now = Date.now(), burn: Readonly<Record<string, number>> = {}): SelectionEvidence {
   const windows = applicableWindows(provider, observation, model);
   const headroomPercent = windows.length && windows.every(w => w.remainingPercent !== null)
     ? Math.min(...windows.map(w => w.remainingPercent!)) : null;
   const short = windows.filter(w => w.windowMinutes !== null && w.windowMinutes < WEEKLY_MINUTES && w.remainingPercent !== null);
+  const projected = short.map(w => {
+    const rate = burn[w.bucket] ?? null, hours = w.resetsAt ? Math.max(Date.parse(w.resetsAt) - now, 0) / HOUR_MS : 0;
+    return { headroom: tenth(w.remainingPercent! - (rate ?? 0) * hours), rate: rate === null ? null : tenth(rate) };
+  }).sort((a, b) => a.headroom - b.headroom)[0];
   const weekly = windows.filter(w => w.windowMinutes === WEEKLY_MINUTES && w.usedPercent !== null);
   const unstarted = (w: QuotaWindow) => w.usedPercent === 0 && !w.resetsAt;
   const paces = weekly.filter(w => w.resetsAt && !unstarted(w)).map(w => {
     const left = Math.min(Math.max((Date.parse(w.resetsAt!) - now) / (WEEKLY_MINUTES * 60_000), 0), 1);
-    return Math.round(((1 - left) * 100 - w.usedPercent!) * 10) / 10;
+    return tenth((1 - left) * 100 - w.usedPercent!);
   });
   return { headroomPercent, limitingBuckets: headroomPercent === null ? [] : windows.filter(w => w.remainingPercent === headroomPercent).map(w => w.bucket).sort(),
     reservations, catalogAt: observation.catalogAt, quotaAt: observation.quota?.observedAt ?? null,
     shortHeadroomPercent: short.length ? Math.min(...short.map(w => w.remainingPercent!)) : null,
+    shortProjectedHeadroomPercent: projected?.headroom ?? null, shortBurnPercentPerHour: projected?.rate ?? null,
     weeklyUnstarted: weekly.some(unstarted), weeklyPacePercent: paces.length ? Math.min(...paces) : null };
 }
-const keepsReserve = (e: SelectionEvidence) => e.shortHeadroomPercent === null || e.shortHeadroomPercent >= SHORT_RESERVE_PERCENT;
-/** Unstarted weekly timer first, then the short-window reserve, then furthest behind weekly pace. */
-function weeklyPaceOrder(a: SelectionEvidence, b: SelectionEvidence): number {
+const projectedHeadroom = (e: SelectionEvidence) => e.shortProjectedHeadroomPercent ?? e.shortHeadroomPercent;
+const keepsReserve = (e: SelectionEvidence) => (projectedHeadroom(e) ?? 100) >= SHORT_RESERVE_PERCENT;
+/** Unstarted weekly timer first, then the projected short-window reserve, then weekly pace:
+ * accounts within PACE_BAND_POINTS of `leader` (the furthest behind) by projected headroom,
+ * the rest furthest behind first. */
+function weeklyPaceOrder(a: SelectionEvidence, b: SelectionEvidence, leader: number): number {
+  // Pace lies in [-100, 100]; no started weekly window ranks last.
+  const pace = (e: SelectionEvidence) => e.weeklyPacePercent ?? -101, inBand = (e: SelectionEvidence) => pace(e) >= leader - PACE_BAND_POINTS;
   return Number(b.weeklyUnstarted) - Number(a.weeklyUnstarted) ||
     Number(keepsReserve(b)) - Number(keepsReserve(a)) ||
-    (keepsReserve(a) ? 0 : (b.shortHeadroomPercent ?? 0) - (a.shortHeadroomPercent ?? 0)) ||
-    // Pace lies in [-100, 100]; no started weekly window ranks last.
-    (b.weeklyPacePercent ?? -101) - (a.weeklyPacePercent ?? -101);
+    (keepsReserve(a) ? Number(inBand(b)) - Number(inBand(a)) : 0) ||
+    (!keepsReserve(a) || inBand(a) ? (projectedHeadroom(b) ?? 100) - (projectedHeadroom(a) ?? 100) : 0) ||
+    pace(b) - pace(a);
 }
 /** Input is already eligible and in cursor order; stable ties preserve that order. */
 export function rankCandidates(policy: PoolPolicy, candidates: { accountId: string; evidence: SelectionEvidence }[]) {
+  const leader = Math.max(-101, ...candidates.filter(c => keepsReserve(c.evidence)).map(c => c.evidence.weeklyPacePercent ?? -101));
   return [...candidates].sort((a, b) => a.evidence.reservations - b.evidence.reservations ||
     (policy === "most-remaining" ? (b.evidence.headroomPercent ?? -1) - (a.evidence.headroomPercent ?? -1)
-      : policy === "weekly-pace" ? weeklyPaceOrder(a.evidence, b.evidence) : 0));
+      : policy === "weekly-pace" ? weeklyPaceOrder(a.evidence, b.evidence, leader) : 0));
 }
 /** The persisted, human-readable explanation of an automatic or manual choice. */
 export function selectionReason(policy: PoolPolicy, e: SelectionEvidence): string {
@@ -111,11 +140,13 @@ export function selectionReason(policy: PoolPolicy, e: SelectionEvidence): strin
   if (policy === "most-remaining") return `Most remaining: tightest window has ${e.headroomPercent}% remaining${spread}`;
   if (policy === "round-robin") return "Round robin among eligible accounts";
   if (policy === "manual") return "Explicit manual account";
+  const short = e.shortHeadroomPercent === null ? "not reported" : `${e.shortHeadroomPercent}%` +
+    (e.shortBurnPercentPerHour === null ? "" : `, ${projectedHeadroom(e)}% projected at reset at ${e.shortBurnPercentPerHour} points/hour`);
   if (e.weeklyUnstarted) return `Weekly pace: weekly window not started; this session starts its timer${spread}`;
-  if (!keepsReserve(e)) return `Weekly pace: every candidate is under the ${SHORT_RESERVE_PERCENT}% short-window reserve; this one has the most (${e.shortHeadroomPercent}%)${spread}`;
+  if (!keepsReserve(e)) return `Weekly pace: every candidate is under the ${SHORT_RESERVE_PERCENT}% short-window reserve; this one has the most (${short})${spread}`;
   const pace = e.weeklyPacePercent === null ? "no started weekly window"
     : e.weeklyPacePercent >= 0 ? `${e.weeklyPacePercent} points behind weekly pace` : `${-e.weeklyPacePercent} points ahead of weekly pace`;
-  return `Weekly pace: ${pace}; short-window headroom ${e.shortHeadroomPercent === null ? "not reported" : `${e.shortHeadroomPercent}%`}${spread}`;
+  return `Weekly pace: ${pace}; short-window headroom ${short}${spread}`;
 }
 export function eligibility(provider: Provider, enabled: boolean, model: string | undefined, observation: Observation, automatic: boolean, now = Date.now()): EligibilityReason {
   if (!enabled) return "disabled";
@@ -138,13 +169,40 @@ export function eligibility(provider: Provider, enabled: boolean, model: string 
   return "eligible";
 }
 
+interface BurnSample { at: number; used: number; resetsAt: number }
 /** Bounded, demand-owned observations; no timers, persistence or background work. */
 export class PoolEvidence {
   /** Called when an account's quota observation changes. `observed` holds only
    * the windows this read reported; the observation carries merged state. */
   onQuota?: (id: string, observation: Observation, observed: QuotaObserved) => void;
   private readonly generations = new Map<string, number>();
-  invalidate(id: string): void { this.generations.set(id, (this.generations.get(id) ?? 0) + 1); this.values.delete(id); this.retryAt.delete(id); this.cliRetryAt.delete(id); }
+  invalidate(id: string): void { this.generations.set(id, (this.generations.get(id) ?? 0) + 1); this.values.delete(id); this.retryAt.delete(id); this.cliRetryAt.delete(id); this.samples.delete(id); }
+  /** Recent short-window use per account and bucket, memory-only and bounded by BURN_LOOKBACK_MS. */
+  private readonly samples = new Map<string, Map<string, BurnSample[]>>();
+  private sample(id: string, windows: QuotaWindow[], at: number): void {
+    const buckets = this.samples.get(id) ?? new Map<string, BurnSample[]>();
+    for (const w of windows) {
+      if (w.windowMinutes === null || w.windowMinutes >= WEEKLY_MINUTES || w.usedPercent === null || !w.resetsAt) continue;
+      const next = { at, used: w.usedPercent, resetsAt: Date.parse(w.resetsAt) };
+      let list = buckets.get(w.bucket) ?? [];
+      const last = list.at(-1);
+      // A moved reset or a real drop starts a new window. Probes round to whole
+      // points and their reset to the minute, so small differences are noise.
+      if (last && (Math.abs(last.resetsAt - next.resetsAt) > 5 * 60_000 || next.used < last.used - 1)) list = [];
+      if (list.length >= 2 && at - list.at(-2)!.at < BURN_SAMPLE_MS) list[list.length - 1] = next; else list.push(next);
+      buckets.set(w.bucket, list.filter(s => s.at >= at - BURN_LOOKBACK_MS));
+    }
+    this.samples.set(id, buckets);
+  }
+  /** Points per hour used in each short window over its recent samples; buckets with too short a history are omitted. */
+  burn(id: string): Record<string, number> {
+    const rates: Record<string, number> = {};
+    for (const [bucket, list] of this.samples.get(id) ?? []) {
+      const first = list[0], last = list.at(-1);
+      if (first && last && last.at - first.at >= BURN_MIN_SPAN_MS) rates[bucket] = Math.max(0, (last.used - first.used) / ((last.at - first.at) / HOUR_MS));
+    }
+    return rates;
+  }
   private readonly values = new Map<string, Observation>();
   private readonly jobs = new Map<string, Promise<Observation>>();
   active(): number { return this.jobs.size; }
@@ -173,6 +231,7 @@ export class PoolEvidence {
     this.values.set(id, { ...previous,
       quota: { accountId: id, provider, observedAt: new Date(now).toISOString(), status: "ok", windows: [...windows, ...carried], source: "inference" },
       error: quotaRefreshFailed(previous.error) ? null : previous.error });
+    this.sample(id, windows, now);
     this.onQuota?.(id, this.get(id), { source: "inference", windows, requestId });
     return true;
   }
@@ -266,7 +325,7 @@ export class PoolEvidence {
         this.values.set(id, { ...previous,
           ...(ok ? { quota: { ...snapshot, source: "probe" }, error: quotaRefreshFailed(previous.error) ? null : previous.error } : {}),
           ...(read.cliModels ? { cliModels: read.cliModels, cliModelsAt: new Date(Date.now()).toISOString() } : {}) });
-        if (ok) this.onQuota?.(id, this.get(id), { source: "probe", windows: snapshot.windows });
+        if (ok) { this.sample(id, snapshot.windows, Date.now()); this.onQuota?.(id, this.get(id), { source: "probe", windows: snapshot.windows }); }
         if (!read.cliModels) this.cliRetryAt.set(id, Date.now() + CLI_MODELS_RETRY_MS);
       }).catch(() => { this.cliRetryAt.set(id, Date.now() + CLI_MODELS_RETRY_MS); })
         .finally(() => this.cliReads.delete(id));
@@ -299,7 +358,7 @@ export class PoolEvidence {
         ...(previous.blocked && (previous !== before || error || Date.parse(previous.cooldownUntil!) > Date.now()) ? { blocked: previous.blocked, cooldownUntil: previous.cooldownUntil } : {}),
       };
       this.values.set(id, result);
-      if (snapshot) this.onQuota?.(id, result, { source: "probe", windows: snapshot.windows });
+      if (snapshot) { this.sample(id, snapshot.windows, Date.now()); this.onQuota?.(id, result, { source: "probe", windows: snapshot.windows }); }
       const retry = quota.status === "fulfilled" ? quota.value.retryAfterSeconds : undefined;
       this.retryAt.set(id, Date.now() + (error ? Math.max(5, Math.min(retry ?? 5, 3600)) * 1000 : 1000));
       return result;

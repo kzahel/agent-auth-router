@@ -7,7 +7,7 @@ import { accountLabel } from "../lib/accounts.ts";
 import type { Overview, Pool, Provider } from "../protocol/types.ts";
 import ui from "../styles/ui.module.css";
 
-const NEW_POOL_HINT = "Sessions use the default policy unless the app starting them picks another policy or a specific account. Automatic policies refresh stale quota and model observations when a session starts. Most remaining prefers the greatest headroom in the tightest applicable window. Weekly pace starts unused weekly timers first, backs off accounts under 30% short-window headroom, then prefers the account furthest behind its weekly pace.";
+const NEW_POOL_HINT = "Sessions use the default policy unless the app starting them picks another policy or a specific account. Automatic policies refresh stale quota and model observations when a session starts. Most remaining prefers the greatest headroom in the tightest applicable window. Weekly pace starts unused weekly timers first, backs off accounts whose recent use would leave under 30% short-window headroom at reset, then prefers the account furthest behind its weekly pace, treating accounts within 5 points as even and choosing the one with the most short-window headroom.";
 
 /**
  * Creates or edits a pool: members, default policy and which connections may

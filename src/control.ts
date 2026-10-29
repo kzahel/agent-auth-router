@@ -16,7 +16,7 @@ import { hashGatewayToken } from "./gateway-auth.ts";
 import { accountHelper } from "./helpers.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
 import { fetchAccountQuotas, readAccountQuotas, type QuotaReadOptions } from "./quotas.ts";
-import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
+import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, policyVersion, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
 import type { CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
 import type { GatewayClientRecord, Provider } from "./types.ts";
@@ -202,7 +202,7 @@ export class ControlRegistry {
     if (policy !== undefined && !isPoolPolicy(policy)) reject(400, "invalid pool policy");
     const decisions = pool?.accountIds.map(accountId => { const a = accounts.find(a => a.id === accountId); return { accountId,
       reason: eligibility(pool.provider, !!a?.enabled, model, evidence.get(accountId), policy !== "manual", now),
-      ...(model ? { evidence: selectionEvidence(pool.provider, evidence.get(accountId), model, this.reservations(pool.id, accountId, now), now) } : {}) }; });
+      ...(model ? { evidence: selectionEvidence(pool.provider, evidence.get(accountId), model, this.reservations(pool.id, accountId, now), now, evidence.burn(accountId)) } : {}) }; });
     return { supportedPolicies: POOL_POLICIES, policies: POLICY_LIST, admissionRefresh: true, canManagePools: !integration, observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
       pools: this.pools(integration).map(p => this.poolMetadata(p, integration)), accounts,
       ...(pool ? { selection: { poolId: pool.id, policy, model: model ?? null, decisions } } : {}) };
@@ -220,7 +220,7 @@ export class ControlRegistry {
       const a = accounts.find(a => a.id === accountId), o = evidence.get(accountId);
       const reason = eligibility(pool.provider, !!a && a.enabled !== false, model, o, policy !== "manual", now);
       return { accountId, eligibility: reason !== "eligible" ? reason : !supportsThinking(o.models.find(m => m.id === model), thinking) ? "thinking-unsupported" : !supportsServiceTier(o.models.find(m => m.id === model), serviceTier) ? "service-tier-unsupported" : "eligible",
-        evidence: selectionEvidence(pool.provider, o, model, this.reservations(pool.id, accountId, now), now) };
+        evidence: selectionEvidence(pool.provider, o, model, this.reservations(pool.id, accountId, now), now, evidence.burn(accountId)) };
     });
     const eligible = decisions.filter(d => d.eligibility === "eligible").map(d => d.accountId);
     const cursor = pool.cursor ? pool.accountIds.indexOf(pool.cursor) : -1;
@@ -293,7 +293,7 @@ export class ControlRegistry {
     const selectedEvidence = decisions.find(d => d.accountId === chosen)!.evidence;
     const binding: Binding = { id, integrationId: integration.id, accountId: chosen!, provider: pool.provider, model, tokenHash,
       state: "prepared", createdAt: now, poolId, policy, request, ...(serviceTier ? { serviceTier } : {}), ...(body.thinking === undefined ? {} : { thinking: body.thinking as string }),
-      policyVersion: 1, selectionEvidence: selectedEvidence,
+      policyVersion: policyVersion(policy), selectionEvidence: selectedEvidence,
       reason: selectionReason(policy, selectedEvidence),
       observedAt: evidence.get(chosen!).quota?.observedAt };
     this.change(state => state.bindings.push(binding));
@@ -370,7 +370,7 @@ export class ControlRegistry {
         if (pool.policy !== "manual") state.pools!.find(p => p.id === poolId)!.cursor = chosen;
       });
     }
-    this.events?.write("binding", { ...base, accountId: chosen, policyVersion: 1, reason: selectionReason(pool.policy, chosenEvidence), selectionEvidence: chosenEvidence, candidates });
+    this.events?.write("binding", { ...base, accountId: chosen, policyVersion: policyVersion(pool.policy), reason: selectionReason(pool.policy, chosenEvidence), selectionEvidence: chosenEvidence, candidates });
     return chosen;
   }
   get routerId(): string { return this.state.routerId; }
