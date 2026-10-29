@@ -120,3 +120,14 @@ node scripts/probe-codex-service-tiers.mjs /absolute/codex /absolute/matching-co
 It checks account-specific model discovery and captured Fast → Standard → Ultra
 Fast requests through real AAR, including an explicit resumed turn. It does not
 contact a provider, prove live entitlement, measure latency or test renewal.
+
+On 2026-10-29, official Codex 0.160.0 and 0.165.0 passed that synthetic probe
+with a model absent from their bundled catalogs. Four live Codex 0.165.0 turns
+from an isolated YA instance also completed: new Fast, live Standard, live Fast
+and Fast after a full YA restart, with one unchanged account/binding/token.
+The main router was restarted through its idle-drain operation; existing grants
+and bindings were preserved and test integrations revoked. The observer recorded
+only outgoing request-tier metadata and native completion, not actual scheduling
+latency. AAR's metrics omitted the provider's reported tier/usage for these live
+responses; do not treat that absence as proof of Standard or zero consumption.
+The cause of that metrics omission remains outside this admission change.
