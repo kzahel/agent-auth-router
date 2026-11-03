@@ -1006,8 +1006,15 @@ test("claude: a lapsed AAR login is a named refusal that keeps the pin until sig
   assert.match(refused.value.error, /^The pinned router account .*needs to sign in again: its login in AAR expired or was cleared\./);
   assert.equal(f.launches().length, launches, "A lapsed login starts no provider");
   assert.equal(f.upstreamRequests.length, requests);
+  const fresh = await f.start({ provider: "claude", model: "synthetic-model", routerAccountId: "selected", message: "new-while-lapsed" });
+  assert.equal(fresh.started, false);
+  assert.deepEqual([fresh.value.creation.state, fresh.value.creation.delivery, fresh.value.creation.failure], ["failed", "not-admitted", "router-login-required"],
+    "A new session refused by the router is a known, retryable failure, not uncertain delivery");
+  assert.equal(f.upstreamRequests.length, requests, "Nothing was sent for the refused new session");
   writeFileSync(signedIn.path, signedIn.content);
   await f.api(`${detailPath}/resume`, { provider: "claude", message: "after-sign-in" });
   await eventually(() => f.upstreamRequests.some((r) => r.body.includes("after-sign-in")), "signing in again resumes the same pin");
-  assert.deepEqual(Object.keys(f.privateState().allocations), [allocation.id]);
+  assert.equal(f.sessionMetadata().sessions[info.sessionId].routerBinding.id, allocation.id);
+  const others = Object.values(f.privateState().allocations).filter((a) => a.id !== allocation.id);
+  assert.ok(others.length === 1 && others[0].cancelled, "the refused new session's allocation is cancelled");
 });

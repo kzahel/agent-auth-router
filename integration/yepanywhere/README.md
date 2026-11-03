@@ -74,7 +74,8 @@ Each provider exercises:
 - Disconnect invalidating a running worker's token and surviving restart.
 - A Claude login the CLI has cleared after its lifetime: a live session gets
   AAR's dated "login expired" error, resume is refused with YA's named message
-  and starts nothing, and signing in again resumes the same pin.
+  and starts nothing, a new session ends as a failed `router-login-required`
+  creation with nothing sent, and signing in again resumes the same pin.
 - Pending disconnect surviving a YA restart, blocking launches and re-pairing,
   explicit retry after AAR recovers, and refusal to adopt an old session into a
   new pairing.
