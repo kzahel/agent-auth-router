@@ -13,7 +13,8 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (message.type !== "control_request") throw new Error("Unexpected Claude CLI input");
   const subtype = message.request.subtype;
   if (subtype === "initialize") {
-    reply(message.request_id, { models: [], account: { subscriptionType: "Claude Max", apiProvider: "firstParty" } });
+    // YA omits an account's CLI rows when there are none (since 2026-10-06).
+    reply(message.request_id, { models: [{ value: "synthetic-model", displayName: "Synthetic", description: "Synthetic CLI row" }], account: { subscriptionType: "Claude Max", apiProvider: "firstParty" } });
   } else if (subtype === "get_usage") {
     const { accessToken } = JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR, ".credentials.json"), "utf8")).claudeAiOauth;
     const response = await fetch(`${origin}/api/oauth/usage`, { headers: { authorization: `Bearer ${accessToken}` } });

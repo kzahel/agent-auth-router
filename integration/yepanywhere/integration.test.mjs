@@ -17,6 +17,7 @@ import http from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { ownerRequest } from "../../src/owner.ts";
@@ -55,6 +56,18 @@ const rows = (path) =>
         .map(JSON.parse)
     : [];
 const hash = (value) => createHash("sha256").update(value).digest("hex");
+/** YA keeps session metadata in its discovery database, keyed by YA session id. */
+function sessionMetadata(data) {
+  const path = join(data, "discovery.sqlite");
+  if (!existsSync(path)) return { sessions: {} };
+  const database = new DatabaseSync(path, { readOnly: true });
+  try {
+    return { sessions: Object.fromEntries(database.prepare("SELECT session_id, metadata FROM session_metadata").all()
+      .map((row) => [row.session_id, JSON.parse(row.metadata)])) };
+  } finally {
+    database.close();
+  }
+}
 async function eventually(predicate, message, milliseconds = 20_000) {
   const end = Date.now() + milliseconds;
   while (Date.now() < end) {
@@ -156,7 +169,6 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
         ...credentials.map((c) => c.secret),
       ].filter(Boolean);
       const publicFiles = [
-        join(data, "session-metadata.json"),
         join(root, "aar/control.json"),
         ...readdirSync(home, { recursive: true })
           .filter((name) => name.endsWith(".jsonl"))
@@ -165,6 +177,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
       const surfaces = [
         ...output,
         ...apiBodies,
+        JSON.stringify(sessionMetadata(data)),
         ...publicFiles
           .filter(existsSync)
           .map((path) => readFileSync(path, "utf8")),
@@ -332,6 +345,25 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
     return { status: response.status, value };
   }
   const privateState = () => json(join(data, "agent-auth-router/private.json"));
+  /**
+   * YA admits a new session durably (202), then launches it. Resolves with the
+   * running process once the creation binds, or with the creation that did
+   * not, so callers can assert that nothing started.
+   */
+  async function start(body) {
+    const requestId = `aar-${randomUUID()}`;
+    const projectId = Buffer.from(project).toString("base64url");
+    const accepted = await api(`/projects/${projectId}/session-creations`, { sandboxLevel: "none", ...body, requestId }, null);
+    if (accepted.status !== 202) return { started: false, status: accepted.status, value: accepted.value };
+    const settled = await eventually(async () => {
+      const receipt = (await api(`/session-creations/${requestId}`)).value;
+      return ["bound", "failed", "uncertain", "deleted"].includes(receipt.creation.state) && receipt;
+    }, "session creation settles");
+    if (settled.creation.state !== "bound") return { started: false, status: accepted.status, value: settled };
+    const process = await eventually(async () =>
+      (await api("/processes")).value.processes.find((p) => p.sessionId === settled.sessionId), "created session has a process");
+    return { started: true, status: accepted.status, value: { ...settled, processId: process.id } };
+  }
   const controlState = () => json(join(store.dir, "control.json"));
   await restartRouter();
   await restartYA();
@@ -361,6 +393,8 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
     restartRouter,
     restartYA,
     api,
+    start,
+    sessionMetadata: () => sessionMetadata(data),
     owner: (operation, body) => ownerRequest(store, operation, body),
     connect: async (...args) => {
       const response = await api("/agent-auth-router/connect", ...args);
@@ -386,14 +420,12 @@ for (const provider of ["codex", "claude"]) {
   }, async (t) => {
     const f = await fixture(t, provider);
     const projectId = Buffer.from(f.project).toString("base64url");
-    const startPath = `/projects/${projectId}/sessions`;
     const launch = (message, extra = {}) =>
-      f.api(startPath, {
+      f.start({
         provider,
         model: "synthetic-model",
         routerAccountId: "selected",
         message,
-        sandboxLevel: "none",
         ...extra,
       });
     await f.connect({
@@ -415,7 +447,9 @@ for (const provider of ["codex", "claude"]) {
         .models[0].id,
       "synthetic-model",
     );
-    const created = (await launch("first", { thinking: "on:high" })).value;
+    const first = await launch("first", { thinking: "on:high" });
+    assert.ok(first.started, JSON.stringify(first.value));
+    const created = first.value;
     t.diagnostic(`created ${provider}`);
     const idle = async () =>
       eventually(async () => {
@@ -428,10 +462,11 @@ for (const provider of ["codex", "claude"]) {
     assert.equal(f.launches()[0].effort, "high");
     assert.equal(f.native().find(row => row.event === (provider === "claude" ? "spawn" : "turn/start"))?.effort, "high", "explicit effort reaches native CLI");
     const sessionId = processInfo.sessionId;
-    assert.notEqual(
-      sessionId,
+    assert.equal(sessionId, created.sessionId);
+    assert.equal(
       f.launches()[0].metadataId,
-      "Native identity should replace the provisional ID",
+      sessionId,
+      "The routed session keeps YA's minted id",
     );
     const allocation = Object.values(f.privateState().allocations)[0];
     assert.equal(f.controlState().bindings[0].id, allocation.id);
@@ -455,13 +490,8 @@ for (const provider of ["codex", "claude"]) {
       JSON.stringify((await f.api(detailPath)).value).includes("ROUTER:second"),
       "YA reads the routed assistant response",
     );
-    const metadata = json(join(f.data, "session-metadata.json"));
+    const metadata = f.sessionMetadata();
     assert.equal(metadata.sessions[sessionId].routerBinding.id, allocation.id);
-    assert.equal(
-      metadata.sessions[f.launches()[0].metadataId],
-      undefined,
-      "Provisional metadata is remapped",
-    );
     await f.api(`/processes/${created.processId}/abort`, {});
     await f.router().stop();
     await f.restartYA();
@@ -544,7 +574,11 @@ for (const provider of ["codex", "claude"]) {
       "Restart/resume cannot allocate a new pin",
     );
     assert.equal(f.controlState().bindings[0].id, allocation.id);
-    assert.equal(f.launches().at(-1).resume, sessionId);
+    // YA's session id is canonical; resume passes the provider's native id,
+    // which only Claude shares with it.
+    const nativeId = f.native().find((r) => r.event === "inference").sessionId;
+    if (provider === "claude") assert.equal(nativeId, sessionId);
+    assert.equal(f.launches().at(-1).resume, nativeId);
     assert.ok(
       f
         .native()
@@ -581,17 +615,8 @@ for (const provider of ["codex", "claude"]) {
 
     // A launch failure after allocation must durably revoke its separate token.
     writeFileSync(join(f.home, "fail-next-launch"), "synthetic");
-    const failed = await f.api(
-      startPath,
-      {
-        provider,
-        model: "synthetic-model",
-        routerAccountId: "selected",
-        message: "fail",
-      },
-      null,
-    );
-    assert.ok(failed.status >= 400, "Injected native failure is reported");
+    const failed = await launch("fail");
+    assert.equal(failed.started, false, "Injected native failure is reported");
     const cancelled = f
       .controlState()
       .bindings.find((b) => b.id !== allocation.id);
@@ -677,12 +702,11 @@ for (const provider of ["codex", "claude"]) {
       socketPath: f.router().socket,
     });
     const created = (
-      await f.api(`/projects/${projectId}/sessions`, {
+      await f.start({
         provider,
         model: "synthetic-model",
         routerAccountId: "selected",
         message: "before-outage",
-        sandboxLevel: "none",
       })
     ).value;
     const info = await eventually(
@@ -771,19 +795,17 @@ for (const provider of ["codex", "claude"]) {
     timeout: 90_000,
   }, async (t) => {
     const f = await fixture(t, provider);
-    const startPath = `/projects/${Buffer.from(f.project).toString("base64url")}/sessions`;
     const body = {
       provider,
       model: "synthetic-model",
       routerAccountId: "selected",
       message: "fixture",
-      sandboxLevel: "none",
     };
     await f.connect({
       socketPath: f.router().socket,
     });
     writeFileSync(join(f.home, "fail-next-launch"), "offline");
-    assert.ok((await f.api(startPath, body, null)).status >= 400);
+    assert.equal((await f.start(body)).started, false);
     const allocation = Object.values(f.privateState().allocations)[0];
     assert.equal(allocation.cancelled, true);
     assert.notEqual(allocation.cancellationAcknowledged, true);
@@ -845,7 +867,7 @@ for (const provider of ["codex", "claude"]) {
     assert.equal(response.status, 401);
     await response.body.cancel();
     f.store.saveAccounts(f.accounts);
-    const created = (await f.api(startPath, body)).value;
+    const created = (await f.start(body)).value;
     await eventually(
       async () =>
         (await f.api("/processes")).value.processes.find(
@@ -887,8 +909,7 @@ for (const provider of ["codex", "claude"]) {
     for (const accountId of pool.accountIds) await f.api("/agent-auth-router/overview/refresh", { accountId });
     assert.deepEqual((await overview()).value.selection.decisions.map(d => d.reason), ["eligible", "eligible"]);
     assert.equal((await overview()).value.accounts[0].windows[0].remainingPercent, 75);
-    const startPath = `/projects/${Buffer.from(f.project).toString("base64url")}/sessions`;
-    const launch = message => f.api(startPath, { message, provider, model: "synthetic-model", routerPoolId: pool.id, routerPolicy: "round-robin", mode: "bypassPermissions" });
+    const launch = message => f.start({ message, provider, model: "synthetic-model", routerPoolId: pool.id, routerPolicy: "round-robin", mode: "bypassPermissions" });
     const starts = await Promise.all([launch("pool-one"), launch("pool-two")]);
     const sessions = [];
     for (const start of starts) {
@@ -909,7 +930,7 @@ for (const provider of ["codex", "claude"]) {
     for (const accountId of pool.accountIds) await f.api("/agent-auth-router/overview/refresh", { accountId });
     assert.ok((await overview()).value.selection.decisions.every(d => d.reason === "exhausted"));
     const launches = f.launches().length;
-    assert.ok((await f.api(startPath, { message: "must-not-start", provider, model: "synthetic-model", routerPoolId: pool.id, routerPolicy: "round-robin" }, null)).status >= 400);
+    assert.equal((await f.start({ message: "must-not-start", provider, model: "synthetic-model", routerPoolId: pool.id, routerPolicy: "round-robin" })).started, false);
     assert.equal(f.launches().length, launches);
     await f.owner("pools/remove", { id: pool.id, revision: 3 });
     const response = await fetch(`${f.router().origin}/${provider}${provider === "claude" ? "/v1/messages" : "/responses"}`, { method: "POST", headers: { authorization: `Bearer ${pins[0].token}` }, body: "{}" });
@@ -942,8 +963,7 @@ for (const provider of ["claude", "codex"]) {
     } else {
       assert.ok(discovered.value.accounts.every(a => a.quota === null), "Codex catalog discovery does not read quotas");
     }
-    const startPath = `/projects/${Buffer.from(f.project).toString("base64url")}/sessions`;
-    const start = await f.api(startPath, { message: "most-remaining", provider, model: "synthetic-model", routerPoolId: pool.id, thinking: "on:max", mode: "bypassPermissions" });
+    const start = await f.start({ message: "most-remaining", provider, model: "synthetic-model", routerPoolId: pool.id, thinking: "on:max", mode: "bypassPermissions" });
     const idle = await eventually(async () => (await f.api("/processes")).value.processes.find(p => p.id === start.value.processId && p.state === "idle"), "Most remaining native turn finishes");
     const allocation = Object.values(f.privateState().allocations)[0];
     assert.equal(allocation.thinking, "on:max");
@@ -964,3 +984,30 @@ for (const provider of ["claude", "codex"]) {
     assert.equal(Object.values(f.privateState().allocations)[0].token, allocation.token);
   });
 }
+
+test("claude: a lapsed AAR login is a named refusal that keeps the pin until sign-in", { timeout: 120_000 }, async (t) => {
+  const f = await fixture(t, "claude");
+  await f.connect({ socketPath: f.router().socket });
+  const created = await f.start({ provider: "claude", model: "synthetic-model", routerAccountId: "selected", message: "before-lapse" });
+  assert.ok(created.started, JSON.stringify(created.value));
+  const info = await eventually(async () => (await f.api("/processes")).value.processes.find((p) => p.id === created.value.processId && p.state === "idle"), "first turn completes");
+  await f.api(`/processes/${created.value.processId}/abort`, {});
+  const allocation = Object.values(f.privateState().allocations)[0];
+  const signedIn = f.credentials[0];
+  // What the Claude CLI leaves after a refresh past the login's lifetime.
+  writePrivateJson(signedIn.path, { claudeAiOauth: { accessToken: "", refreshToken: "", expiresAt: 0, refreshTokenExpiresAt: Date.now() - 3_600_000 } });
+  await f.restartRouter(); // AAR caches account catalogs for a minute.
+  const inference = await fetch(`${f.router().origin}/claude/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${allocation.token}` }, body: "{}" });
+  assert.equal(inference.status, 503);
+  assert.match((await inference.json()).error.message, /login expired .* UTC; sign in again$/, "a live session learns why and when");
+  const launches = f.launches().length, requests = f.upstreamRequests.length;
+  const detailPath = `/projects/${Buffer.from(f.project).toString("base64url")}/sessions/${info.sessionId}`;
+  const refused = await f.api(`${detailPath}/resume`, { provider: "claude", message: "after-lapse" }, 409);
+  assert.match(refused.value.error, /^The pinned router account .*needs to sign in again: its login in AAR expired or was cleared\./);
+  assert.equal(f.launches().length, launches, "A lapsed login starts no provider");
+  assert.equal(f.upstreamRequests.length, requests);
+  writeFileSync(signedIn.path, signedIn.content);
+  await f.api(`${detailPath}/resume`, { provider: "claude", message: "after-sign-in" });
+  await eventually(() => f.upstreamRequests.some((r) => r.body.includes("after-sign-in")), "signing in again resumes the same pin");
+  assert.deepEqual(Object.keys(f.privateState().allocations), [allocation.id]);
+});

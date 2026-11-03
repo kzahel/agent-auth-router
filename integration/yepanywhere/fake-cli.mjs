@@ -84,7 +84,8 @@ audit({
   baseUrl,
 });
 const emit = (value) => process.stdout.write(JSON.stringify(value) + "\n");
-let sessionId = (provider === "claude" && arg("--resume")) || randomUUID();
+// Claude Code honors a chosen id (--session-id), as YA requests for new sessions.
+let sessionId = (provider === "claude" && (arg("--resume") ?? arg("--session-id"))) || randomUUID();
 let cwd = process.cwd();
 let model = provider === "claude" ? arg("--model") : "synthetic-model";
 let active;
@@ -129,8 +130,7 @@ function initializeTranscript() {
     );
   }
 }
-function persist(role, text) {
-  const uuid = randomUUID();
+function persist(role, text, uuid = randomUUID()) {
   const row =
     provider === "claude"
       ? {
@@ -165,8 +165,9 @@ const textOf = (value) =>
   typeof value === "string"
     ? value
     : (value ?? []).map((item) => item.text ?? "").join("");
-async function turn(text, turnId) {
-  persist("user", text);
+// Claude Code keeps the client's input uuid and stamps its replies with it.
+async function turn(text, turnId, inputUuid) {
+  const userMessageUuid = persist("user", text, inputUuid);
   active = new AbortController();
   let output = "";
   try {
@@ -235,6 +236,7 @@ async function turn(text, turnId) {
         type: "assistant",
         uuid,
         session_id: sessionId,
+        user_message_uuid: userMessageUuid,
         message: {
           id: uuid,
           type: "message",
@@ -250,6 +252,7 @@ async function turn(text, turnId) {
         subtype: "success",
         uuid: randomUUID(),
         session_id: sessionId,
+        user_message_uuid: userMessageUuid,
         result: output,
         is_error: false,
         duration_ms: 1,
@@ -321,7 +324,7 @@ lines.on("line", (line) => {
           apiKeySource: "none",
         });
       }
-      void turn(textOf(message.message.content), randomUUID());
+      void turn(textOf(message.message.content), randomUUID(), typeof message.uuid === "string" ? message.uuid : undefined);
     }
     return;
   }

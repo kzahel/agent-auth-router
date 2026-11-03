@@ -58,7 +58,9 @@ Each provider exercises:
 - Explicit High thinking reaches Claude's native `--effort` argument and Codex's
   `turn/start` effort, and remains High after restarting and resuming the session.
   The fixture audits only these selected fields, never complete CLI arguments.
-- Provisional-to-native session ID remapping and continuation under one binding.
+- Durable session creation (`session-creations`, then the bound process), the
+  YA-minted session ID kept for routed Claude and Codex sessions, resume through
+  the provider's native ID, and continuation under one binding.
 - Restarting both servers and resuming with the same allocation and token.
 - No native launch or account fallback when AAR is unavailable or the selected
   account is disabled.
@@ -70,6 +72,9 @@ Each provider exercises:
 - Read-only recovery status distinguishes saved pairing from reachability and
   reports pending cleanup and disabled accounts without mutating them.
 - Disconnect invalidating a running worker's token and surviving restart.
+- A Claude login the CLI has cleared after its lifetime: a live session gets
+  AAR's dated "login expired" error, resume is refused with YA's named message
+  and starts nothing, and signing in again resumes the same pin.
 - Pending disconnect surviving a YA restart, blocking launches and re-pairing,
   explicit retry after AAR recovers, and refusal to adopt an old session into a
   new pairing.

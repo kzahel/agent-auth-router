@@ -13,6 +13,7 @@ const { createApp } = await load("app.ts");
 const { SessionMetadataService } = await load(
   "metadata/SessionMetadataService.ts",
 );
+const { DiscoverySqliteService } = await load("storage/discovery-sqlite.ts");
 const providerName = process.env.AAR_TEST_PROVIDER;
 const { ClaudeProvider } = await load("sdk/providers/claude.ts");
 const { CodexProvider } = await load("sdk/providers/codex.ts");
@@ -33,14 +34,7 @@ provider.startSession = async (options) => {
       thinking: options.thinking,
       effort: options.effort,
       resume: options.resumeSessionId ?? null,
-      metadataId: Object.entries(
-        JSON.parse(
-          readFileSync(
-            join(process.env.YEP_DATA_DIR, "session-metadata.json"),
-            "utf8",
-          ),
-        ).sessions,
-      ).find(
+      metadataId: Object.entries(metadata.getAllMetadata()).find(
         ([, value]) =>
           value.routerBinding?.id === options.routerLaunch?.bindingId,
       )?.[0],
@@ -61,14 +55,21 @@ provider.startSession = async (options) => {
   }
   return start(options);
 };
+// Session metadata lives in YA's discovery database since 2026-10.
+const storage = new DiscoverySqliteService({
+  dataDir: process.env.YEP_DATA_DIR,
+  probeNetworkFilesystem: () => undefined,
+});
 const metadata = new SessionMetadataService({
   dataDir: process.env.YEP_DATA_DIR,
+  database: storage.getDatabase(),
 });
 await metadata.initialize();
 const instance = createApp({
   provider,
   dataDir: process.env.YEP_DATA_DIR,
   sessionMetadataService: metadata,
+  discoverySqlite: storage,
   projectsDir: process.env.CLAUDE_SESSIONS_DIR,
   codexSessionsDir: process.env.CODEX_SESSIONS_DIR,
   geminiSessionsDir: join(process.env.HOME, "empty/gemini"),
@@ -88,5 +89,6 @@ process.once("SIGTERM", async () => {
   instance.stopNotifications();
   await instance.supervisor.stopBackgroundTasks();
   await instance.disposeSessionReaders();
+  storage.close();
   process.exit(0);
 });
