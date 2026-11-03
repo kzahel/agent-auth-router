@@ -59,6 +59,19 @@ describe("AccountCard", () => {
     expect(desktop.called("accounts/login-command")).toHaveLength(0);
   });
 
+  it("warns as the login's fixed lifetime ends, and says when it has expired", async () => {
+    const app = await fakeApp();
+    const day = 86_400_000, at = (ms: number) => new Date(ms).toISOString();
+    const { unmount } = app.render(<AccountCard {...props} account={account("work", { loginExpiresAt: at(Date.now() + 20 * day) })} />);
+    expect(screen.getByText(/^Login expires /).textContent).not.toMatch(/sign in/);
+    unmount();
+    const soon = app.render(<AccountCard {...props} account={account("work", { loginExpiresAt: at(Date.now() + 2 * day) })} />);
+    expect(screen.getByText(/^Login expires .* · sign in again before then$/)).toBeTruthy();
+    soon.unmount();
+    app.render(<AccountCard {...props} account={account("work", { loginExpiresAt: at(Date.now() - day) })} />);
+    expect(screen.getByText(/^Login expired .* · sign in again$/)).toBeTruthy();
+  });
+
   it("keeps Remove for retired accounts, without More", async () => {
     const app = await fakeApp();
     app.render(<AccountCard {...props} account={account("old", { retired: true, enabled: false })} />);

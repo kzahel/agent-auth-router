@@ -546,6 +546,7 @@ export class OwnerService {
         signIn: signIn.state,
         detail: signIn.detail ?? null,
         expiresAt: signIn.expiresAt !== undefined ? new Date(signIn.expiresAt).toISOString() : null,
+        loginExpiresAt: signIn.loginExpiresAt !== undefined ? new Date(signIn.loginExpiresAt).toISOString() : null,
         loginStatus: this.terminals.get(account.id)?.status ?? this.logins.get(account.id)?.status ?? "idle",
         canOpenLogin: this.logins.get(account.id)?.status === "running" && !!this.logins.get(account.id)?.url,
       };

@@ -9,7 +9,7 @@ import { ControlRegistry, startControl } from "../src/control.ts";
 import { authorize, generateGatewayToken, hashGatewayToken } from "../src/gateway-auth.ts";
 import { startRouter } from "../src/runtime.ts";
 import { StateStore, writePrivateJson } from "../src/state.ts";
-import { FIXTURES, mockUpstream, tempDir, writeClaudeCredentials } from "./support.ts";
+import { FIXTURES, mockUpstream, tempDir, writeClaudeCredentials, writeClearedClaudeCredentials } from "./support.ts";
 
 const fakeClaude = { claudeCommand: process.execPath, claudeArgs: [join(FIXTURES, "fake-claude-cli.ts"), "ok"] };
 const ctlToken = () => "aar_ctl_" + randomBytes(32).toString("base64url");
@@ -92,6 +92,29 @@ test("private control socket routes catalogs before allocation and revokes infer
   assert.equal((await request(socket, "/v1/disconnect", token, {})).status, 200);
   assert.equal((await infer(gateway)).status, 401);
   await router.close(); assert.equal(existsSync(socket), false);
+});
+
+test("a lapsed login is a specific refusal naming the account and its deadline", { skip: process.platform === "win32" }, async () => {
+  const store = storeFixture();
+  const upstream = await mockUpstream((_req, res) => { res.end("{}"); });
+  writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
+  const loginExpiresAt = Date.now() - 3_600_000;
+  writeClearedClaudeCredentials(join(store.dir, "profiles", "fixture"), loginExpiresAt);
+  const router = await startRouter(store); after(() => router.close());
+  const socket = router.controlSocket!, token = ctlToken();
+  const pair = { id: randomUUID(), name: "YA fixture", tokenHash: hashGatewayToken(token) };
+  await request(socket, "/v1/pair", undefined, pair);
+  await ownerRequest(store, "grants/save", { id: pair.id, revision: 1, poolIds: [], accountIds: ["fixture"] });
+  const catalog = await request(socket, "/v1/catalog", token, { accountId: "fixture" });
+  assert.equal(catalog.status, 409);
+  assert.equal(catalog.value.code, "login_required");
+  assert.equal(catalog.value.accountId, "fixture");
+  assert.equal(catalog.value.loginExpiresAt, new Date(loginExpiresAt).toISOString());
+  // Yep Anywhere quotes only 4xx reasons of this shape.
+  assert.match(catalog.value.error, /^[A-Za-z][A-Za-z ,;:'()-]{0,159}$/);
+  assert.equal(upstream.requests.length, 0);
+  const accounts = await request(socket, "/v1/accounts", token);
+  assert.equal(accounts.value.accounts[0].loginExpiresAt, new Date(loginExpiresAt).toISOString());
 });
 
 test("control refuses insecure directories and occupied endpoints", { skip: process.platform === "win32" }, async () => {

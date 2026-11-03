@@ -8,7 +8,7 @@ import { sanitize } from "../src/log.ts";
 import { parseUpstreamOrigin } from "../src/providers.ts";
 import { validateAccounts, validateConfig } from "../src/state.ts";
 import type { GatewayClientRecord } from "../src/types.ts";
-import { fakeJwt, tempDir, writeClaudeCredentials, writeCodexAuth } from "./support.ts";
+import { fakeJwt, tempDir, writeClaudeCredentials, writeClearedClaudeCredentials, writeCodexAuth } from "./support.ts";
 
 describe("gateway tokens", () => {
   const token = generateGatewayToken();
@@ -75,6 +75,17 @@ describe("credential readers", () => {
     assert.equal(result.credential.accessToken, "claude-access");
     assert.equal(result.credential.expiresAt, 1_900_000_000_000);
     assert.doesNotMatch(JSON.stringify(result), /SECRET-REFRESH/);
+  });
+
+  test("claude file reader keeps the login deadline and reports a CLI-cleared login as signed out", async () => {
+    const home = tempDir();
+    writeFileSync(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "claude-access", refreshToken: "SECRET-REFRESH", expiresAt: 1_900_000_000_000, refreshTokenExpiresAt: 1_900_500_000_000 } }));
+    const live = await readClaudeFile(home);
+    assert.ok(live.status === "ok");
+    assert.equal(live.credential.loginExpiresAt, 1_900_500_000_000);
+    writeClearedClaudeCredentials(home, 1_700_000_000_000);
+    const cleared = await readClaudeFile(home);
+    assert.deepEqual(cleared, { status: "signed_out", reason: "login expired 2023-11-14 22:13 UTC; sign in again", loginExpiresAt: 1_700_000_000_000 });
   });
 
   test("jwt expiry tolerates non-JWT tokens", () => {

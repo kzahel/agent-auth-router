@@ -231,6 +231,7 @@ async function main(argv: string[]): Promise<void> {
           const detail =
             result.status === "ok"
               ? `expires ${result.credential.expiresAt ? new Date(result.credential.expiresAt).toISOString() : "unknown"}`
+                + (result.credential.loginExpiresAt ? `; login expires ${new Date(result.credential.loginExpiresAt).toISOString()}` : "")
               : result.reason;
           process.stdout.write(`${account.id}\t${account.provider}\t${result.status}\t${detail}\thelper=${account.helper?.kind ?? (account.provider === "claude" ? "claude-cli" : "none")}\n`);
         }

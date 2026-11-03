@@ -248,6 +248,7 @@ export async function readAccountQuotas(account: AccountConfig, workDir: string,
       // A signed-out profile never starts the CLI. An expired access token
       // with a refresh token is fine: the CLI renews it before reading usage.
       const credential = await credentialReaderFor("claude", account.home, account.credentialStore)();
+      if (credential.status === "signed_out") return unavailable(credential.reason);
       if (credential.status !== "ok") return unavailable("credential unavailable; check official CLI login");
       const helper = account.helper?.kind === "claude-cli" ? account.helper : undefined;
       const probe = await probeClaudeCli({ account, workDir, ...(options.env ? { env: options.env } : {}) }, {

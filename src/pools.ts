@@ -347,7 +347,9 @@ export class PoolEvidence {
       const cliModels = quota.status === "fulfilled" ? quota.value.cliModels : undefined;
       // The reader's error is fixed text plus an already-scrubbed excerpt.
       const reason = quota.status === "fulfilled" ? quota.value.error : undefined;
-      const error = catalog.status === "rejected" ? "Account catalog unavailable"
+      const loginEnded = catalog.status === "rejected" && (catalog.reason as { details?: { code?: unknown } } | undefined)?.details?.code === "login_required";
+      const error = loginEnded ? "Login expired or was cleared; sign in again"
+        : catalog.status === "rejected" ? "Account catalog unavailable"
         : !snapshot ? (reason ? `${QUOTA_REFRESH_UNAVAILABLE}: ${reason}` : QUOTA_REFRESH_UNAVAILABLE) : null;
       const result: Observation = {
         quota: snapshot ? { ...snapshot, source: "probe" } : previous.quota,

@@ -4,7 +4,8 @@
 // - Codex file storage: `$CODEX_HOME/auth.json` with `tokens.access_token`
 //   and `tokens.account_id` (openai/codex codex-rs/login, see docs/sources.md).
 // - Claude Code file storage: `$CLAUDE_CONFIG_DIR/.credentials.json` with
-//   `claudeAiOauth.accessToken` and `claudeAiOauth.expiresAt` (epoch ms).
+//   `claudeAiOauth.accessToken`, `claudeAiOauth.expiresAt` and
+//   `claudeAiOauth.refreshTokenExpiresAt` (epoch ms).
 //   On macOS an explicit claude-keychain enrollment reads only the derived
 //   profile-specific entry (Claude Code 2.1.280 observation).
 //
@@ -21,6 +22,8 @@ import type { AccountConfig, Provider, UpstreamCredential } from "./types.ts";
 export type ReadResult =
   | { status: "ok"; credential: UpstreamCredential }
   | { status: "missing"; reason: string }
+  /** The store exists but its login was cleared, typically after the login expired. */
+  | { status: "signed_out"; reason: string; loginExpiresAt?: number }
   | { status: "unsupported"; reason: string }
   | { status: "malformed"; reason: string };
 
@@ -121,18 +124,38 @@ export async function readClaudeFile(home: string): Promise<ReadResult> {
   return claudeCredential(parsed.value);
 }
 
+/** Within this long of `loginExpiresAt`, owners are told to sign in again (Claude Code warns at three days too). */
+export const LOGIN_EXPIRY_WARNING_MS = 3 * 86_400_000;
+
+/** Why a stored login no longer works, for owner-facing surfaces. */
+export function loginEndedReason(loginExpiresAt: number | undefined, now = Date.now()): string {
+  return loginExpiresAt !== undefined && loginExpiresAt <= now
+    ? `login expired ${new Date(loginExpiresAt).toISOString().slice(0, 16).replace("T", " ")} UTC; sign in again`
+    : "the official CLI cleared this login; sign in again";
+}
+
+function positiveMs(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 function claudeCredential(value: unknown): ReadResult {
   const oauth = record(record(value)?.claudeAiOauth);
   if (!oauth) return { status: "unsupported", reason: "profile has no Claude subscription OAuth credential" };
   const accessToken = oauth.accessToken;
+  const loginExpiresAt = positiveMs(oauth.refreshTokenExpiresAt);
+  const refreshable = typeof oauth.refreshToken === "string" && oauth.refreshToken.length > 0;
+  // A refresh past the login's lifetime makes the CLI blank both tokens and
+  // zero expiresAt while keeping the account metadata (Claude Code 2.1.3xx).
+  if (accessToken === "" && !refreshable) {
+    return { status: "signed_out", reason: loginEndedReason(loginExpiresAt), ...(loginExpiresAt !== undefined ? { loginExpiresAt } : {}) };
+  }
   if (typeof accessToken !== "string" || !accessToken) {
     return { status: "malformed", reason: "Claude access token absent" };
   }
-  const expiresAt = typeof oauth.expiresAt === "number" && Number.isFinite(oauth.expiresAt) && oauth.expiresAt > 0 ? oauth.expiresAt : undefined;
   return {
     status: "ok",
-    credential: { accessToken, expiresAt, accountId: undefined, revision: revisionOf(accessToken),
-      refreshable: typeof oauth.refreshToken === "string" && oauth.refreshToken.length > 0 },
+    credential: { accessToken, expiresAt: positiveMs(oauth.expiresAt), accountId: undefined, revision: revisionOf(accessToken),
+      refreshable, ...(loginExpiresAt !== undefined ? { loginExpiresAt } : {}) },
   };
 }
 

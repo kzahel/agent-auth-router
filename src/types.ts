@@ -19,6 +19,12 @@ export interface UpstreamCredential {
   revision: string;
   /** Whether the store also holds a refresh credential (never its value). */
   refreshable?: boolean;
+  /**
+   * Epoch milliseconds after which the refresh credential stops renewing, so
+   * the login needs an interactive sign-in (Claude `refreshTokenExpiresAt`).
+   * Renewals do not move it.
+   */
+  loginExpiresAt?: number;
 }
 
 export type HelperConfig =

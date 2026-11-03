@@ -70,6 +70,14 @@ export function writeClaudeCredentials(home: string, accessToken: string, expire
   );
 }
 
+/** The store as the Claude CLI leaves it after a refresh past the login's lifetime. */
+export function writeClearedClaudeCredentials(home: string, refreshTokenExpiresAt: number): void {
+  writeFileSync(
+    join(home, ".credentials.json"),
+    JSON.stringify({ claudeAiOauth: { accessToken: "", refreshToken: "", expiresAt: 0, refreshTokenExpiresAt, scopes: ["user:inference"], subscriptionType: "team" } }),
+  );
+}
+
 export interface RecordedRequest {
   method: string | undefined;
   url: string | undefined;

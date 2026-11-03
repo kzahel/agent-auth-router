@@ -49,7 +49,7 @@ export async function inspectProfile(account: AccountConfig, read: CredentialRea
   const result = await read();
   return {
     home: account.home, credentialStore: account.credentialStore,
-    canEnroll: result.status === "ok" || result.status === "missing",
+    canEnroll: result.status === "ok" || result.status === "missing" || result.status === "signed_out",
     // An expired access token with a refresh token is renewed by the CLI on use.
     credentialStatus: result.status === "ok" && result.credential.expiresAt !== undefined && result.credential.expiresAt <= Date.now()
       ? result.credential.refreshable ? "renewable" : "expired" : result.status,

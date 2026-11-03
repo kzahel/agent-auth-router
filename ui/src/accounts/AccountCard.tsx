@@ -19,6 +19,18 @@ const SIGN_IN_LABELS: Record<string, string> = {
   unusable: "Stored credentials unreadable",
 };
 
+const LOGIN_WARNING_MS = 3 * 86_400_000;
+
+/** A login lasts a fixed time from sign-in; renewals do not extend it. */
+function loginNotice(loginExpiresAt: string | null | undefined, now = Date.now()): { text: string; urgent: boolean } | undefined {
+  const ends = loginExpiresAt ? Date.parse(loginExpiresAt) : NaN;
+  if (!Number.isFinite(ends)) return undefined;
+  const when = new Date(ends).toLocaleString();
+  if (ends <= now) return { text: `Login expired ${when} · sign in again`, urgent: true };
+  if (ends - now <= LOGIN_WARNING_MS) return { text: `Login expires ${when} · sign in again before then`, urgent: true };
+  return { text: `Login expires ${when}`, urgent: false };
+}
+
 /**
  * One enrolled account: its quota windows and actions. Sign in, Refresh
  * usage and Cancel sign-in stay in view; the rest sit under More.
@@ -35,6 +47,7 @@ export function AccountCard({ account: a, login, presentation, onEditNickname, o
   const [command, setCommand] = useState<string>();
   const [notes, setNotes] = useState<ReactNode[]>([]);
   const more = useRef<HTMLDetailsElement>(null);
+  const notice = a.retired ? undefined : loginNotice(a.loginExpiresAt);
 
   const signIn = async () => {
     if (native) {
@@ -48,7 +61,7 @@ export function AccountCard({ account: a, login, presentation, onEditNickname, o
   const checkSignIn = async () => {
     const s = await api<LoginStatus>("accounts/login-status", { id: a.id });
     setNotes(notes => [...notes,
-      <p key={notes.length} className={ui.hint}>{`${SIGN_IN_LABELS[s.signIn] ?? `Sign-in: ${s.signIn}`} · sign-in ${s.loginStatus}`}</p>,
+      <p key={notes.length} className={ui.hint}>{`${SIGN_IN_LABELS[s.signIn] ?? `Sign-in: ${s.signIn}`}${s.detail ? ` (${s.detail})` : ""} · sign-in ${s.loginStatus}`}</p>,
       ...(s.canOpenLogin ? [<ActionButton key={`${notes.length}-open`} action={() => api("accounts/open-login", { id: a.id })}>Open sign-in page</ActionButton>] : [])]);
   };
   const setEnabled = async () => {
@@ -75,6 +88,7 @@ export function AccountCard({ account: a, login, presentation, onEditNickname, o
       ))}
       {!a.windows.length && <p className={ui.hint}>Quota not checked</p>}
       {(a.error || a.blocked) && <p className={ui.unknown}>{a.blocked ?? a.error}</p>}
+      {notice && <p className={notice.urgent ? ui.unknown : ui.hint}>{notice.text}</p>}
       {login && <p className={ui.hint}>{`Sign-in: ${login.status}`}</p>}
       {command && (
         <div className={styles.loginCommand}>

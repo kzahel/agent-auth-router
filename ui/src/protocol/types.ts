@@ -37,6 +37,8 @@ export interface Account {
   quota?: { observedAt: string } | null;
   error?: string | null;
   blocked?: string | null;
+  /** When the saved login needs an interactive sign-in, as last read by the router. */
+  loginExpiresAt?: string | null;
 }
 
 export interface Pool {
@@ -188,6 +190,8 @@ export interface RemovalPreview {
 
 export interface LoginStatus {
   signIn: string;
+  detail?: string | null;
+  loginExpiresAt?: string | null;
   loginStatus: string;
   canOpenLogin?: boolean;
 }

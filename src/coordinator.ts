@@ -4,7 +4,7 @@
 // renewal only when a usable, changed credential is actually readable.
 
 import { errorText, log, sanitize } from "./log.ts";
-import type { CredentialReader, ReadResult } from "./credentials.ts";
+import { loginEndedReason, type CredentialReader, type ReadResult } from "./credentials.ts";
 import type { HelperContext, HelperOutcome, RenewalHelper } from "./helpers.ts";
 import type { AccountConfig, UpstreamCredential } from "./types.ts";
 
@@ -23,11 +23,15 @@ export interface AccountStatus {
   provider: string;
   state: AccountState;
   expiresAt: string | undefined;
+  /** When the stored login needs an interactive sign-in, as last read. */
+  loginExpiresAt: string | undefined;
   lastRenewedAt: string | undefined;
   lastError: string | undefined;
   retryAfter: string | undefined;
   helperRuns: number;
 }
+
+export const LOGIN_IN_PROGRESS = "Official CLI login in progress";
 
 export class CredentialUnavailable extends Error {
   readonly state: AccountState;
@@ -62,6 +66,7 @@ export class CredentialCoordinator {
 
   private state: AccountState = "not_enrolled";
   private expiresAt: number | undefined;
+  private loginExpiresAt: number | undefined;
   private lastRenewedAt: number | undefined;
   private lastError: string | undefined;
   /** Revision of the credential a failed renewal or rejection applied to. */
@@ -92,6 +97,7 @@ export class CredentialCoordinator {
       provider: this.account.provider,
       state: this.inflight ? "renewing" : this.state,
       expiresAt: iso(this.expiresAt),
+      loginExpiresAt: iso(this.loginExpiresAt),
       lastRenewedAt: iso(this.lastRenewedAt),
       lastError: this.lastError,
       retryAfter: this.retryAt > this.now() ? iso(this.retryAt) : undefined,
@@ -105,7 +111,7 @@ export class CredentialCoordinator {
    * window. Rereads the store on every call rather than caching tokens.
    */
   async credential(): Promise<UpstreamCredential> {
-    if (this.externalLogin) throw new CredentialUnavailable("login_required", "Official CLI login in progress", undefined);
+    if (this.externalLogin) throw new CredentialUnavailable("login_required", LOGIN_IN_PROGRESS, undefined);
     if (this.inflight) return this.inflight;
     const current = await this.readUsable();
     if (!this.isDue(current)) {
@@ -137,19 +143,33 @@ export class CredentialCoordinator {
    * never runs a helper. A recorded failure applies only while the same
    * credential is stored, so a new sign-in clears it immediately.
    */
-  async signIn(): Promise<{ state: SignInState; expiresAt: number | undefined; detail: string | undefined }> {
-    const result = await this.read();
-    if (this.inflight) return { state: "renewing", expiresAt: this.expiresAt, detail: undefined };
-    if (result.status === "missing") return { state: "signed_out", expiresAt: undefined, detail: result.reason };
-    if (result.status !== "ok") return { state: "unusable", expiresAt: undefined, detail: result.reason };
+  async signIn(): Promise<{ state: SignInState; expiresAt: number | undefined; loginExpiresAt: number | undefined; detail: string | undefined }> {
+    const result = this.observe(await this.read());
+    const loginExpiresAt = this.loginExpiresAt;
+    if (this.inflight) return { state: "renewing", expiresAt: this.expiresAt, loginExpiresAt, detail: undefined };
+    if (result.status === "missing") return { state: "signed_out", expiresAt: undefined, loginExpiresAt, detail: result.reason };
+    if (result.status === "signed_out") return { state: "login_required", expiresAt: undefined, loginExpiresAt, detail: loginEndedReason(result.loginExpiresAt, this.now()) };
+    if (result.status !== "ok") return { state: "unusable", expiresAt: undefined, loginExpiresAt, detail: result.reason };
     const { credential } = result;
-    if (this.externalLogin) return { state: "renewing", expiresAt: credential.expiresAt, detail: "official CLI login in progress" };
+    if (this.externalLogin) return { state: "renewing", expiresAt: credential.expiresAt, loginExpiresAt, detail: "official CLI login in progress" };
     if (credential.revision === this.failedRevision && (this.state === "login_required" || this.state === "unavailable")) {
-      return { state: this.state === "login_required" ? "login_required" : "renewal_failed", expiresAt: credential.expiresAt, detail: this.lastError };
+      return { state: this.state === "login_required" ? "login_required" : "renewal_failed", expiresAt: credential.expiresAt, loginExpiresAt, detail: this.lastError };
     }
-    if (!this.isExpired(credential)) return { state: "ready", expiresAt: credential.expiresAt, detail: undefined };
-    if (credential.refreshable && this.helper) return { state: "idle", expiresAt: credential.expiresAt, detail: "access token expired; the official CLI renews it on next use" };
-    return { state: "login_required", expiresAt: credential.expiresAt, detail: credential.refreshable ? "access token expired and no renewal helper is configured" : "access token expired and no refresh token is stored" };
+    if (!this.isExpired(credential)) return { state: "ready", expiresAt: credential.expiresAt, loginExpiresAt, detail: undefined };
+    if (this.loginLapsed(credential)) return { state: "login_required", expiresAt: credential.expiresAt, loginExpiresAt, detail: loginEndedReason(loginExpiresAt, this.now()) };
+    if (credential.refreshable && this.helper) return { state: "idle", expiresAt: credential.expiresAt, loginExpiresAt, detail: "access token expired; the official CLI renews it on next use" };
+    return { state: "login_required", expiresAt: credential.expiresAt, loginExpiresAt, detail: credential.refreshable ? "access token expired and no renewal helper is configured" : "access token expired and no refresh token is stored" };
+  }
+
+  /** Remembers the login deadline of every read, so status needs no store access. */
+  private observe(result: ReadResult): ReadResult {
+    if (result.status === "ok") this.loginExpiresAt = result.credential.loginExpiresAt;
+    else if (result.status === "signed_out") this.loginExpiresAt = result.loginExpiresAt;
+    return result;
+  }
+
+  private loginLapsed(credential: UpstreamCredential): boolean {
+    return credential.loginExpiresAt !== undefined && credential.loginExpiresAt <= this.now();
   }
 
   /** Records an upstream rejection that survived recovery. */
@@ -176,20 +196,25 @@ export class CredentialCoordinator {
   }
 
   private async readUsable(): Promise<UpstreamCredential> {
-    const result: ReadResult = await this.read();
+    const result = this.observe(await this.read());
     if (result.status === "ok") return result.credential;
     if (result.status === "missing") {
       this.state = "not_enrolled";
       this.lastError = result.reason;
       throw new CredentialUnavailable("not_enrolled", "account is not enrolled");
     }
+    if (result.status === "signed_out") {
+      this.state = "login_required";
+      this.lastError = loginEndedReason(result.loginExpiresAt, this.now());
+      throw new CredentialUnavailable("login_required", this.lastError);
+    }
     this.state = "unavailable";
     this.lastError = result.reason;
-    throw new CredentialUnavailable("unavailable", "account credential store is unusable");
+    throw new CredentialUnavailable("unavailable", `account credential store is unusable: ${result.reason}`);
   }
 
   private renew(current: UpstreamCredential, force: boolean): Promise<UpstreamCredential> {
-    if (this.externalLogin) return Promise.reject(new CredentialUnavailable("login_required", "Official CLI login in progress", undefined));
+    if (this.externalLogin) return Promise.reject(new CredentialUnavailable("login_required", LOGIN_IN_PROGRESS, undefined));
     this.inflight ??= this.renewOnce(current, force).finally(() => {
       this.inflight = undefined;
     });
@@ -229,7 +254,12 @@ export class CredentialCoordinator {
     this.helperRuns++;
     const started = this.now();
     log("helper.start", { account: this.account.id, provider: this.account.provider, forced: force });
-    const verified = await this.runAndVerify(previous);
+    let verified = await this.runAndVerify(previous);
+    // Past the login's lifetime a failed renewal is a lapsed login, whatever the CLI reported.
+    if (!verified.ok && this.loginLapsed(previous)) {
+      const loginEnded = loginEndedReason(previous.loginExpiresAt, this.now());
+      verified = { ok: false, state: "login_required", detail: loginEnded, loginEnded };
+    }
     const durationMs = this.now() - started;
     if (verified.ok) {
       this.failures = 0;
@@ -258,13 +288,13 @@ export class CredentialCoordinator {
       retryInMs: delay,
       detail: verified.detail,
     });
-    return fallback(state, state === "login_required" ? "interactive login required" : "credential renewal failed");
+    return fallback(state, state !== "login_required" ? "credential renewal failed" : verified.loginEnded ?? "interactive login required");
   }
 
   /** Runs the helper, then accepts only a changed, unexpired stored credential. */
   private async runAndVerify(
     previous: UpstreamCredential,
-  ): Promise<{ ok: true; credential: UpstreamCredential } | { ok: false; state: AccountState; detail: string; unchanged?: boolean }> {
+  ): Promise<{ ok: true; credential: UpstreamCredential } | { ok: false; state: AccountState; detail: string; unchanged?: boolean; loginEnded?: string }> {
     let outcome: HelperOutcome;
     try {
       outcome = await this.helper!({ ...this.helperContext, account: this.account });
@@ -278,6 +308,7 @@ export class CredentialCoordinator {
     try {
       after = await this.readUsable();
     } catch (error) {
+      if (error instanceof CredentialUnavailable && error.state === "login_required") return { ok: false, state: "login_required", detail: error.message, loginEnded: error.message };
       return { ok: false, state: "unavailable", detail: `store unreadable after helper: ${errorText(error)}` };
     }
     if (after.revision === previous.revision) {

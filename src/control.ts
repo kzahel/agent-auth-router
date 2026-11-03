@@ -17,7 +17,7 @@ import { accountHelper } from "./helpers.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
 import { fetchAccountQuotas, readAccountQuotas, type QuotaReadOptions } from "./quotas.ts";
 import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, policyVersion, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
-import type { CredentialCoordinator } from "./coordinator.ts";
+import { CredentialUnavailable, LOGIN_IN_PROGRESS, type CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
 import type { GatewayClientRecord, Provider } from "./types.ts";
 
@@ -36,9 +36,27 @@ interface SessionPin { key: string; poolId: string; accountId: string; createdAt
 interface ControlState { version: 3; routerId: string; integrations: Integration[]; bindings: Binding[]; pools?: Pool[]; cancellations?: { id: string; integrationId: string }[]; sessions?: SessionPin[] }
 export class ControlError extends Error {
   status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
+  /** Extra reply fields, such as a machine-readable code. */
+  details: Record<string, unknown> | undefined;
+  constructor(status: number, message: string, details?: Record<string, unknown>) { super(message); this.status = status; this.details = details; }
 }
 const reject = (status: number, message: string): never => { throw new ControlError(status, message); };
+
+// Integrations quote 4xx messages to people, and Yep Anywhere accepts only
+// letters and light punctuation, so the text is fixed; the deadline goes in a field.
+const CREDENTIAL_MESSAGES: Record<string, string> = {
+  login_required: "Account login expired or was cleared; sign in to this account again in AAR",
+  not_enrolled: "Account has no saved login; sign in to this account in AAR",
+  unavailable: "Account credentials are unreadable or renewal failed; check this account in AAR",
+};
+
+/** A credential failure as a specific, retry-free refusal naming what to fix. */
+export function credentialRefusal(coordinator: CredentialCoordinator, error: CredentialUnavailable): ControlError {
+  const status = coordinator.status();
+  const signingIn = error.message === LOGIN_IN_PROGRESS;
+  return new ControlError(409, signingIn ? "Account sign-in is in progress; retry when it finishes" : CREDENTIAL_MESSAGES[error.state] ?? CREDENTIAL_MESSAGES.unavailable!, {
+    code: signingIn ? "login_in_progress" : error.state, accountId: coordinator.account.id, loginExpiresAt: status.loginExpiresAt ?? null });
+}
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const PREPARE_MS = 5 * 60_000;
@@ -85,6 +103,8 @@ export class ControlRegistry {
   onChange?: () => void;
   /** Optional analysis log for binding decisions; never sees token hashes. */
   events?: EventLog;
+  /** When an account's login needs an interactive sign-in, as last read; owner wiring supplies it. */
+  loginExpiry: (id: string) => string | undefined = () => undefined;
   private clientCache: Map<string, { name: string; poolId?: string; bindingId?: string }> | undefined;
   private state: ControlState;
   private readonly path: string;
@@ -413,7 +433,7 @@ export class ControlRegistry {
     return this.store.loadAccounts().find((a) => a.id === id && a.enabled !== false) ?? reject(409, "account unavailable");
   }
   accounts(integration?: Integration) {
-    return this.store.loadAccounts().filter((a) => (!integration || this.visibleIds(integration).has(a.id))).map((a) => ({ id: a.id, ...(integration && a.nickname ? { displayName: a.nickname } : {}), ...(!integration ? { home: a.home, nickname: a.nickname ?? null, credentialStore: a.credentialStore ?? "file" } : {}), provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: accountHelper(a) ? "unverified" : "manual" }));
+    return this.store.loadAccounts().filter((a) => (!integration || this.visibleIds(integration).has(a.id))).map((a) => ({ id: a.id, ...(integration && a.nickname ? { displayName: a.nickname } : {}), ...(!integration ? { home: a.home, nickname: a.nickname ?? null, credentialStore: a.credentialStore ?? "file" } : {}), provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: accountHelper(a) ? "unverified" : "manual", loginExpiresAt: this.loginExpiry(a.id) ?? null }));
   }
   prepare(integration: Integration, body: Record<string, unknown>): object {
     const id = field(body, "id", UUID), accountId = field(body, "accountId"), model = field(body, "model"), tokenHash = field(body, "tokenHash", HASH);
@@ -532,7 +552,9 @@ export async function startControl(store: StateStore, origin: string, coordinato
     if (!job) {
       const generation = generations.get(id);
       const coordinator = coordinators.get(id) ?? reject(409, "account unavailable; enroll through owner administration");
-      job = (async () => { const release = await catalogSlot(); try { return await readCatalog(coordinator, store.loadConfig().upstreams?.[coordinator.account.provider]); } finally { release(); } })().then((models) => { if (generation !== generations.get(id)) reject(409, "account changed during catalog read"); catalogs.set(id, { models, until: Date.now() + 60_000 }); return models; }).finally(() => catalogJobs.delete(id));
+      job = (async () => { const release = await catalogSlot(); try { return await readCatalog(coordinator, store.loadConfig().upstreams?.[coordinator.account.provider]); }
+        catch (error) { throw error instanceof CredentialUnavailable ? credentialRefusal(coordinator, error) : error; }
+        finally { release(); } })().then((models) => { if (generation !== generations.get(id)) reject(409, "account changed during catalog read"); catalogs.set(id, { models, until: Date.now() + 60_000 }); return models; }).finally(() => catalogJobs.delete(id));
       catalogJobs.set(id, job);
     }
     return job;
@@ -629,7 +651,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
         return reply(200, registry.transition(integration, field(body, "id", UUID), path.slice(path.lastIndexOf("/") + 1) as "commit" | "cancel" | "inspect", evidence));
       }
       reject(404, "unknown control operation");
-    })().catch((error: unknown) => { if (!res.destroyed && !res.headersSent) reply(error instanceof ControlError ? error.status : 503, { error: error instanceof ControlError ? error.message : "control operation unavailable" }); });
+    })().catch((error: unknown) => { if (!res.destroyed && !res.headersSent) reply(error instanceof ControlError ? error.status : 503, error instanceof ControlError ? { ...error.details, error: error.message } : { error: "control operation unavailable" }); });
   });
   server.requestTimeout = 15_000; server.headersTimeout = 10_000; server.timeout = 20_000;
   await new Promise<void>((resolve, rejectPromise) => { server.once("error", rejectPromise); server.listen(socketPath, resolve); });
@@ -637,6 +659,9 @@ export async function startControl(store: StateStore, origin: string, coordinato
   const identity = lstatSync(socketPath);
   try {
     registry = new ControlRegistry(store);
+    registry.loginExpiry = id => coordinators.get(id)?.status().loginExpiresAt;
+    // One store read per account, so login deadlines show before first use.
+    void Promise.allSettled([...coordinators.values()].map(c => c.signIn())).then(() => hub?.notifyChange());
     if (events) registry.events = events;
     owner = new OwnerService(store, registry, coordinators, evidence, id => { generations.set(id, (generations.get(id) ?? 0) + 1); catalogs.delete(id); evidence.invalidate(id); hub?.notifyChange(); }, origin,
       { active: lifecycle.active, busy: (excludingCaller = true) => catalogJobs.size + quotaJobs.size + evidence.active() + Math.max(0, active + (hub?.inflight() ?? 0) - (excludingCaller ? 1 : 0)),

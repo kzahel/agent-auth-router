@@ -7,7 +7,7 @@ import { credentialReaderFor } from "../src/credentials.ts";
 import { accountHelper, CLAUDE_CLI_ARGS, directProviderProblem, helperFor, probeClaudeCli, type HelperOutcome, type RenewalHelper } from "../src/helpers.ts";
 import { helperEnv } from "../src/process.ts";
 import type { AccountConfig, HelperConfig } from "../src/types.ts";
-import { captureLogs, fakeJwt, FIXTURES, tempDir, writeClaudeCredentials, writeCodexAuth } from "./support.ts";
+import { captureLogs, fakeJwt, FIXTURES, tempDir, writeClaudeCredentials, writeClearedClaudeCredentials, writeCodexAuth } from "./support.ts";
 
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
@@ -118,6 +118,26 @@ describe("credential coordinator", () => {
     writeClaudeCredentials(account.home, "old", Date.now() - 1000);
     const coordinator = coordinatorFor(account);
     await assert.rejects(coordinator.credential(), (error: unknown) => error instanceof CredentialUnavailable && error.state === "login_required");
+  });
+
+  test("a renewal past the login's lifetime that clears the store reports the expired login", async () => {
+    captureLogs();
+    const account: AccountConfig = { id: "lapsed", provider: "claude", home: tempDir() };
+    const loginExpiresAt = Date.now() - 3_600_000;
+    writeFileSync(join(account.home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "SECRET-REFRESH", expiresAt: Date.now() - 1000, refreshTokenExpiresAt: loginExpiresAt } }));
+    const coordinator = coordinatorFor(account, async (): Promise<HelperOutcome> => {
+      writeClearedClaudeCredentials(account.home, loginExpiresAt);
+      return { outcome: "completed" };
+    });
+    const expired = (error: unknown) => error instanceof CredentialUnavailable && error.state === "login_required" && /^login expired .* UTC; sign in again$/.test(error.message);
+    await assert.rejects(coordinator.credential(), expired);
+    assert.equal(coordinator.status().state, "login_required");
+    assert.equal(coordinator.status().loginExpiresAt, new Date(loginExpiresAt).toISOString());
+    assert.match(coordinator.status().lastError ?? "", /^login expired/);
+    await assert.rejects(coordinator.credential(), expired);
+    const signIn = await coordinator.signIn();
+    assert.equal(signIn.state, "login_required");
+    assert.match(signIn.detail ?? "", /^login expired/);
   });
 
   test("unenrolled account reports not_enrolled", async () => {

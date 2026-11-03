@@ -3,7 +3,7 @@
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { credentialReaderFor } from "./credentials.ts";
+import { credentialReaderFor, LOGIN_EXPIRY_WARNING_MS } from "./credentials.ts";
 import type { AccountStatus, SignInState } from "./coordinator.ts";
 import { directProviderProblem } from "./helpers.ts";
 import { providerExecutable } from "./platform.ts";
@@ -198,7 +198,7 @@ export async function diagnose(store: StateStore, options: DiagnosticOptions = {
         if (runtime) state = await bounded(() => runtime.signIn(account));
         else {
           const read = await bounded(() => credentialReaderFor(account.provider, account.home, account.credentialStore)());
-          state = read.status === "missing" ? "signed_out" : read.status !== "ok" ? "unusable"
+          state = read.status === "missing" ? "signed_out" : read.status === "signed_out" ? "login_required" : read.status !== "ok" ? "unusable"
             : read.credential.expiresAt === undefined || read.credential.expiresAt > Date.now() ? "ready"
             : read.credential.refreshable && (account.helper?.kind ?? (account.provider === "claude" ? "claude-cli" : "none")) !== "none" ? "idle" : "login_required";
         }
@@ -218,6 +218,9 @@ export async function diagnose(store: StateStore, options: DiagnosticOptions = {
     } else add("quota-unknown", "unknown", subject, "No live quota observation is available in this router process.", "accounts");
     const status = runtime?.status(account.id);
     if (status?.lastRenewedAt) add("renewal-observed", "ok", subject, "Credential replacement was verified in this router process; this history resets at restart.", undefined, status.lastRenewedAt);
+    const loginEnds = status?.loginExpiresAt ? Date.parse(status.loginExpiresAt) : NaN;
+    if (loginEnds <= Date.now()) add("login-expired", "error", subject, "The saved login has expired; sign in again.", "accounts");
+    else if (loginEnds - Date.now() <= LOGIN_EXPIRY_WARNING_MS) add("login-expiring", "warning", subject, "The saved login expires within three days; sign in again before then.", "accounts");
   }
 
   // Read the registry without constructing ControlRegistry (which migrates and
