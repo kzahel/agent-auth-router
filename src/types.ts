@@ -75,6 +75,15 @@ export interface AccountConfig {
   /** Absent selects the provider default (Claude: claude-cli; Codex: none). */
   helper?: HelperConfig;
   renewBeforeSeconds?: number;
+  /** Owner-set share of each window that pools may use; absent means all of it. */
+  usageCeiling?: UsageCeiling;
+}
+
+/** Whole percentages from 1 to 99 of the account's total use, per window class. */
+export interface UsageCeiling {
+  /** Windows shorter than a week, such as Claude's five hours. */
+  shortPercent?: number;
+  weeklyPercent?: number;
 }
 
 export interface GatewayClientRecord {

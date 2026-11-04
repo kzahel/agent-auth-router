@@ -1,7 +1,7 @@
 // Pool observations are metadata only. Reading an overview never runs a provider.
 import type { CatalogModel, CliModel } from "./contract.ts";
 import { normalizeResponseHeaderQuotas, type QuotaRead, type QuotaSnapshot, type QuotaWindow, type ResponseHeaders } from "./quotas.ts";
-import type { Provider } from "./types.ts";
+import type { Provider, UsageCeiling } from "./types.ts";
 
 export const POOL_POLICIES = ["manual", "round-robin", "most-remaining", "weekly-pace"] as const;
 export type PoolPolicy = typeof POOL_POLICIES[number];
@@ -90,6 +90,29 @@ function applies(provider: Provider, window: QuotaWindow, model: string): boolea
 }
 export function applicableWindows(provider: Provider, observation: Observation, model: string): QuotaWindow[] {
   return observation.quota?.windows.filter(w => applies(provider, w, model)) ?? [];
+}
+const ceilingPercent = (ceiling: UsageCeiling | undefined, w: QuotaWindow) =>
+  w.windowMinutes === null ? undefined : w.windowMinutes < WEEKLY_MINUTES ? ceiling?.shortPercent : ceiling?.weeklyPercent;
+/**
+ * The observation as pool selection sees it under an owner's ceiling:
+ * each capped window is rescaled so the ceiling reads as 100% used. Exhaustion,
+ * the short-window reserve and weekly pace then apply to the allowed share.
+ * The ceiling bounds the account's total use, the owner's own included.
+ */
+export function withCeiling(observation: Observation, ceiling: UsageCeiling | undefined): Observation {
+  if (!observation.quota || (!ceiling?.shortPercent && !ceiling?.weeklyPercent)) return observation;
+  return { ...observation, quota: { ...observation.quota, windows: observation.quota.windows.map(w => {
+    const percent = ceilingPercent(ceiling, w);
+    const used = w.usedPercent ?? (w.remainingPercent === null ? null : 100 - w.remainingPercent);
+    if (!percent || used === null) return w;
+    const scaled = Math.min(100, tenth(used * 100 / percent));
+    return { ...w, usedPercent: scaled, remainingPercent: tenth(100 - scaled) };
+  }) } };
+}
+/** Short-window burn in points of the allowed share, to match `withCeiling`. */
+export function burnWithCeiling(burn: Readonly<Record<string, number>>, ceiling: UsageCeiling | undefined): Record<string, number> {
+  const percent = ceiling?.shortPercent;
+  return Object.fromEntries(Object.entries(burn).map(([bucket, rate]) => [bucket, percent ? rate * 100 / percent : rate]));
 }
 /** `burn` holds recent use per short-window bucket in points per hour (PoolEvidence.burn). */
 export function selectionEvidence(provider: Provider, observation: Observation, model: string, reservations: number, now = Date.now(), burn: Readonly<Record<string, number>> = {}): SelectionEvidence {

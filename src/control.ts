@@ -16,7 +16,7 @@ import { hashGatewayToken } from "./gateway-auth.ts";
 import { accountHelper } from "./helpers.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
 import { fetchAccountQuotas, readAccountQuotas, type QuotaReadOptions } from "./quotas.ts";
-import { PoolEvidence, eligibility, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, policyVersion, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
+import { PoolEvidence, burnWithCeiling, eligibility, withCeiling, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, policyVersion, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
 import { CredentialUnavailable, LOGIN_IN_PROGRESS, type CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
 import type { GatewayClientRecord, Provider } from "./types.ts";
@@ -220,12 +220,18 @@ export class ControlRegistry {
     const pool = body.poolId === undefined ? undefined : (integration ? this.pool(integration, field(body, "poolId", UUID)) : this.pools().find(p => p.id === field(body, "poolId", UUID)) ?? reject(404, "pool not found"));
     const policy = body.policy ?? pool?.policy;
     if (policy !== undefined && !isPoolPolicy(policy)) reject(400, "invalid pool policy");
-    const decisions = pool?.accountIds.map(accountId => { const a = accounts.find(a => a.id === accountId); return { accountId,
-      reason: eligibility(pool.provider, !!a?.enabled, model, evidence.get(accountId), policy !== "manual", now),
-      ...(model ? { evidence: selectionEvidence(pool.provider, evidence.get(accountId), model, this.reservations(pool.id, accountId, now), now, evidence.burn(accountId)) } : {}) }; });
+    const configs = this.store.loadAccounts();
+    const decisions = pool?.accountIds.map(accountId => { const a = accounts.find(a => a.id === accountId), { observation, burn } = this.capped(accountId, evidence, configs); return { accountId,
+      reason: eligibility(pool.provider, !!a?.enabled, model, observation, policy !== "manual", now),
+      ...(model ? { evidence: selectionEvidence(pool.provider, observation, model, this.reservations(pool.id, accountId, now), now, burn) } : {}) }; });
     return { supportedPolicies: POOL_POLICIES, policies: POLICY_LIST, admissionRefresh: true, canManagePools: !integration, observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
       pools: this.pools(integration).map(p => this.poolMetadata(p, integration)), accounts,
       ...(pool ? { selection: { poolId: pool.id, policy, model: model ?? null, decisions } } : {}) };
+  }
+  /** An account's evidence under its owner's usage ceiling, as selection sees it. */
+  private capped(accountId: string, evidence: PoolEvidence, accounts = this.store.loadAccounts()) {
+    const ceiling = accounts.find(a => a.id === accountId)?.usageCeiling;
+    return { observation: withCeiling(evidence.get(accountId), ceiling), burn: burnWithCeiling(evidence.burn(accountId), ceiling) };
   }
   /** Startup reservations: prepared bindings and gateway sessions pinned within
    * the prepare window, so sessions that start together spread across members. */
@@ -237,10 +243,10 @@ export class ControlRegistry {
     const accounts = this.store.loadAccounts();
     // Every member's decision is kept for the event log, not only the winner's.
     const decisions = pool.accountIds.map(accountId => {
-      const a = accounts.find(a => a.id === accountId), o = evidence.get(accountId);
+      const a = accounts.find(a => a.id === accountId), { observation: o, burn } = this.capped(accountId, evidence, accounts);
       const reason = eligibility(pool.provider, !!a && a.enabled !== false, model, o, policy !== "manual", now);
       return { accountId, eligibility: reason !== "eligible" ? reason : !supportsThinking(o.models.find(m => m.id === model), thinking) ? "thinking-unsupported" : !supportsServiceTier(o.models.find(m => m.id === model), serviceTier) ? "service-tier-unsupported" : "eligible",
-        evidence: selectionEvidence(pool.provider, o, model, this.reservations(pool.id, accountId, now), now, evidence.burn(accountId)) };
+        evidence: selectionEvidence(pool.provider, o, model, this.reservations(pool.id, accountId, now), now, burn) };
     });
     const eligible = decisions.filter(d => d.eligibility === "eligible").map(d => d.accountId);
     const cursor = pool.cursor ? pool.accountIds.indexOf(pool.cursor) : -1;
@@ -433,7 +439,7 @@ export class ControlRegistry {
     return this.store.loadAccounts().find((a) => a.id === id && a.enabled !== false) ?? reject(409, "account unavailable");
   }
   accounts(integration?: Integration) {
-    return this.store.loadAccounts().filter((a) => (!integration || this.visibleIds(integration).has(a.id))).map((a) => ({ id: a.id, ...(integration && a.nickname ? { displayName: a.nickname } : {}), ...(!integration ? { home: a.home, nickname: a.nickname ?? null, credentialStore: a.credentialStore ?? "file" } : {}), provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: accountHelper(a) ? "unverified" : "manual", loginExpiresAt: this.loginExpiry(a.id) ?? null }));
+    return this.store.loadAccounts().filter((a) => (!integration || this.visibleIds(integration).has(a.id))).map((a) => ({ id: a.id, ...(integration && a.nickname ? { displayName: a.nickname } : {}), ...(!integration ? { home: a.home, nickname: a.nickname ?? null, credentialStore: a.credentialStore ?? "file", usageCeiling: a.usageCeiling ?? null } : {}), provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: accountHelper(a) ? "unverified" : "manual", loginExpiresAt: this.loginExpiry(a.id) ?? null }));
   }
   prepare(integration: Integration, body: Record<string, unknown>): object {
     const id = field(body, "id", UUID), accountId = field(body, "accountId"), model = field(body, "model"), tokenHash = field(body, "tokenHash", HASH);
@@ -476,7 +482,7 @@ export class ControlRegistry {
     if (action !== "cancel") { if (!this.poolAllows(b)) reject(409, "pinned account or pool grant removed"); this.account(integration, b.accountId); }
     if (action === "inspect") return this.metadata(b);
     if (action === "commit" && (b.state === "cancelled" || (b.state === "prepared" && b.createdAt + PREPARE_MS <= Date.now()))) reject(409, "allocation cancelled or expired");
-    if (action === "commit" && b.state === "prepared" && b.poolId && (!evidence || eligibility(b.provider, true, b.model, evidence.get(b.accountId), b.policy !== "manual") !== "eligible" || !supportsThinking(evidence.get(b.accountId).models.find(m => m.id === b.model), b.thinking) || !supportsServiceTier(evidence.get(b.accountId).models.find(m => m.id === b.model), b.serviceTier))) reject(409, "pool evidence changed; refresh and start a new session");
+    if (action === "commit" && b.state === "prepared" && b.poolId && (!evidence || eligibility(b.provider, true, b.model, this.capped(b.accountId, evidence).observation, b.policy !== "manual") !== "eligible" || !supportsThinking(evidence.get(b.accountId).models.find(m => m.id === b.model), b.thinking) || !supportsServiceTier(evidence.get(b.accountId).models.find(m => m.id === b.model), b.serviceTier))) reject(409, "pool evidence changed; refresh and start a new session");
     const state = action === "commit" ? "committed" : "cancelled";
     this.change((next) => {
       next.bindings.find((v) => v.id === id)!.state = state;

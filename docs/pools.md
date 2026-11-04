@@ -145,6 +145,34 @@ the samples. The projection assumes recent use continues until the reset, so
 it is pessimistic early in a window and right after a burst; a session that
 starts on an account still stays pinned to it.
 
+## Usage ceilings (2026-11-04)
+
+An account lent to a pool by someone who also uses it can carry a ceiling: the
+share of each window the router may take it to, so pools never exhaust the
+owner's subscription. `accounts/set-usage-ceiling` takes `id`, `revision` and
+optional `shortPercent` (windows shorter than a week, such as Claude's five
+hours) and `weeklyPercent`, each a whole number from 1 to 99. An omitted class
+is uncapped, and neither removes the ceiling. It is stored on the account, not
+the pool membership, because the quota belongs to the account; the owner
+overview returns it as `usageCeiling`, or null.
+
+The ceiling bounds the account's total observed use, the owner's own included:
+the router cannot tell its traffic from the owner's. At 50%, an owner who has
+used half the week themselves leaves nothing for pools.
+
+Selection rescales each capped window before every eligibility and ranking
+check: used becomes `used × 100 / ceiling`, at most 100. Every policy then
+applies to the allowed share. At the ceiling the account is `exhausted`, for
+Manual too; the 30% short-window reserve is 30% of the allowed share; short-
+window burn is scaled the same way; and Weekly pace paces the account toward
+its ceiling by reset rather than toward 100%. The overview's account `windows`
+keep the observed percentages; selection evidence and binding events carry the
+rescaled ones. Edits take effect on the next selection.
+
+Limit: like exhaustion, the ceiling only affects selection. A session already
+pinned to the account keeps it past the ceiling, so in-flight sessions can
+overshoot it.
+
 ## Default policy and per-session choice (2026-10-11)
 
 A pool's policy is its **default**. Any consumer granted the pool may override

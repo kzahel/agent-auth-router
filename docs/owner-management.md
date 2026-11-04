@@ -21,7 +21,7 @@ metadata only in the management window. The web dashboard uses its own
 browser sessions and never receives the owner key. A separate embedded sign-in window can
 receive ephemeral CLI output through its own native PTY bridge. Owner POST
 operations include `overview`, `providers`, `diagnostics`,
-`profiles/discover`, `profiles/inspect`, `accounts/add`, `accounts/set-nickname`, `accounts/set-enabled`, `accounts/retire` (legacy), `accounts/removal-preview`, `accounts/remove`, `accounts/login`,
+`profiles/discover`, `profiles/inspect`, `accounts/add`, `accounts/set-nickname`, `accounts/set-usage-ceiling`, `accounts/set-enabled`, `accounts/retire` (legacy), `accounts/removal-preview`, `accounts/remove`, `accounts/login`,
 `accounts/login-status`, `accounts/open-login`, `accounts/cancel-login`,
 `accounts/refresh`, `accounts/renew`, `pools/save`, `pools/remove`,
 `grants/save`, `integrations/revoke`, `clients/add`, `clients/revoke`, `stop`,

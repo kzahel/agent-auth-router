@@ -21,7 +21,7 @@ import { credentialReaderFor } from "./credentials.ts";
 import { accountHelper } from "./helpers.ts";
 import type { PoolEvidence } from "./pools.ts";
 import { accountEnv, helperEnv, startBounded, type BoundedProcess } from "./process.ts";
-import { ensurePrivateDir, type StateStore, validateAccounts } from "./state.ts";
+import { ensurePrivateDir, isUsageCeiling, type StateStore, validateAccounts } from "./state.ts";
 import { isProvider, type AccountConfig, type GatewayClientRecord } from "./types.ts";
 
 export function ownerToken(store: StateStore, create = false): string {
@@ -377,6 +377,16 @@ export class OwnerService {
       if (nickname) next.nickname = nickname; else delete next.nickname;
       this.store.saveAccounts(this.store.loadAccounts().map(a => a.id === next.id ? next : a));
       return { updated: true };
+    }
+    if (operation === "accounts/set-usage-ceiling") {
+      const account = this.account(body);
+      if (body.revision !== (account.revision ?? 0)) throw new ControlError(409, "account changed; reload before editing");
+      const ceiling = Object.fromEntries(["shortPercent", "weeklyPercent"].filter(k => body[k] !== undefined && body[k] !== null).map(k => [k, body[k]]));
+      if (Object.keys(ceiling).length && !isUsageCeiling(ceiling)) throw new ControlError(400, "usage ceiling percentages must be whole numbers from 1 to 99");
+      const next = { ...account, revision: (account.revision ?? 0) + 1 };
+      if (Object.keys(ceiling).length) next.usageCeiling = ceiling; else delete next.usageCeiling;
+      this.store.saveAccounts(this.store.loadAccounts().map(a => a.id === next.id ? next : a));
+      return { updated: true, usageCeiling: next.usageCeiling ?? null };
     }
     if (operation === "profiles/discover" || operation === "profiles/inspect") {
       if (!isProvider(body.provider)) throw new ControlError(400, "invalid provider");

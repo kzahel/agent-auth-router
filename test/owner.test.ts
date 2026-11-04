@@ -446,6 +446,15 @@ test("owner profile metadata, optional nicknames and expiry preserve identity an
   const current = store.loadAccounts()[0]!;
   assert.equal(current.id, original.id); assert.equal(current.home, original.home);
   assert.equal(current.nickname, undefined);
+  assert.equal((await ownerRequest(store, "overview")).accounts[0].usageCeiling, null);
+  assert.deepEqual(await ownerRequest(store, "accounts/set-usage-ceiling", { id: added.id, revision: 3, shortPercent: 50, weeklyPercent: 50 }), { updated: true, usageCeiling: { shortPercent: 50, weeklyPercent: 50 } });
+  await assert.rejects(ownerRequest(store, "accounts/set-usage-ceiling", { id: added.id, revision: 3, weeklyPercent: 40 }), /changed/);
+  for (const bad of [0, 100, 50.5, "50"]) await assert.rejects(ownerRequest(store, "accounts/set-usage-ceiling", { id: added.id, revision: 4, weeklyPercent: bad }), /whole numbers from 1 to 99/);
+  assert.deepEqual((await ownerRequest(store, "overview")).accounts[0].usageCeiling, { shortPercent: 50, weeklyPercent: 50 });
+  await ownerRequest(store, "accounts/set-usage-ceiling", { id: added.id, revision: 4, weeklyPercent: 40 });
+  assert.deepEqual(store.loadAccounts()[0]!.usageCeiling, { weeklyPercent: 40 }, "an omitted class is uncapped");
+  await ownerRequest(store, "accounts/set-usage-ceiling", { id: added.id, revision: 5 });
+  assert.equal(store.loadAccounts()[0]!.usageCeiling, undefined, "no percentages removes the ceiling");
   await assert.rejects(ownerRequest(store, "accounts/add", { provider: "claude", home: "relative" }), /absolute/);
   const f = fixture();
   f.registry.grant({ id: f.first.id, revision: 1, poolIds: [f.pool.id] });

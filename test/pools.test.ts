@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ControlRegistry } from "../src/control.ts";
 import { hashGatewayToken, generateGatewayToken } from "../src/gateway-auth.ts";
-import { PoolEvidence, eligibility, rankCandidates, selectionEvidence, selectionReason, PACE_BAND_POINTS, QUOTA_FRESH_MS, SHORT_RESERVE_PERCENT, type Observation } from "../src/pools.ts";
+import { PoolEvidence, burnWithCeiling, eligibility, rankCandidates, selectionEvidence, selectionReason, withCeiling, PACE_BAND_POINTS, QUOTA_FRESH_MS, SHORT_RESERVE_PERCENT, type Observation } from "../src/pools.ts";
+import type { UsageCeiling } from "../src/types.ts";
 import type { QuotaWindow } from "../src/quotas.ts";
 import { StateStore } from "../src/state.ts";
 import { tempDir } from "./support.ts";
@@ -269,6 +270,45 @@ test("Weekly pace treats near-equal pace as even and reserves projected short-wi
   assert.deepEqual(rank({ burning, steady }, {}, { burning: { five_hour: 70 } }), ["steady", "burning"], "projected under the reserve backs off despite headroom now");
   assert.deepEqual(rank({ burning, worse: burning }, {}, { burning: { five_hour: 70 }, worse: { five_hour: 80 } }), ["burning", "worse"], "all under: most projected headroom");
   assert.match(selectionReason("weekly-pace", evidence(steady, 0, { five_hour: 5 })), /short-window headroom 50%, 45% projected at reset at 5 points\/hour/);
+});
+
+test("a usage ceiling makes its share of each window the whole of it for selection", () => {
+  const now = Date.now(), { short, weekly, observed, evidence, rank } = paceFixture(now);
+  const half = { shortPercent: 50, weeklyPercent: 50 };
+  const capped = (windows: QuotaWindow[], ceiling: UsageCeiling = half) => withCeiling(observed(windows), ceiling).quota!.windows;
+  assert.deepEqual(capped([short(80), weekly(30, 84 * HOUR)]).map(w => [w.usedPercent, w.remainingPercent]), [[40, 60], [60, 40]], "used is rescaled to the allowed share");
+  assert.deepEqual(capped([short(40), weekly(70, 84 * HOUR)]).map(w => w.remainingPercent), [0, 0], "past the ceiling reads as exhausted, not negative");
+  assert.deepEqual(capped([short(80), weekly(30, 84 * HOUR)], { weeklyPercent: 50 }).map(w => w.usedPercent), [20, 60], "an omitted class is uncapped");
+  assert.deepEqual(capped([weekly(0, null)]).map(w => [w.usedPercent, w.resetsAt]), [[0, null]], "an unstarted weekly timer stays unstarted");
+  const plain = observed([short(80)]);
+  assert.equal(withCeiling(plain, undefined), plain);
+
+  assert.equal(eligibility("claude", true, "claude-sonnet-fixture", observed(capped([short(55), weekly(49, 84 * HOUR)])), true, now), "eligible");
+  assert.equal(eligibility("claude", true, "claude-sonnet-fixture", observed(capped([short(55), weekly(50, 84 * HOUR)])), true, now), "exhausted", "weekly ceiling reached");
+  assert.equal(eligibility("claude", true, "claude-sonnet-fixture", observed(capped([short(50), weekly(10, 84 * HOUR)])), true, now), "exhausted", "short ceiling reached");
+  assert.equal(eligibility("claude", true, "claude-sonnet-fixture", observed(capped([short(50), weekly(10, 84 * HOUR)])), false, now), "exhausted", "Manual cannot exceed it either");
+
+  // Half the week has elapsed: an uncapped account at 30% is 20 behind pace,
+  // one capped at 50% is 10 ahead of its own allowance.
+  assert.equal(evidence(capped([short(90), weekly(30, 84 * HOUR)])).weeklyPacePercent, -10);
+  assert.deepEqual(rank({ contributed: capped([short(90), weekly(30, 84 * HOUR)]), owned: [short(90), weekly(30, 84 * HOUR)] }), ["owned", "contributed"]);
+  assert.deepEqual(rank({ contributed: capped([short(90), weekly(10, 84 * HOUR)]), owned: [short(90), weekly(45, 84 * HOUR)] }), ["contributed", "owned"], "behind its own pace still wins");
+  assert.deepEqual(rank({ contributed: capped([short(80), weekly(10, 84 * HOUR)]), owned: [short(80), weekly(10, 84 * HOUR)] }), ["owned", "contributed"], "the short reserve is a share of the allowed 50%");
+  assert.deepEqual(burnWithCeiling({ five_hour: 10 }, half), { five_hour: 20 });
+  assert.deepEqual(burnWithCeiling({ five_hour: 10 }, { weeklyPercent: 50 }), { five_hour: 10 });
+});
+
+test("pool admission applies each member's usage ceiling", async () => {
+  const f = fixture();
+  f.store.saveAccounts(f.store.loadAccounts().map(a => a.id === "a" ? { ...a, usageCeiling: { shortPercent: 25 } } : a));
+  await Promise.all([f.evidence.refresh("a"), f.evidence.refresh("b")]);
+  const overview = f.registry.overview(f.integration, f.evidence, { poolId: f.pool.id, model: "claude-sonnet-fixture" }) as any;
+  assert.deepEqual(overview.selection.decisions.map((d: any) => [d.accountId, d.reason]), [["a", "exhausted"], ["b", "eligible"]], "25% used reaches a 25% ceiling");
+  assert.equal(overview.accounts.find((a: any) => a.id === "a").windows[0].usedPercent, 25, "the overview keeps observed percentages");
+  assert.equal((f.registry.preparePool(f.integration, f.allocation(), f.evidence) as any).accountId, "b");
+  f.store.saveAccounts(f.store.loadAccounts().map(a => a.id === "a" ? { ...a, usageCeiling: { shortPercent: 60 } } : a));
+  assert.equal((f.registry.preparePool(f.integration, f.allocation(), f.evidence) as any).accountId, "a", "a raised ceiling takes effect without a restart");
+  assert.throws(() => f.store.saveAccounts(f.store.loadAccounts().map(a => a.id === "a" ? { ...a, usageCeiling: { shortPercent: 100 } } : a)), /usage ceiling/);
 });
 
 test("burn rate comes from recent short-window observations and restarts with each window", () => {

@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { COMPRESSION_CHOICES, type RequestCompression } from "./compression.ts";
 import { parseUpstreamOrigin } from "./providers.ts";
-import { isProvider, type AccountConfig, type GatewayClientRecord, type RouterConfig } from "./types.ts";
+import { isProvider, type AccountConfig, type GatewayClientRecord, type RouterConfig, type UsageCeiling } from "./types.ts";
 
 export function defaultStateDir(env: NodeJS.ProcessEnv = process.env): string {
   return resolve(env.AAR_STATE_DIR ?? join(homedir(), ".agent-auth-router"));
@@ -190,12 +190,20 @@ export function validateConfig(config: RouterConfig): RouterConfig {
 
 const ACCOUNT_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
+const ceilingPercent = (value: unknown) => value === undefined || (Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 99);
+export function isUsageCeiling(value: unknown): value is UsageCeiling {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const { shortPercent, weeklyPercent, ...rest } = value as Record<string, unknown>;
+  return !Object.keys(rest).length && ceilingPercent(shortPercent) && ceilingPercent(weeklyPercent) && (shortPercent !== undefined || weeklyPercent !== undefined);
+}
+
 export function validateAccounts(accounts: AccountConfig[]): AccountConfig[] {
   const seen = new Set<string>();
   const homes = new Set<string>();
   for (const account of accounts) {
     if (!ACCOUNT_ID.test(account.id)) throw new Error(`invalid account id ${JSON.stringify(account.id)}`);
     if (account.nickname !== undefined && (typeof account.nickname !== "string" || account.nickname.length > 80 || /[\x00-\x1f\x7f]/.test(account.nickname))) throw new Error("invalid account nickname");
+    if (account.usageCeiling !== undefined && !isUsageCeiling(account.usageCeiling)) throw new Error(`account ${account.id} has an invalid usage ceiling`);
     if (seen.has(account.id)) throw new Error(`duplicate account id ${account.id}`);
     if (!isProvider(account.provider)) throw new Error(`account ${account.id} has unknown provider`);
     if (typeof account.home !== "string" || !account.home.startsWith("/")) {
