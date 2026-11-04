@@ -581,7 +581,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     void (async () => {
       if (req.headers.origin || req.headers.host !== "localhost") reject(403, "invalid control origin");
       const path = req.url;
-      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1", "service-tiers-v1"], supportedPolicies: POOL_POLICIES, policies: POLICY_LIST });
+      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1", "service-tiers-v1", "gateway-token-header-v1"], supportedPolicies: POOL_POLICIES, policies: POLICY_LIST });
       const isOwner = path?.startsWith("/v1/owner/");
       if (isOwner) owner.authenticate(req.headers.authorization);
       let integration = path === "/v1/pair" || isOwner ? undefined : registry.authenticate(req.headers.authorization);

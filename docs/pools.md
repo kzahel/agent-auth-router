@@ -54,7 +54,9 @@ Grants, pool revision, enabled state and eligibility are rechecked before admiss
 Existing committed pins bypass selection and quota refresh on resume/restart.
 
 `/v1/info` advertises `most-remaining-v1`, `admission-refresh-v1`,
-`quota-inference-headers-v1`, `catalog-cli-models-v1` and `supportedPolicies`.
+`quota-inference-headers-v1`, `catalog-cli-models-v1`,
+`gateway-token-header-v1` (the gateway token may arrive in
+`x-aar-gateway-token`; see the README) and `supportedPolicies`.
 Overview adds `supportedPolicies`, `admissionRefresh`, an optional
 `quota.source` of `probe` or `inference` per account, optional Claude
 `cliModels`/`cliModelsAt`, and per-candidate `evidence` (headroom, limiting

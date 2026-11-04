@@ -235,7 +235,9 @@ test("session discovery reads only granted provider catalogs, coalesces and proj
   const catalog = await request(socket, "/v1/catalog", token, { accountId: "fixture" });
   assert.equal(catalog.value.cliModels.length, 4);
   assert.equal(catalog.value.cliModelsAt, results[0]!.value.accounts[0].cliModelsAt);
-  assert.ok((await request(socket, "/v1/info")).value.capabilities.includes("catalog-cli-models-v1"));
+  const { capabilities } = (await request(socket, "/v1/info")).value;
+  assert.ok(capabilities.includes("catalog-cli-models-v1"));
+  assert.ok(capabilities.includes("gateway-token-header-v1"));
   await request(socket, "/v1/selection", token, { provider: "codex" });
   assert.equal(reads, 1);
   assert.equal((await request(socket, "/v1/selection", token, { provider: "unknown" })).status, 400);
