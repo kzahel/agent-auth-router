@@ -28,6 +28,18 @@ describe("gateway tokens", () => {
     assert.equal(presentedToken({ authorization: "Basic abc" }), undefined);
   });
 
+  test("the dedicated header is the only credential considered when present", () => {
+    const signIn = "Bearer sk-ant-oat01-client-sign-in";
+    assert.equal(presentedToken({ "x-aar-gateway-token": token, authorization: signIn }), token);
+    assert.equal(presentedToken({ "x-aar-gateway-token": ` ${token} `, "x-api-key": "other" }), token);
+    assert.equal(presentedToken({ "x-aar-gateway-token": "", authorization: `Bearer ${token}` }), undefined);
+    assert.equal(presentedToken({ "x-aar-gateway-token": [token, token], authorization: `Bearer ${token}` }), undefined);
+    const ok = authorize(clients, { "x-aar-gateway-token": token, authorization: signIn }, "claude");
+    assert.equal(ok.ok && ok.accountId, "claude-a");
+    const malformed = authorize(clients, { "x-aar-gateway-token": "aar_short", authorization: `Bearer ${token}` }, "claude");
+    assert.equal(!malformed.ok && malformed.status, 401);
+  });
+
   test("missing, unknown, revoked and unauthorized-provider tokens are denied", () => {
     assert.deepEqual(authorize(clients, {}, "claude"), { ok: false, status: 401, message: "missing or malformed gateway token" });
     assert.equal(authorize(clients, { authorization: `Bearer ${generateGatewayToken()}` }, "claude").ok, false);

@@ -4,6 +4,15 @@ import type { GatewayClientRecord, Provider } from "./types.ts";
 
 const TOKEN_PREFIX = "aar_";
 
+/**
+ * A dedicated header for the gateway token, for clients whose own
+ * `Authorization` must stay their provider sign-in. Claude Code with its
+ * claude.ai login still sends that login's bearer token; when this header is
+ * present it is the only credential considered, and the client's own
+ * credentials are dropped like any other client authentication.
+ */
+export const GATEWAY_TOKEN_HEADER = "x-aar-gateway-token";
+
 export function generateGatewayToken(): string {
   return TOKEN_PREFIX + randomBytes(32).toString("base64url");
 }
@@ -16,9 +25,11 @@ export function hashGatewayToken(token: string): string {
  * Extracts the presented gateway token. Claude Code sends either
  * `Authorization: Bearer` (ANTHROPIC_AUTH_TOKEN) or `x-api-key`
  * (ANTHROPIC_API_KEY); Codex sends `Authorization: Bearer` from its
- * provider `env_key`.
+ * provider `env_key`. A `GATEWAY_TOKEN_HEADER` takes precedence over both.
  */
 export function presentedToken(headers: IncomingHttpHeaders): string | undefined {
+  const dedicated = headers[GATEWAY_TOKEN_HEADER];
+  if (dedicated !== undefined) return typeof dedicated === "string" && dedicated.trim() ? dedicated.trim() : undefined;
   const authorization = headers.authorization;
   if (typeof authorization === "string") {
     const match = /^Bearer\s+(\S+)\s*$/i.exec(authorization);

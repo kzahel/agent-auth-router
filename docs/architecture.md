@@ -79,7 +79,10 @@ unmanaged external CLI writer; dedicated profiles are part of this boundary.
 
 ## Inference handling
 
-1. Validate the gateway token and its permissions before upstream work.
+1. Validate the gateway token and its permissions before upstream work. An
+   `x-aar-gateway-token` header, when present, is the only credential
+   considered, so a client's own provider sign-in in `Authorization` never
+   authenticates it.
 2. Select the explicit account, or use an authorized conversation binding.
 3. Obtain its current access credential, invoking the helper when necessary.
 4. Remove client authentication headers and attach only the selected upstream

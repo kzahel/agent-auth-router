@@ -175,6 +175,39 @@ describe("credential substitution", () => {
     assert.ok(!JSON.stringify(seen.headers).includes(h.token));
   });
 
+  test("claude: a client's own sign-in beside the dedicated header is neither used nor forwarded nor logged", async () => {
+    const logs = captureLogs();
+    const upstream = await mockUpstream((_req, res) => res.end('{"ok":true}'));
+    const h = await harness(upstream);
+    const signIn = "sk-ant-oat01-CLIENT-SIGN-IN";
+    const response = await post(`${h.origin}/claude/v1/messages?beta=true`, {
+      "x-aar-gateway-token": h.token,
+      authorization: `Bearer ${signIn}`,
+      "anthropic-beta": "oauth-2025-04-20",
+    });
+    assert.equal(response.status, 200);
+    const seen = upstream.requests[0]!;
+    assert.equal(seen.headers.authorization, `Bearer ${CLAUDE_ACCESS}`);
+    assert.equal(seen.headers["x-aar-gateway-token"], undefined);
+    assert.equal(seen.headers["anthropic-beta"], "oauth-2025-04-20");
+    const forwarded = JSON.stringify(seen.headers);
+    for (const secret of [signIn, h.token]) assert.ok(!forwarded.includes(secret), secret);
+    await waitFor(() => logs.some((line) => line.includes('"event":"request"')));
+    for (const secret of [signIn, h.token]) assert.ok(!logs.join("\n").includes(secret), secret);
+  });
+
+  test("claude: a client sign-in without a valid gateway token is refused before the upstream", async () => {
+    captureLogs();
+    const upstream = await mockUpstream((_req, res) => res.end("{}"));
+    const h = await harness(upstream);
+    const signIn = { authorization: "Bearer sk-ant-oat01-CLIENT-SIGN-IN" };
+    assert.equal((await post(`${h.origin}/claude/v1/messages`, signIn)).status, 401);
+    assert.equal((await post(`${h.origin}/claude/v1/messages`, { ...signIn, "x-aar-gateway-token": generateGatewayToken() })).status, 401);
+    h.clients[0]!.revokedAt = "2026-11-04T00:00:00Z";
+    assert.equal((await post(`${h.origin}/claude/v1/messages`, { ...signIn, "x-aar-gateway-token": h.token })).status, 401);
+    assert.equal(upstream.requests.length, 0);
+  });
+
   test("codex: responses route maps to the ChatGPT backend path with account id", async () => {
     captureLogs();
     const upstream = await mockUpstream((_req, res) => res.end("{}"));

@@ -104,6 +104,14 @@ Clients point at `http://127.0.0.1:8417/claude` or
 (override with `--state` or `AAR_STATE_DIR`) and is shared with the desktop
 app.
 
+A client can instead present its gateway token in an `x-aar-gateway-token`
+header. Claude Code then keeps its own claude.ai login, which it needs to load
+claude.ai connectors such as Claude Docs: set
+`ANTHROPIC_CUSTOM_HEADERS='x-aar-gateway-token: <token>'` and leave
+`ANTHROPIC_AUTH_TOKEN` unset. Inference still runs on the router's account;
+the login's own `Authorization` is ignored and never forwarded, and connector
+traffic goes from Claude Code to Anthropic without passing through the router.
+
 `aar serve` also serves the desktop app's UI as a web dashboard on
 `http://127.0.0.1:8418` (`--dashboard-port`, `AAR_DASHBOARD_PORT`,
 `--no-dashboard`). Open the printed link once to sign that browser in; the
