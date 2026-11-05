@@ -20,6 +20,12 @@ export interface QuotaSnapshot {
   observedAt: string;
   status: "ok" | "unavailable";
   windows: QuotaWindow[];
+  /** Account-verified permission for included Codex usage, independent of rounded display percentages. */
+  ordinaryUsageAllowed?: boolean;
+  ordinaryUsageObservedAt?: string;
+  planType?: string;
+  /** Included allowance relative to the standard USD 200 plan; absent for unverified plans. */
+  planCapacityUnits?: number;
   /** "probe" is an explicit or admission read; "inference" is passively
    * observed from a proxied response's rate-limit headers. Absent means probe. */
   source?: "probe" | "inference";
@@ -95,6 +101,18 @@ function iso(value: unknown, seconds = false): string | null {
 // Header fractions scaled to percent carry float noise (0.57 * 100 is
 // 56.99999999999999); a tenth of a percent is ample for display and ranking.
 const tenth = (value: number) => Math.round(value * 10) / 10;
+
+// November 2026 included Codex allowances: Plus 1x, Pro 100 10x, Pro 200 20x.
+export function codexPlanCapacityUnits(plan: unknown): number | undefined {
+  return plan === "plus" ? 0.05 : plan === "prolite" ? 0.5 : plan === "pro" ? 1 : undefined;
+}
+
+/** Remaining allowance in USD 200 plan units, never inferred from permission alone. */
+export function remainingCapacityUnits(quota: QuotaSnapshot, w: QuotaWindow): number | null {
+  if (quota.planCapacityUnits === undefined || w.remainingPercent === null ||
+    (quota.ordinaryUsageAllowed === true && w.remainingPercent === 0)) return null;
+  return Math.round(quota.planCapacityUnits * w.remainingPercent * 100) / 10_000;
+}
 
 function window(bucket: string, minutes: number | null, used: unknown, resetsAt: string | null): QuotaWindow {
   const raw = nonnegative(used);
@@ -259,7 +277,16 @@ export async function readAccountQuotas(account: AccountConfig, workDir: string,
     if ("error" in response) return read(unavailable(response.error, response.retryAfterSeconds));
     const windows = account.provider === "codex" ? normalizeCodexQuotas(response.value) : normalizeClaudeQuotas(response.value);
     if (!windows.length) return read(unavailable("provider returned no recognized quota windows"));
-    return read({ ...base, observedAt: new Date().toISOString(), status: "ok", windows });
+    const codex = account.provider === "codex" ? object(response.value) : undefined;
+    const general = object(object(codex?.rateLimitsByLimitId)?.codex) ?? object(codex?.rateLimits);
+    const planType = general?.planType;
+    const planCapacityUnits = codexPlanCapacityUnits(planType);
+    return read({
+      ...base, observedAt: new Date().toISOString(), status: "ok", windows,
+      ...(typeof codex?.ordinaryUsageAllowed === "boolean" ? { ordinaryUsageAllowed: codex.ordinaryUsageAllowed, ordinaryUsageObservedAt: new Date().toISOString() } : {}),
+      ...(planCapacityUnits !== undefined ? { planCapacityUnits } : {}),
+      ...(typeof planType === "string" && /^[a-z_]{1,64}$/.test(planType) ? { planType } : {})
+    });
   } catch {
     // Process/network/credential errors may contain private data. No raw errors.
     return read(unavailable("quota read failed"));

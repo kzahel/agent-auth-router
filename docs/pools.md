@@ -72,6 +72,37 @@ catalog discovery can still require an initial explicit refresh. Whole-pool
 refresh controls, weekly reset and task-aware Auto remain follow-ups in
 [routing policies](routing-policies.md).
 
+## Codex permission and comparable allowance (2026-11-05)
+
+Codex app-server's `account/rateLimits/read` separates account-verified
+`ordinaryUsageAllowed` from display percentages. A fresh explicit `true`
+permits ordinary included usage even when a general window displays 100% used;
+`false` refuses it even with apparent headroom. Unknown permissions retain the
+older conservative percentage checks. Owner ceilings, unknown model scopes,
+catalog validation and observed authentication/rate-limit blocks still apply.
+Passive response headers retain the last permission and its original timestamp;
+they cannot extend its two-minute validity. An expired permission triggers an
+admission refresh. This contract is source-inspected in Codex 0.166.0 and covered
+through a synthetic app-server; it is not a live-account qualification.
+
+Quota metadata includes `planType`, `planCapacityUnits` and
+`ordinaryUsageObservedAt` when available. Overview windows add nullable
+`remainingCapacityUnits`, measured against the provider's standard USD 200 plan.
+Codex Plus / Pro 100 / Pro 200 use 0.05 / 0.5 / 1 units of included allowance,
+not 0.1 / 0.5 / 1 from subscription price. These November 2026 defaults combine
+the [previous 5x/20x allowance table](https://learn.chatgpt.com/docs/pricing?translationFallback=fr-FR)
+with the [Pro allowance update](https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers):
+Pro 100 doubled, the higher Pro 200 allowance remained, and Plus did not change.
+The CLI plan identifiers are `plus`, `prolite`, and `pro`. Other plans and
+Claude remain unknown rather than being counted as full USD 200 subscriptions.
+A reported zero remaining with explicit permission to continue also has an
+unknown remaining amount. Permission alone cannot quantify headroom.
+
+The units are per reported window, never summed across overlapping windows.
+Selection policies still compare account-relative percentages as documented
+above; normalization is display metadata. Pool refusal messages now include
+the candidate eligibility reasons so integrations can explain the failure.
+
 ## Weekly pace (2026-10-11)
 
 Capability `weekly-pace-v1`, policy `weekly-pace`. It aims to use weekly

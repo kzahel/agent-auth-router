@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { hashGatewayToken } from "./gateway-auth.ts";
 import { accountHelper } from "./helpers.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
-import { fetchAccountQuotas, readAccountQuotas, type QuotaReadOptions } from "./quotas.ts";
+import { fetchAccountQuotas, readAccountQuotas, remainingCapacityUnits, type QuotaReadOptions } from "./quotas.ts";
 import { PoolEvidence, burnWithCeiling, eligibility, withCeiling, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, policyVersion, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
 import { CredentialUnavailable, LOGIN_IN_PROGRESS, type CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
@@ -216,7 +216,9 @@ export class ControlRegistry {
     const now = Date.now(), model = body.model === undefined ? undefined : field(body, "model");
     const accounts = this.accounts(integration).map(a => { const o = evidence.get(a.id); return { ...a, ...o,
       freshness: !o.quota ? "unknown" : o.error || now - Date.parse(o.quota.observedAt) >= QUOTA_FRESH_MS ? "stale" : "fresh",
-      windows: o.quota?.windows.map(w => ({ ...w, scope: windowScope(a.provider, w.bucket) })) ?? [] }; });
+      windows: o.quota?.windows.map(w => ({ ...w, scope: windowScope(a.provider, w.bucket), remainingCapacityUnits: remainingCapacityUnits(o.quota!, w) })) ?? []
+    };
+    });
     const pool = body.poolId === undefined ? undefined : (integration ? this.pool(integration, field(body, "poolId", UUID)) : this.pools().find(p => p.id === field(body, "poolId", UUID)) ?? reject(404, "pool not found"));
     const policy = body.policy ?? pool?.policy;
     if (policy !== undefined && !isPoolPolicy(policy)) reject(400, "invalid pool policy");
@@ -312,9 +314,12 @@ export class ControlRegistry {
       return reject(409, message);
     };
     let chosen = manual;
-    if (chosen && !eligible.includes(chosen)) refuse("manual account is not eligible; refresh pool overview");
+    if (chosen && !eligible.includes(chosen)) refuse(`manual account is not eligible: ${decisions.find(d => d.accountId === chosen)?.eligibility.replaceAll("-", " ") ?? "account unavailable"}; check Pools and usage`);
     if (!chosen) chosen = ranked[0];
-    if (!chosen) refuse("no eligible pool account; refresh usage or choose Manual");
+    if (!chosen) {
+      const reasons = [...new Set(decisions.map(d => d.eligibility.replaceAll("-", " ")))];
+      refuse(`no eligible pool account: ${reasons.slice(0, 3).join(", ")}; check Pools and usage`);
+    }
     if (this.state.bindings.length >= 100_000) reject(409, "binding limit reached");
     const selectedEvidence = decisions.find(d => d.accountId === chosen)!.evidence;
     const binding: Binding = { id, integrationId: integration.id, accountId: chosen!, provider: pool.provider, model, tokenHash,

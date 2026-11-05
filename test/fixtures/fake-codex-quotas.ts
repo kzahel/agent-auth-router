@@ -19,6 +19,19 @@ rl.on("line", (line) => {
     if (mode === "malformed") { process.stdout.write("SECRET-invalid-json\n"); return; }
     if (mode === "error") { process.stderr.write("SECRET-stderr"); send({ id: request.id, error: { message: "SECRET-provider-error" } }); return; }
     if (mode === "server-request") { send({ id: "server", method: "account/chatgptAuthTokens/refresh", params: { token: "SECRET-server" } }); return; }
+    if (mode === "allowed-at-limit" || mode === "denied-with-headroom") {
+      send({
+        id: request.id, result: {
+          ordinaryUsageAllowed: mode === "allowed-at-limit", rateLimits: {
+            limitId: "codex", planType: "pro", primary: {
+              usedPercent: mode === "allowed-at-limit" ? 100 : 10,
+              windowDurationMins: 10080, resetsAt: Math.floor(Date.now() / 1000) + 86400
+            },
+          }
+        }
+      });
+      return;
+    }
     send({ id: request.id, result: { email: "SECRET-email", token: "SECRET-token", rateLimitsByLimitId: {
       codex: { primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1791000000 },
         secondary: { usedPercent: 0, windowDurationMins: 10080, resetsAt: null } },

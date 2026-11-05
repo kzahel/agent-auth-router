@@ -69,6 +69,7 @@ export interface Observation {
   error: string | null;
   blocked?: "auth-unavailable" | "cooldown";
   cooldownUntil?: string;
+  usageCeilingBuckets?: string[];
 }
 export interface QuotaObserved { source: "inference" | "probe"; windows: QuotaWindow[]; requestId?: string | undefined }
 export const emptyObservation = (): Observation => ({ quota: null, models: [], catalogAt: null, attemptedAt: null, error: null });
@@ -101,13 +102,23 @@ const ceilingPercent = (ceiling: UsageCeiling | undefined, w: QuotaWindow) =>
  */
 export function withCeiling(observation: Observation, ceiling: UsageCeiling | undefined): Observation {
   if (!observation.quota || (!ceiling?.shortPercent && !ceiling?.weeklyPercent)) return observation;
-  return { ...observation, quota: { ...observation.quota, windows: observation.quota.windows.map(w => {
-    const percent = ceilingPercent(ceiling, w);
-    const used = w.usedPercent ?? (w.remainingPercent === null ? null : 100 - w.remainingPercent);
-    if (!percent || used === null) return w;
-    const scaled = Math.min(100, tenth(used * 100 / percent));
-    return { ...w, usedPercent: scaled, remainingPercent: tenth(100 - scaled) };
-  }) } };
+  return {
+    ...observation,
+    usageCeilingBuckets: observation.quota.windows.filter(w => {
+      const percent = ceilingPercent(ceiling, w);
+      const used = w.usedPercent ?? (w.remainingPercent === null ? null : 100 - w.remainingPercent);
+      return percent !== undefined && used !== null && used >= percent;
+    }).map(w => w.bucket),
+    quota: {
+      ...observation.quota, windows: observation.quota.windows.map(w => {
+        const percent = ceilingPercent(ceiling, w);
+        const used = w.usedPercent ?? (w.remainingPercent === null ? null : 100 - w.remainingPercent);
+        if (!percent || used === null) return w;
+        const scaled = Math.min(100, tenth(used * 100 / percent));
+        return { ...w, usedPercent: scaled, remainingPercent: tenth(100 - scaled) };
+      })
+    }
+  };
 }
 /** Short-window burn in points of the allowed share, to match `withCeiling`. */
 export function burnWithCeiling(burn: Readonly<Record<string, number>>, ceiling: UsageCeiling | undefined): Record<string, number> {
@@ -180,15 +191,24 @@ export function eligibility(provider: Provider, enabled: boolean, model: string 
   if (!observation.models.some((m) => m.id === model)) return "model-unavailable";
   const quota = observation.quota;
   const windows = applicableWindows(provider, observation, model);
+  if (windows.some(w => observation.usageCeilingBuckets?.includes(w.bucket))) return "exhausted";
+  const permission = provider === "codex" ? quota?.ordinaryUsageAllowed : undefined;
+  if (permission === false) return "exhausted";
+  if (permission === true) {
+    if (observation.error) return "quota-unknown";
+    const at = Date.parse(quota!.ordinaryUsageObservedAt ?? quota!.observedAt);
+    if (!Number.isFinite(at) || now - at >= QUOTA_FRESH_MS || now < at) return "quota-stale";
+  }
   // Known rejection is retained even when freshness expires; only new evidence clears it.
-  if (windows.some((w) => w.remainingPercent !== null && w.remainingPercent <= 0)) return "exhausted";
+  if (windows.some((w) => w.remainingPercent !== null && w.remainingPercent <= 0 &&
+    !(permission === true && windowScope(provider, w.bucket) === "all"))) return "exhausted";
   if (!automatic) return "eligible";
   if (!quota || observation.error || !windows.length || windows.some((w) => w.remainingPercent === null)) return "quota-unknown";
   if (now - Date.parse(quota.observedAt) >= QUOTA_FRESH_MS || now < Date.parse(quota.observedAt)) return "quota-stale";
   if (windows.some((w) => windowScope(provider, w.bucket) === "unknown" || (provider === "claude" && ["opus", "sonnet"].includes(windowScope(provider, w.bucket)) && !/^claude-(opus|sonnet|haiku)-/.test(model)))) return "scope-unknown";
   // A window with no recorded use and no reset time has not started yet; its
   // full headroom is observed, not inferred from a passed reset.
-  if (windows.some((w) => w.resetsAt ? Date.parse(w.resetsAt) <= now : w.usedPercent !== 0)) return "reset-unverified";
+  if (permission !== true && windows.some((w) => w.resetsAt ? Date.parse(w.resetsAt) <= now : w.usedPercent !== 0)) return "reset-unverified";
   return "eligible";
 }
 
@@ -252,7 +272,7 @@ export class PoolEvidence {
     const { blocked: _blocked, cooldownUntil: _cooldownUntil, ...previous } = this.get(id);
     const carried = previous.quota?.windows.filter(w => !windows.some(n => n.bucket === w.bucket)) ?? [];
     this.values.set(id, { ...previous,
-      quota: { accountId: id, provider, observedAt: new Date(now).toISOString(), status: "ok", windows: [...windows, ...carried], source: "inference" },
+      quota: { ...previous.quota, accountId: id, provider, observedAt: new Date(now).toISOString(), status: "ok", windows: [...windows, ...carried], source: "inference" },
       error: quotaRefreshFailed(previous.error) ? null : previous.error });
     this.sample(id, windows, now);
     this.onQuota?.(id, this.get(id), { source: "inference", windows, requestId });
@@ -268,7 +288,7 @@ export class PoolEvidence {
     return !!o.blocked || !!o.error || !o.catalogAt || now - Date.parse(o.catalogAt) >= CATALOG_FRESH_MS || now < Date.parse(o.catalogAt) ||
       !o.quota || now - Date.parse(o.quota.observedAt) >= QUOTA_FRESH_MS || now < Date.parse(o.quota.observedAt) ||
       applicableWindows(provider, o, model).some(w => !!w.resetsAt && Date.parse(w.resetsAt) <= now) ||
-      ["quota-unknown", "reset-unverified"].includes(reason);
+      ["quota-unknown", "quota-stale", "reset-unverified"].includes(reason);
   }
   /** Demand-owned queue: at most four account reads globally, no retry loop/polling.
    * Aborting a waiter leaves shared reads to finish within their provider deadlines. */
