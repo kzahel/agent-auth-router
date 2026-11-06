@@ -26,6 +26,15 @@ describe("quota cell", () => {
     const old = cell({ windows: [window], at: Date.now() - 20 * 60_000, checking: false, error: undefined });
     expect(within(old).getByText("as of 20 min ago")).toBeTruthy();
   });
+
+  it("fades a fresh reading whose window has since reset, without a warning level", () => {
+    const passed = cell({ windows: [{ ...window, usedPercent: 100, resetsAt: new Date(Date.now() - 60_000).toISOString() }], at: Date.now(), checking: false, error: undefined });
+    const meter = passed.querySelector("[data-bucket]")!;
+    expect(within(passed).getByText("reset since read")).toBeTruthy();
+    expect(meter.getAttribute("data-level")).toBe("");
+    expect(meter.getAttribute("title")).toMatch(/· reset .+, not reread since$/);
+    expect(within(cell({ windows: [{ ...window, resetsAt: new Date(Date.now() + 60_000).toISOString() }], at: Date.now(), checking: false, error: undefined })).queryByText("reset since read")).toBeNull();
+  });
 });
 
 describe("requests table", () => {

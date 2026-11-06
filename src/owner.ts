@@ -721,11 +721,11 @@ export class OwnerService {
     throw new ControlError(404, "unknown owner operation");
   }
   /**
-   * Dashboard demand: probes enabled accounts whose quota is unknown or was
-   * last observed or attempted DISPLAY_QUOTA_STALE_MS ago, one at a time. A
-   * failed attempt counts, so an open dashboard costs at most one probe per
-   * account per interval. Routing never waits on this; admission refreshes
-   * what it needs itself.
+   * Dashboard demand: probes enabled accounts whose quota is unknown, was
+   * last observed or attempted DISPLAY_QUOTA_STALE_MS ago, or has a window
+   * that reset since then, one at a time. A failed attempt counts, so an open
+   * dashboard costs at most one probe per account per interval or reset.
+   * Routing never waits on this; admission refreshes what it needs itself.
    */
   refreshStaleQuota(settled: () => void): void {
     if (this.displayRefresh) return;
@@ -744,9 +744,13 @@ export class OwnerService {
   /** The account a dashboard-driven probe is reading now, if any. */
   quotaChecking(): string[] { return this.displayChecking ? [this.displayChecking] : []; }
   private quotaStale(id: string): boolean {
-    const o = this.evidence.get(id);
+    const o = this.evidence.get(id), now = Date.now();
     const last = Math.max(Date.parse(o.quota?.observedAt ?? "") || 0, Date.parse(o.attemptedAt ?? "") || 0);
-    return Date.now() - last >= DISPLAY_QUOTA_STALE_MS;
+    // A reset after the last read or attempt makes the reading wrong, not just old.
+    return now - last >= DISPLAY_QUOTA_STALE_MS || !!o.quota?.windows.some(w => {
+      const reset = Date.parse(w.resetsAt ?? "");
+      return reset <= now && reset > last;
+    });
   }
   /** Requests, usage and catalog reads, renewals, sign-ins and terminal logins. */
   private busy(excludingCaller: boolean): boolean {

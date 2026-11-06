@@ -217,6 +217,37 @@ test("an open dashboard probes unknown or stale quota once per interval, one acc
   assert.deepEqual(probes.slice(2).sort(), ["failing", "fresh", "unknown"]);
 });
 
+test("an open dashboard rereads a fresh quota once a window resets after it was read", async () => {
+  const store = new StateStore(tempDir("owner-"));
+  store.init();
+  store.saveAccounts([{ id: "a", provider: "claude", home: join(store.profilesDir, "a") }]);
+  const reset = Math.floor(Date.now() / 1000) + 60;
+  const probes: string[] = [];
+  const evidence = new PoolEvidence(async () => [], async (accountId) => {
+    probes.push(accountId);
+    // The provider may still report the passed reset; that must not reprobe.
+    return { accountId, provider: "claude" as const, status: "ok" as const, observedAt: new Date(Date.now()).toISOString(),
+      windows: [{ bucket: "five_hour", windowMinutes: 300, usedPercent: 100, remainingPercent: 0, resetsAt: new Date(reset * 1000).toISOString() }] };
+  });
+  evidence.observe("a", "claude", { "anthropic-ratelimit-unified-5h-utilization": "1", "anthropic-ratelimit-unified-5h-reset": String(reset) });
+  const owner = new OwnerService(store, new ControlRegistry(store), new Map(), evidence, () => {}, "http://127.0.0.1",
+    { active: () => 0, stop: () => {} });
+  const wait = async () => { while (owner.quotaChecking().length) await new Promise((resolve) => setTimeout(resolve, 2)); };
+  owner.refreshStaleQuota(() => {});
+  await wait();
+  assert.deepEqual(probes, [], "a fresh reading before its reset is kept");
+  const realNow = Date.now;
+  Date.now = () => realNow() + 61_000;
+  try {
+    owner.refreshStaleQuota(() => {});
+    await wait();
+    assert.deepEqual(probes, ["a"], "the reset passed after the reading");
+    owner.refreshStaleQuota(() => {});
+    await wait();
+    assert.deepEqual(probes, ["a"], "a reading taken after the reset is not reread for it");
+  } finally { Date.now = realNow; }
+});
+
 test("private owner enrollment and grants take effect without restart or re-pair; busy stop refuses", {
   skip: process.platform === "win32",
 }, async (t) => {

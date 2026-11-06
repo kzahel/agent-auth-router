@@ -69,7 +69,8 @@ Official CLI helpers -- login / refresh --> isolated credential stores
   on demand from each provider's usage endpoint, and recorded from the
   rate-limit headers of every proxied response. Nothing polls in the
   background; while a dashboard is open, the router reads each enabled
-  account whose quota is unknown or more than 15 minutes old, one at a time.
+  account whose quota is unknown, more than 15 minutes old, or past a window
+  reset, one at a time.
   The last reading is kept across restarts for display, not for routing.
 - Token usage is read passively from each relayed response (numbers and the
   model name only), so the dashboard can graph traffic without changing the

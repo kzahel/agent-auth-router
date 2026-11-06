@@ -99,19 +99,21 @@ function Sparkline({ values, max, scheme }: { values: (number | null)[]; max: nu
 // One meter per window: label, used bar with a tick where usage would be on
 // an even pace, and the rounded percent. A reading kept from before a
 // restart, or not refreshed lately, is faded with its age until a probe
-// lands; the age sits over the bars so the row never changes height.
+// lands; the age sits over the bars so the row never changes height. A
+// reading whose window has since reset is faded the same way: its use is gone.
 export function QuotaCell({ windows, at, checking, error }: { windows: QuotaWindow[] | undefined; at: number; checking: boolean; error: string | undefined }) {
   const shown = (windows ?? []).filter(w => w.usedPercent != null);
   if (!shown.length) {
     return <td title={!checking && error ? error : ""}><div className={styles.quotaEmpty}>{checking ? "checking…" : error ? "check failed" : "not checked"}</div></td>;
   }
-  const stale = !(Date.now() - at < QUOTA_STALE_MS);
-  const note = checking ? "checking…" : stale ? (Number.isFinite(at) ? `as of ${ago(at)}` : "age unknown") : "";
+  const now = Date.now();
+  const stale = !(now - at < QUOTA_STALE_MS), reset = shown.some(w => resetPassed(w, now));
+  const note = checking ? "checking…" : reset ? "reset since read" : stale ? (Number.isFinite(at) ? `as of ${ago(at)}` : "age unknown") : "";
   return (
     <td>
       <div className={styles.quotaCell}>
-        <div className={`${styles.meters} ${stale ? styles.stale : ""}`}>
-          {shown.map(w => <Meter key={w.bucket} window={w} />)}
+        <div className={`${styles.meters} ${stale || reset ? styles.stale : ""}`}>
+          {shown.map(w => <Meter key={w.bucket} window={w} now={now} />)}
         </div>
         <span className={styles.meterNote} hidden={!note}>{note}</span>
       </div>
@@ -119,14 +121,17 @@ export function QuotaCell({ windows, at, checking, error }: { windows: QuotaWind
   );
 }
 
-function Meter({ window: w }: { window: QuotaWindow }) {
-  const used = Math.min(100, w.usedPercent!);
-  const pace = elapsedPercent(w);
+const resetPassed = (w: QuotaWindow, now: number) => !!w.resetsAt && Date.parse(w.resetsAt) <= now;
+
+function Meter({ window: w, now }: { window: QuotaWindow; now: number }) {
+  const used = Math.min(100, w.usedPercent!), passed = resetPassed(w, now);
+  const pace = elapsedPercent(w, now);
+  const when = w.resetsAt && new Date(w.resetsAt).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
   const title = [`${w.bucket}: ${tenth(used)}% used, ${tenth(Math.max(0, 100 - used))}% left`,
-    w.resetsAt ? `resets ${new Date(w.resetsAt).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "reset time unknown",
+    passed ? `reset ${when}, not reread since` : when ? `resets ${when}` : "reset time unknown",
     ...(pace === null ? [] : [`mark: ${Math.round(pace)}% of the window has passed`])].join(" · ");
   return (
-    <div className={styles.meter} data-bucket={w.bucket} data-level={used >= 95 ? "critical" : used >= 80 ? "warning" : ""} title={title}>
+    <div className={styles.meter} data-bucket={w.bucket} data-level={passed ? "" : used >= 95 ? "critical" : used >= 80 ? "warning" : ""} title={title}>
       <span className={styles.meterLabel}>{quotaLabel(w)}</span>
       <span className={styles.meterTrack}>
         <span className={styles.meterFill} style={{ width: `${used}%` }} />
