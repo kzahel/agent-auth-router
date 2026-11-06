@@ -182,7 +182,8 @@
           "usedPercent": 20,
           "remainingPercent": 80,
           "resetsAt": "<timestamp>",
-          "scope": "all"
+          "scope": "all",
+          "remainingCapacityUnits": null
         },
         {
           "bucket": "seven_day",
@@ -190,7 +191,8 @@
           "usedPercent": 45,
           "remainingPercent": 55,
           "resetsAt": "<timestamp>",
-          "scope": "all"
+          "scope": "all",
+          "remainingCapacityUnits": null
         }
       ]
     }
