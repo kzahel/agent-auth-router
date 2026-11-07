@@ -180,14 +180,48 @@ request's quiet period.
   state measured 94 to 113 ms. A client request arriving then fails to connect;
   whether a given CLI retries that is not verified here.
 - A router started before this change answers "unknown owner operation"; the
-  command then asks for one manual restart. If the code on disk no longer
-  loads, the new child exits and so does `serve`; `aar restart` itself runs
-  the current code, so a module that fails to load fails the command first.
+  command then asks for one manual restart. A new child that exits before it
+  is serving ends `serve`, so the router checks the code first (see below).
 
 `test/cli.test.ts` covers a restart held by an open stream and then completed
 through the parent, identity and state carrying over, cancel, argument
 validation, refusal under `desktop-serve`, Ctrl-C, and a killed parent taking
 its router down.
+
+### Immediate restart and the load check (2026-11-07)
+
+Several sessions streaming back to back can keep the router from ever being
+idle for a full second, so an idle restart may never happen. On 2026-11-07
+that led to stopping the whole tmux session by hand to update a router. A
+mistake in the start command then left it down, along with the agent whose
+inference went through it.
+
+`aar restart --now` (owner `restart` with `now: true`) restarts at once:
+
+- Open proxied requests and usage reads are cut off, as `shutdown` does;
+  clients retry. The router exits with status 75 like an idle restart, so the
+  parent starts the current code in place. If closing takes more than ten
+  seconds, it exits anyway.
+- It is refused with 409 while a renewal, sign-in or terminal login runs:
+  stopping an official CLI mid-renewal could lose a rotated credential.
+- `now` cannot be combined with `quietSeconds`. It withdraws a pending idle
+  restart, even if the load check then refuses it. The reply carries the old router's `pid`. The command then polls
+  `overview`, which now includes `pid`, until a different process answers. It
+  prints `restarted: router process OLD replaced by NEW`, or fails after 60
+  seconds. A router older than `--now` would schedule an idle restart
+  instead; the command reports that.
+
+**Load check.** Before either kind of restart closes anything, the router runs
+`<cli> --help` with the current code in a fresh process. That loads the whole
+static import graph, so syntax errors and missing exports fail it. An
+immediate restart is then refused with the error and its location. An idle
+restart notes `restart abandoned` and keeps serving. It does not catch
+failures later in startup, such as a port conflict or unreadable state.
+
+`test/cli.test.ts` covers an open stream cut off by `--now`, the new process
+and unchanged router ID, argument validation, and refusal of both kinds of
+restart against a temporary copy of `src/` with a syntax error, with the old
+router still serving.
 
 ## Crashes and the log file (2026-10-25)
 

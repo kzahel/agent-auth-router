@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import http from "node:http";
@@ -167,6 +167,83 @@ test("aar restart waits for an idle period, then serve starts the current code a
   assert.equal(await serve.exited, 0, serve.out());
   assert.equal(existsSync(join(state, "control.sock")), false);
   assert.match(restartCli(state).stderr, /not running/);
+});
+
+const restartNow = (state: string) => new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+  const child = spawn(process.execPath, ["src/cli.ts", "--state", state, "restart", "--now"], { stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", (c) => { stdout += c; }); child.stderr.on("data", (c) => { stderr += c; });
+  child.on("exit", (status) => resolve({ status, stdout, stderr }));
+});
+
+test("aar restart --now cuts open streams and starts the current code in place", { skip: process.platform === "win32" }, async (t) => {
+  const state = tempDir("arsn-"), store = new StateStore(state);
+  const upstream = http.createServer((_q, r) => { r.writeHead(200, { "content-type": "text/event-stream" }); r.write("data: synthetic\n\n"); });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  writeFileSync(join(state, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: `http://127.0.0.1:${(upstream.address() as { port: number }).port}` } }), { mode: 0o600 });
+  const home = join(state, "profiles", "synthetic"); mkdirSync(home, { recursive: true }); writeClaudeCredentials(home, "synthetic", Date.now() + 3600_000);
+  store.saveAccounts([{ id: "a", provider: "claude", home }]);
+  const token = generateGatewayToken();
+  store.saveClients([{ id: "c", name: "Synthetic", tokenSha256: hashGatewayToken(token), accounts: { claude: "a" }, createdAt: new Date().toISOString() }]);
+
+  const serve = serving(state);
+  t.after(() => { serve.child.kill("SIGKILL"); });
+  await waitFor(() => serve.out().includes("Web dashboard:"), 10_000);
+  const before = await ownerRequest(store, "overview");
+  assert.equal(typeof before.pid, "number");
+
+  // An open stream does not hold an immediate restart; it is cut off.
+  const response = await fetch(before.origin + "/claude/v1/messages", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
+  const reader = response.body!.getReader(); await reader.read();
+  const result = await restartNow(state);
+  assert.equal(result.status, 0, result.stderr);
+  const [, oldPid, newPid] = result.stdout.match(/^restarted: router process (\d+) replaced by (\d+)\n$/) ?? [];
+  assert.equal(Number(oldPid), before.pid);
+  assert.notEqual(newPid, oldPid);
+  await assert.rejects(reader.read(), "the open stream was cut off");
+  assert.match(serve.out(), /restarting now; open requests are cut off[\s\S]*starting the router again/);
+  const after = await ownerRequest(store, "overview");
+  assert.equal(after.routerId, before.routerId, "state and identity carry over");
+  assert.equal(after.pid, Number(newPid));
+  assert.equal(serve.child.exitCode, null, "the serve parent stays in place");
+  assert.deepEqual(after.crashes, [], "a requested restart is not a crash");
+
+  assert.match(spawnSync(process.execPath, ["src/cli.ts", "--state", state, "restart", "--now", "--cancel"], { encoding: "utf8" }).stderr, /cannot be combined/);
+  await assert.rejects(ownerRequest(store, "restart", { routerId: after.routerId, now: true, quietSeconds: 5 }), /cannot be combined/);
+  await assert.rejects(ownerRequest(store, "restart", { routerId: after.routerId, now: "yes" }), /must be a boolean/);
+
+  serve.child.kill("SIGINT"); serve.child.kill("SIGINT");
+  assert.equal(await serve.exited, 0, serve.out());
+});
+
+test("a restart is refused while the current code fails to load, and the router keeps serving", { skip: process.platform === "win32" }, async (t) => {
+  // A copy of the code, so breaking it does not touch the checkout.
+  const code = tempDir("arsk-code-"), state = tempDir("arsk-"), store = new StateStore(state);
+  cpSync("src", join(code, "src"), { recursive: true }); cpSync("package.json", join(code, "package.json"));
+  writeFileSync(join(state, "config.json"), JSON.stringify({ listen: { host: "127.0.0.1", port: 0 } }), { mode: 0o600 });
+  const child = spawn(process.execPath, [join(code, "src", "cli.ts"), "--state", state, "serve", "--no-dashboard"], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  child.stdout.on("data", (c) => { out += c; }); child.stderr.on("data", (c) => { out += c; });
+  const exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+  t.after(() => { child.kill("SIGKILL"); });
+  await waitFor(() => out.includes("router.listening"), 10_000);
+  const before = await ownerRequest(store, "overview");
+
+  writeFileSync(join(code, "src", "pools.ts"), readFileSync(join(code, "src", "pools.ts"), "utf8") + "\nexport const broken = ;\n");
+  const refused = await restartNow(state);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /restart refused; the current code does not load: .*SyntaxError/);
+
+  // The idle path checks too, and gives up instead of restarting into broken code.
+  assert.equal(spawnSync(process.execPath, ["src/cli.ts", "--state", state, "restart", "--quiet-seconds", "1"], { encoding: "utf8" }).status, 0);
+  await waitFor(() => out.includes("restart abandoned: restart refused; the current code does not load"), 15_000);
+  const after = await ownerRequest(store, "overview");
+  assert.equal(after.pid, before.pid, "the old router keeps serving");
+  assert.doesNotMatch(out, /starting the router again/);
+
+  child.kill("SIGINT");
+  assert.equal(await exited, 0, out);
 });
 
 test("serve starts a killed router again, records the crash until it is acknowledged, and keeps a log file", { skip: process.platform === "win32" }, async (t) => {

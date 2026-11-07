@@ -7,7 +7,7 @@ import { terminalLogin } from "./terminal-login.ts";
 import { diagnose, diagnosticOptions, type DiagnosticReport } from "./diagnostics.ts";
 import { assertPrivatePath } from "./control.ts";
 import { loginCommand, ownerRequest } from "./owner.ts";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -54,6 +54,10 @@ const USAGE = `usage: aar [--state DIR] <command>
                                          management still requires a sign-in link
   restart [--quiet-seconds N] [--cancel] restart aar serve with the current code once nothing
                                          has been in flight for N seconds (default 5)
+  restart --now                          restart at once, cutting off open requests (clients
+                                         retry); refused while a renewal or sign-in runs or
+                                         if the current code fails to load; waits until
+                                         the new router answers
   logs [--lines N] [--follow] [--crashes]
                                          print the router log kept in logs/ (default 100 lines);
                                          --crashes prints recorded crashes with stack frames
@@ -79,6 +83,20 @@ async function supervise(stateDir: string): Promise<void> {
 }
 
 const LOG_POLL_MS = 500;
+
+/** Loads the current code's whole static import graph in a fresh process, as a restarted router would. */
+function checkCodeLoads(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, [...process.execArgv, process.argv[1]!, "--help"], { timeout: 30_000 }, (error, _stdout, stderr) => {
+      if (!error) return resolve();
+      // Node prints the failing location, the source line, a caret, then the error.
+      const lines = stderr.split("\n").map(line => line.trim());
+      const message = lines.find(line => /^[A-Za-z]*Error\b/.test(line));
+      const where = lines.find(line => /^file:\/\/.*:\d+$/.test(line));
+      reject(new Error(message ? `${message}${where ? ` at ${where}` : ""}` : error.message));
+    });
+  });
+}
 
 /** Prints the last lines across the newest log files, then optionally follows the current one. */
 async function showLogs(stateDir: string, lines: number, follow: boolean): Promise<void> {
@@ -153,6 +171,7 @@ async function main(argv: string[]): Promise<void> {
       dev: { type: "boolean" },
       all: { type: "boolean" },
       cancel: { type: "boolean" },
+      now: { type: "boolean" },
       "quiet-seconds": { type: "string" },
       help: { type: "boolean", short: "h" },
       account: { type: "string" },
@@ -358,12 +377,24 @@ async function main(argv: string[]): Promise<void> {
       if (!existsSync(join(store.dir, "control.sock"))) fail("the router is not running; start it with aar serve");
       const quiet = values["quiet-seconds"];
       if (quiet !== undefined && !/^\d{1,3}$/.test(quiet)) fail("--quiet-seconds must be a whole number from 1 to 600");
+      if (values.now && (values.cancel || quiet !== undefined)) fail("--now cannot be combined with --cancel or --quiet-seconds");
       const { routerId } = await ownerRequest(store, "overview", {});
-      const result = await ownerRequest(store, "restart", { routerId, ...(values.cancel ? { cancel: true } : {}), ...(quiet !== undefined ? { quietSeconds: Number(quiet) } : {}) })
+      const result = await ownerRequest(store, "restart", { routerId, ...(values.cancel ? { cancel: true } : {}), ...(values.now ? { now: true } : {}), ...(quiet !== undefined ? { quietSeconds: Number(quiet) } : {}) })
         .catch((error: unknown) => {
           if (error instanceof Error && /unknown owner operation/.test(error.message)) fail("this router predates aar restart; stop and start it by hand once");
           throw error;
         });
+      if (values.now) {
+        // A router that predates --now ignores it and schedules an idle restart instead.
+        if (!result.restarting) fail("this router predates aar restart --now; an idle restart is pending instead (aar restart --cancel withdraws it)");
+        const deadline = Date.now() + 60_000;
+        for (;;) {
+          await new Promise(resolve => setTimeout(resolve, 250));
+          const overview = await ownerRequest(store, "overview", {}).catch(() => undefined);
+          if (overview && overview.pid !== result.pid) { process.stdout.write(`restarted: router process ${result.pid} replaced by ${overview.pid}\n`); return; }
+          if (Date.now() > deadline) fail("the router did not answer within 60 seconds of restarting; see aar logs and aar logs --crashes");
+        }
+      }
       if (values.cancel) process.stdout.write(result.cancelled ? "restart cancelled\n" : "no restart was pending\n");
       else process.stdout.write(`restart pending: aar serve restarts after ${result.quietSeconds} seconds with no requests, usage checks, renewals or sign-ins\n`);
       return;
@@ -416,9 +447,13 @@ async function main(argv: string[]): Promise<void> {
         process.on("disconnect", shutdown);
         process.channel?.unref();
       }
-      // Waits for accepted streams; the owner only calls this once idle.
-      const restart = { note: (message: string) => process.stdout.write(`aar: ${message}\n`),
-        now: () => { if (!router || stopping || restarting) return; restarting = true; void router.close(false); } };
+      // Unforced, waits for accepted streams (the owner calls it once idle); forced, cuts them off.
+      const restart = { note: (message: string) => process.stdout.write(`aar: ${message}\n`), check: checkCodeLoads,
+        now: (force: boolean) => {
+          if (!router || stopping || restarting) return;
+          restarting = true; void router.close(force);
+          if (force) setTimeout(() => process.exit(RESTART_EXIT_CODE), 10_000).unref();
+        } };
       process.on("SIGINT", shutdown);
       process.on("SIGTERM", shutdown);
       installCrashHandler(store.dir, () => router?.events?.flush());

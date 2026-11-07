@@ -121,7 +121,8 @@ export interface OwnerLifecycle {
   active(): number;
   busy?(excludingCaller?: boolean): number;
   stop(force?: boolean): void;
-  restart?: { now(): void; note(message: string): void };
+  /** `now(true)` cuts open requests off; `check` rejects when the current code fails to load. */
+  restart?: { now(force: boolean): void; note(message: string): void; check(): Promise<void> };
 }
 /** A requested restart waits for this long with no work of any kind. */
 export const RESTART_QUIET_MS = 5_000;
@@ -283,6 +284,7 @@ export class OwnerService {
       return {
         ...this.registry.overview(undefined, this.evidence),
         routerId: this.registry.routerId,
+        pid: process.pid,
         build: BUILD_INFO,
         node: process.version,
         origin: this.origin,
@@ -698,6 +700,19 @@ export class OwnerService {
         return { cancelled: pending };
       }
       if (body.cancel !== undefined && body.cancel !== false) throw new ControlError(400, "cancel must be a boolean");
+      if (body.now !== undefined && typeof body.now !== "boolean") throw new ControlError(400, "now must be a boolean");
+      if (body.now === true) {
+        if (body.quietSeconds !== undefined) throw new ControlError(400, "now cannot be combined with quietSeconds");
+        // Killing an official CLI mid-renewal could lose a rotated credential; requests are retried by clients.
+        if (this.credentialWork()) throw new ControlError(409, "a renewal or sign-in is running; try again when it finishes");
+        // Replaces a pending idle restart, which must not fire during the check and wait on streams.
+        clearInterval(this.restartTimer); this.restartTimer = undefined;
+        await this.checkRestart(restart);
+        restart.note("restarting now; open requests are cut off");
+        // Reply first; the caller waits for the new router to answer.
+        setImmediate(() => restart.now(true));
+        return { restarting: true, pid: process.pid };
+      }
       const quiet = body.quietSeconds;
       const quietMs = quiet === undefined ? RESTART_QUIET_MS
         : typeof quiet === "number" && Number.isInteger(quiet) && quiet >= 1 && quiet <= 600 ? quiet * 1000
@@ -711,8 +726,10 @@ export class OwnerService {
         quietSince ??= now;
         if (now - quietSince < quietMs) return;
         clearInterval(this.restartTimer); this.restartTimer = undefined;
-        restart.note("idle; restarting");
-        restart.now();
+        this.checkRestart(restart).then(() => {
+          restart.note("idle; restarting");
+          restart.now(false);
+        }, (error: unknown) => restart.note(`restart abandoned: ${error instanceof Error ? error.message : String(error)}`));
       }, RESTART_POLL_MS);
       this.restartTimer.unref();
       restart.note(`restart requested; waiting for ${quietMs / 1000} idle seconds`);
@@ -754,10 +771,18 @@ export class OwnerService {
   }
   /** Requests, usage and catalog reads, renewals, sign-ins and terminal logins. */
   private busy(excludingCaller: boolean): boolean {
-    return !!this.lifecycle.active() || !!this.lifecycle.busy?.(excludingCaller) ||
-      [...this.coordinators.values()].some((c) => c.status().state === "renewing") ||
+    return !!this.lifecycle.active() || !!this.lifecycle.busy?.(excludingCaller) || this.credentialWork();
+  }
+  /** Renewals, sign-ins and terminal logins: work an immediate restart must not cut off. */
+  private credentialWork(): boolean {
+    return [...this.coordinators.values()].some((c) => c.status().state === "renewing") ||
       [...this.logins.values()].some((l) => l.status === "running") ||
       [...this.terminals.values()].some(t => t.busy());
+  }
+  /** The serve parent gives up on a router that exits before serving, so new code must load first. */
+  private async checkRestart(restart: NonNullable<OwnerLifecycle["restart"]>): Promise<void> {
+    try { await restart.check(); }
+    catch (error) { throw new ControlError(409, `restart refused; the current code does not load: ${error instanceof Error ? error.message : String(error)}`); }
   }
   async close(): Promise<void> {
     clearInterval(this.restartTimer); this.restartTimer = undefined;

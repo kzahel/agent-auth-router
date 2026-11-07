@@ -130,7 +130,10 @@ and runs `aar serve --dev`, which reloads signed-in browsers after each rebuild.
 The UI is React and TypeScript built with Vite; see [ui/README.md](ui/README.md).
 After editing `src/`, run `aar restart` (or
 `npm run aar restart`): the router restarts with the current code once nothing
-has been in flight for five seconds, without interrupting a request. See
+has been in flight for five seconds, without interrupting a request.
+`aar restart --now` restarts at once, cutting off open requests, and waits for
+the new router to answer. Either kind is refused if the current code fails to
+load. See
 [restarting `aar serve`](docs/owner-management.md#restarting-aar-serve-2026-10-11).
 
 `aar serve` starts the router again after a crash and records it; the
