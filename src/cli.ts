@@ -396,7 +396,7 @@ async function main(argv: string[]): Promise<void> {
         }
       }
       if (values.cancel) process.stdout.write(result.cancelled ? "restart cancelled\n" : "no restart was pending\n");
-      else process.stdout.write(`restart pending: aar serve restarts after ${result.quietSeconds} seconds with no requests, usage checks, renewals or sign-ins\n`);
+      else process.stdout.write(`restart pending: aar serve restarts after ${result.quietSeconds} seconds with no requests, usage checks, renewals or sign-ins; aar restart --now restarts at once\n`);
       return;
     }
     case "logs": {

@@ -22,6 +22,10 @@ balancing or YA integration. Those features are planned, not implemented here.
   unless the task authorizes that operation. Use synthetic fixtures first.
 - Never commit credentials, profile homes, logs containing secrets, signing
   keys, machine-local configuration or private infrastructure inventory.
+- To load code changes into a running `aar serve`, use `aar restart` (once
+  idle) or `aar restart --now` (cuts off open requests, waits for the new
+  router to answer). Never stop the serve process or its tmux session for
+  this: agent sessions, possibly your own, may route inference through it.
 - Before commits or pushes, inspect the exact staged files and diff.
 - Use the maintainer's Git identity. Record model involvement only with a
   `Contributing-model: <short-model-name>` trailer, one per contributing model.

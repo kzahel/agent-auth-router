@@ -72,7 +72,9 @@ must use supported file storage. Leave unrelated profiles/configuration alone.
 
 Ensure the selected router is persistently running before login. `aar --state
 /absolute/state serve --no-dashboard` can run in its own task-owned tmux
-window. Never stop/restart a different router to make a port available.
+window. Never stop/restart a different router to make a port available. To
+load new code into a router started with `serve`, use `aar restart` or
+`aar restart --now`; do not kill the process or its tmux session.
 
 Start `aar --state /absolute/state terminal-login work --browser link` in a
 dedicated tmux pane. This existing runner provides the TTY, clean provider environment and
