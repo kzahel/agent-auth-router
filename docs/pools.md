@@ -38,7 +38,9 @@ against the pinned account without rerunning pool selection.
 Policies are Manual, Round robin and **Most remaining**. The latter compares each
 eligible account's minimum remaining percentage across applicable reported
 windows, highest first. Automatic policies first prefer the fewest unexpired
-startup reservations within the pool; ties follow membership order after its
+startup reservations within the pool (Weekly pace, since
+[version 3](#weekly-pace-version-3-spread-behind-pace-2026-11-08), only among
+accounts behind pace); ties follow membership order after its
 durable cursor. Commit advances the cursor once. These are relative percentages,
 not estimates of remaining tokens or promises a session will fit.
 
@@ -108,7 +110,8 @@ the candidate eligibility reasons so integrations can explain the failure.
 Capability `weekly-pace-v1`, policy `weekly-pace`. It aims to use weekly
 allowance before it resets and to stay off accounts whose five-hour window is
 nearly full. After the shared eligibility checks and the fewest-startup-
-reservations rule, candidates are ordered by:
+reservations rule (which version 3 confines to accounts behind pace),
+candidates are ordered by:
 
 1. **Weekly timer not started.** An applicable weekly window (10,080 minutes)
    at 0% used with no reset time ranks first, so the next session starts its
@@ -177,6 +180,32 @@ cannot show what the later usage would have been. Limits: restart forgets
 the samples. The projection assumes recent use continues until the reset, so
 it is pessimistic early in a window and right after a burst; a session that
 starts on an account still stays pinned to it.
+
+## Weekly pace version 3: spread behind pace (2026-11-08)
+
+Bindings record `policyVersion` 3 for Weekly pace. Until this version the
+fewest-startup-reservations rule ran before every Weekly pace tier, so once
+each account behind pace had a session from the last five minutes, the next
+one went to an account ahead of pace, however far ahead. In a pool of
+contributed accounts with [usage ceilings](#usage-ceilings-2026-11-04) and
+its owner's own uncapped accounts, from 2026-10-25 to 11-08, 380 of 3,413
+sessions went to an account ahead of pace while another, behind pace, kept
+the short-window reserve; 334 of them went to the owner's accounts.
+
+Weekly pace now first ranks the accounts with weekly allowance that would
+otherwise go unused: an unstarted weekly timer, or a pace of zero or more
+with the projected short-window reserve kept. Startup reservations spread
+sessions among those accounts, and the version 2 tiers order them. Only when
+none is left does an account ahead of pace or under the reserve take a
+session. Those accounts rank by reservations and the same tiers, as in
+version 2. The selection reason says which case applied.
+
+A burst now stacks starts on accounts behind pace rather than reaching one
+ahead of it. In that pool, review traffic alone was light: on 2026-11-05 and 06
+no contributed account's five-hour window rose more than 16 points in an
+hour, and the busiest took 161 sessions and peaked at 49% used. The projected
+reserve demotes an account whose stacked sessions burn its short window, once
+10 minutes of samples exist.
 
 ## Usage ceilings (2026-11-04)
 
@@ -250,7 +279,9 @@ the PR review worker's Claude Code containers, which hold one static token.
   with action `session` and every candidate's evidence.
 - **Spread.** A pin made within the five-minute prepare window counts as a
   startup reservation, so sessions that start together go to different members
-  even before their traffic moves the quota evidence.
+  even before their traffic moves the quota evidence. Weekly pace spreads them
+  only among accounts behind pace while any remains
+  ([version 3](#weekly-pace-version-3-spread-behind-pace-2026-11-08)).
 - **Affinity.** A pinned session keeps its account while the account stays in
   the pool and enabled, even when its quota runs low or it is rate limited. It
   moves only when the account leaves the pool or is disabled.

@@ -22,8 +22,9 @@ const BURN_LOOKBACK_MS = 30 * 60_000, BURN_MIN_SPAN_MS = 10 * 60_000;
 const BURN_SAMPLE_MS = 30_000;
 const HOUR_MS = 3_600_000;
 const tenth = (n: number) => Math.round(n * 10) / 10;
-/** Version 2 of Weekly pace projects short-window burn and bands pace; the others are unchanged. */
-export const policyVersion = (policy: PoolPolicy) => policy === "weekly-pace" ? 2 : 1;
+/** Version 2 of Weekly pace projects short-window burn and bands pace; version 3 spreads
+ * startup reservations only among accounts behind pace. The others are unchanged. */
+export const policyVersion = (policy: PoolPolicy) => policy === "weekly-pace" ? 3 : 1;
 export interface SelectionEvidence {
   headroomPercent: number | null;
   limitingBuckets: string[];
@@ -149,6 +150,10 @@ export function selectionEvidence(provider: Provider, observation: Observation, 
 }
 const projectedHeadroom = (e: SelectionEvidence) => e.shortProjectedHeadroomPercent ?? e.shortHeadroomPercent;
 const keepsReserve = (e: SelectionEvidence) => (projectedHeadroom(e) ?? 100) >= SHORT_RESERVE_PERCENT;
+/** Weekly allowance that would otherwise go unused: an unstarted weekly timer, or behind
+ * pace with the short-window reserve kept. Weekly pace spreads startup reservations among
+ * these accounts before any account ahead of pace takes a session. */
+const behindPace = (e: SelectionEvidence) => e.weeklyUnstarted || (keepsReserve(e) && e.weeklyPacePercent !== null && e.weeklyPacePercent >= 0);
 /** Unstarted weekly timer first, then the projected short-window reserve, then weekly pace:
  * accounts within PACE_BAND_POINTS of `leader` (the furthest behind) by projected headroom,
  * the rest furthest behind first. */
@@ -164,7 +169,9 @@ function weeklyPaceOrder(a: SelectionEvidence, b: SelectionEvidence, leader: num
 /** Input is already eligible and in cursor order; stable ties preserve that order. */
 export function rankCandidates(policy: PoolPolicy, candidates: { accountId: string; evidence: SelectionEvidence }[]) {
   const leader = Math.max(-101, ...candidates.filter(c => keepsReserve(c.evidence)).map(c => c.evidence.weeklyPacePercent ?? -101));
-  return [...candidates].sort((a, b) => a.evidence.reservations - b.evidence.reservations ||
+  const behind = (e: SelectionEvidence) => policy === "weekly-pace" ? Number(behindPace(e)) : 0;
+  return [...candidates].sort((a, b) => behind(b.evidence) - behind(a.evidence) ||
+    a.evidence.reservations - b.evidence.reservations ||
     (policy === "most-remaining" ? (b.evidence.headroomPercent ?? -1) - (a.evidence.headroomPercent ?? -1)
       : policy === "weekly-pace" ? weeklyPaceOrder(a.evidence, b.evidence, leader) : 0));
 }
@@ -174,13 +181,15 @@ export function selectionReason(policy: PoolPolicy, e: SelectionEvidence): strin
   if (policy === "most-remaining") return `Most remaining: tightest window has ${e.headroomPercent}% remaining${spread}`;
   if (policy === "round-robin") return "Round robin among eligible accounts";
   if (policy === "manual") return "Explicit manual account";
+  const among = behindPace(e) ? "; among accounts behind weekly pace, fewest startup reservations"
+    : "; no candidate is behind weekly pace, so among all with fewest startup reservations";
   const short = e.shortHeadroomPercent === null ? "not reported" : `${e.shortHeadroomPercent}%` +
     (e.shortBurnPercentPerHour === null ? "" : `, ${projectedHeadroom(e)}% projected at reset at ${e.shortBurnPercentPerHour} points/hour`);
-  if (e.weeklyUnstarted) return `Weekly pace: weekly window not started; this session starts its timer${spread}`;
-  if (!keepsReserve(e)) return `Weekly pace: every candidate is under the ${SHORT_RESERVE_PERCENT}% short-window reserve; this one has the most (${short})${spread}`;
+  if (e.weeklyUnstarted) return `Weekly pace: weekly window not started; this session starts its timer${among}`;
+  if (!keepsReserve(e)) return `Weekly pace: every candidate is under the ${SHORT_RESERVE_PERCENT}% short-window reserve; this one has the most (${short})${among}`;
   const pace = e.weeklyPacePercent === null ? "no started weekly window"
     : e.weeklyPacePercent >= 0 ? `${e.weeklyPacePercent} points behind weekly pace` : `${-e.weeklyPacePercent} points ahead of weekly pace`;
-  return `Weekly pace: ${pace}; short-window headroom ${short}${spread}`;
+  return `Weekly pace: ${pace}; short-window headroom ${short}${among}`;
 }
 export function eligibility(provider: Provider, enabled: boolean, model: string | undefined, observation: Observation, automatic: boolean, now = Date.now()): EligibilityReason {
   if (!enabled) return "disabled";

@@ -243,7 +243,7 @@ test("Weekly pace starts unused weekly timers, keeps a short-window reserve, the
   assert.deepEqual(rank({ tight, ahead }), ["ahead", "tight"], "below the reserve backs off despite better pace");
   assert.deepEqual(rank({ tight, worse: [short(10), weekly(60, 72 * HOUR)] }), ["tight", "worse"], "all under the reserve: most short headroom");
   assert.deepEqual(rank({ none: [short(90)], ahead: [short(90), weekly(60, 144 * HOUR)] }), ["ahead", "none"], "no weekly window ranks last");
-  assert.deepEqual(rank({ expiring, fresh }, { expiring: 1 }), ["fresh", "expiring"], "startup reservations still come first");
+  assert.deepEqual(rank({ expiring, fresh }, { expiring: 1 }), ["expiring", "fresh"], "a startup reservation does not send a session ahead of pace");
   assert.deepEqual(rank({ a: fresh, b: fresh }), ["a", "b"], "ties keep cursor order");
 
   const families = [short(90), weekly(20, 84 * HOUR), weekly(45, 84 * HOUR, "seven_day_sonnet"), weekly(100, 84 * HOUR, "seven_day_opus")];
@@ -270,6 +270,27 @@ test("Weekly pace treats near-equal pace as even and reserves projected short-wi
   assert.deepEqual(rank({ burning, steady }, {}, { burning: { five_hour: 70 } }), ["steady", "burning"], "projected under the reserve backs off despite headroom now");
   assert.deepEqual(rank({ burning, worse: burning }, {}, { burning: { five_hour: 70 }, worse: { five_hour: 80 } }), ["burning", "worse"], "all under: most projected headroom");
   assert.match(selectionReason("weekly-pace", evidence(steady, 0, { five_hour: 5 })), /short-window headroom 50%, 45% projected at reset at 5 points\/hour/);
+});
+
+test("Weekly pace spreads startup reservations only among accounts behind pace", () => {
+  const now = Date.now(), { short, weekly, evidence, rank } = paceFixture(now);
+  // Half the week has elapsed, so pace is 50 − percent used.
+  const far = [short(90), weekly(5, 84 * HOUR)], near = [short(90), weekly(15, 84 * HOUR)], lagging = [short(90), weekly(48, 84 * HOUR)];
+  const owner = [short(90), weekly(70, 84 * HOUR)], heavy = [short(90), weekly(80, 84 * HOUR)];
+  assert.deepEqual(rank({ owner, far, near }), ["far", "near", "owner"]);
+  assert.deepEqual(rank({ owner, far, near }, { far: 1 }), ["near", "far", "owner"], "a reserved account behind pace yields to another behind pace");
+  assert.deepEqual(rank({ owner, far, near }, { far: 2, near: 2 }), ["far", "near", "owner"], "a burst stacks behind pace rather than reach an account ahead of it");
+  assert.deepEqual(rank({ owner, lagging }, { lagging: 3 }), ["lagging", "owner"], "two points behind still counts");
+  assert.deepEqual(rank({ owner, heavy }, { owner: 1 }), ["heavy", "owner"], "with none behind pace, reservations spread as before");
+
+  const burning = { far: { five_hour: 70 } };
+  assert.deepEqual(rank({ owner, far }, {}, burning), ["owner", "far"], "behind pace but projected under the reserve does not count");
+  const unstarted = [short(90), weekly(0, null)];
+  assert.deepEqual(rank({ unstarted, owner }, { unstarted: 1 }), ["unstarted", "owner"], "an unstarted weekly timer counts as behind");
+  assert.deepEqual(rank({ unstarted, far }, { unstarted: 1 }), ["far", "unstarted"], "and spreads with the others behind pace");
+
+  assert.match(selectionReason("weekly-pace", evidence(far)), /45 points behind weekly pace; short-window headroom 90%; among accounts behind weekly pace, fewest startup reservations$/);
+  assert.match(selectionReason("weekly-pace", evidence(owner)), /20 points ahead of weekly pace; .*; no candidate is behind weekly pace, so among all with fewest startup reservations$/);
 });
 
 test("a usage ceiling makes its share of each window the whole of it for selection", () => {
