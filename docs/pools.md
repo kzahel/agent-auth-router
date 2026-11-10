@@ -250,12 +250,27 @@ the override.
 - **Labels.** The overview, selection response and `/v1/info` return
   `policies`, each `{ id, label }` with an English display name, alongside
   the existing `supportedPolicies` ids.
-- **Manual admission refresh.** A Manual prepare refreshes a stale catalog for
-  its one account (no usage probe; Manual needs no quota evidence), so a pick
-  made more than 60 seconds after discovery does not fail on a stale catalog.
+- **Manual admission refresh.** A Manual prepare refreshes only its picked
+  account. Claude needs a fresh catalog, without a usage probe. Codex uses the
+  bounded admission refresh for missing/stale catalog or quota evidence,
+  including expired ordinary-usage permission even when passive headers have
+  updated the displayed quota. Fresh evidence is reused; concurrent reads
+  coalesce and cooldowns/backoff still apply. Manual eligibility rules are
+  unchanged: a failed refresh cannot clear a known refusal or expired permission,
+  and no other account is selected. The same 12-second admission deadline,
+  cancellation and grant/pool rechecks apply. Committed pins do not refresh on
+  resume.
 - **Desktop.** The pool form says "Default policy" and has **Available to**
   checkboxes for connected integrations, which write the same grant as
   **Manage access**.
+
+Verification on 2026-11-10: after the dedicated `aar restart --now`, real YA
+Codex sessions on Node 24 / Codex CLI 0.160.0 completed with explicit Manual
+account selection both from cold evidence and with permission 122 seconds old
+while passive quota headers were fresh. Admission refreshed the selected
+account's permission and each session returned its expected reply. Synthetic
+cases also cover fresh-evidence reuse, coalesced concurrent prepares, failed
+refresh, quota denial and cooldown without account substitution.
 
 ## Pool-backed gateway tokens (2026-10-12)
 

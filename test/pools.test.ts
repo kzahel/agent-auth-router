@@ -11,13 +11,13 @@ import type { QuotaWindow } from "../src/quotas.ts";
 import { StateStore } from "../src/state.ts";
 import { tempDir } from "./support.ts";
 
-function fixture() {
+function fixture(provider: "claude" | "codex" = "claude") {
   const store = new StateStore(tempDir("pool-")); store.init();
-  store.saveAccounts(["a", "b", "c"].map(id => { const home = join(store.dir, id); mkdirSync(home); return { id, provider: "claude" as const, home }; }));
+  store.saveAccounts(["a", "b", "c"].map(id => { const home = join(store.dir, id); mkdirSync(home); return { id, provider, home }; }));
   const registry = new ControlRegistry(store), token = `aar_ctl_${Buffer.alloc(32, 5).toString("base64url")}`;
   registry.pair({ id: randomUUID(), name: "YA", tokenHash: hashGatewayToken(token) });
   const integration = registry.authenticate(`Bearer ${token}`), poolId = randomUUID();
-  const pool = { id: poolId, name: "Personal", provider: "claude", accountIds: ["a", "b"], policy: "round-robin", revision: 0 };
+  const pool = { id: poolId, name: "Personal", provider, accountIds: ["a", "b"], policy: "round-robin", revision: 0 };
   registry.savePool(pool);
   registry.grant({ id: integration.id, revision: 1, poolIds: [pool.id] });
   const evidence = new PoolEvidence(async () => [{ id: "claude-sonnet-fixture", name: "Fixture" }], async accountId => ({ accountId, provider: "claude", observedAt: new Date(Date.now()).toISOString(), status: "ok", windows: [{ bucket: "five_hour", windowMinutes: 300, usedPercent: 25, remainingPercent: 75, resetsAt: new Date(Date.now() + 60_000).toISOString() }] }));
@@ -383,6 +383,51 @@ test("a consumer can pick an account in an automatic pool; admission refreshes o
   assert.deepEqual(reads, ["catalog:b"], "a stale catalog is refreshed for the picked account only; Manual needs no quota");
   const other = await f.registry.preparePoolWithRefresh(f.integration, { ...f.allocation(), policy: "round-robin" }, evidence, new AbortController().signal) as any;
   assert.equal(other.policy, "round-robin", "any policy can override the pool default per session");
+});
+
+test("manual Codex admission refreshes only its selected account's permission and preserves refusals", async (t) => {
+  for (const scenario of ["cold", "stale", "fresh", "denied", "failed", "cooldown"] as const) await t.test(scenario, async (scenarioTest) => {
+    const f = fixture("codex"), reads: string[] = [];
+    let fail = false;
+    const evidence = new PoolEvidence(async id => { reads.push(`catalog:${id}`); return [{ id: "model", name: "Model" }]; }, async accountId => {
+      reads.push(`quota:${accountId}`);
+      if (fail) throw new Error("fixture unavailable");
+      return { accountId, provider: "codex", status: "ok", observedAt: new Date().toISOString(),
+        ordinaryUsageAllowed: scenario !== "denied", ordinaryUsageObservedAt: new Date().toISOString(),
+        windows: [{ bucket: "codex:primary", windowMinutes: 10080, usedPercent: 0, remainingPercent: 100, resetsAt: new Date(Date.now() + 86_400_000).toISOString() }] };
+    });
+    if (scenario !== "cold") {
+      const observation = await evidence.refresh("b");
+      if (scenario === "stale" || scenario === "failed") {
+        observation.quota!.ordinaryUsageObservedAt = new Date(Date.now() - QUOTA_FRESH_MS - 1000).toISOString();
+        // Live traffic updates displayed quota without renewing the permission.
+        evidence.observe("b", "codex", { "x-codex-primary-used-percent": "0" });
+        assert.equal(eligibility("codex", true, "model", evidence.get("b"), false), "quota-stale");
+        // Avoid waiting out refresh's successful-read backoff.
+        scenarioTest.mock.method(Date, "now", () => Date.parse(observation.quota!.observedAt) + 1500);
+      }
+      if (scenario === "cooldown") evidence.reject("b", 429, "60");
+      reads.length = 0;
+    }
+    fail = scenario === "failed";
+    const body = { ...f.allocation(), provider: "codex", model: "model", policy: "manual", accountId: "b" };
+    const prepare = () => f.registry.preparePoolWithRefresh(f.integration, body, evidence, new AbortController().signal) as Promise<any>;
+    try {
+      if (["denied", "failed", "cooldown"].includes(scenario)) {
+        await assert.rejects(prepare(), /manual account is not eligible: (exhausted|quota unknown|cooldown)/);
+        assert.equal(f.registry.clients().length, 0, "no different account is allocated on refusal");
+      } else {
+        const [first, second] = await Promise.all([prepare(), prepare()]);
+        assert.deepEqual(first, second, "parallel prepares coalesce and retain the same allocation");
+        assert.deepEqual([first.accountId, first.policy], ["b", "manual"]);
+        f.registry.transition(f.integration, body.id, "commit", evidence);
+        await prepare();
+      }
+      assert.ok(reads.every(read => read.endsWith(":b")), "other pool members are never refreshed");
+      assert.equal(reads.filter(read => read.startsWith("quota:")).length,
+        ["cold", "stale", "failed"].includes(scenario) ? 1 : 0, "only missing or stale permission triggers a coalesced probe");
+    } finally { scenarioTest.mock.restoreAll(); }
+  });
 });
 
 test("admission refresh is coalesced and globally bounded across more than four members", async () => {

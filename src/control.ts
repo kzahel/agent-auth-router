@@ -297,9 +297,10 @@ export class ControlRegistry {
         const current = check();
         return current.pool.accountIds.includes(id) && this.store.loadAccounts().some(a => a.id === id && a.enabled !== false && !a.retired);
       };
-      // Manual needs no quota, only a fresh catalog for its one account.
-      if (initial.manual) await evidence.discover([initial.manual], controller.signal, allowed);
-      else await evidence.refreshAdmission(initial.pool.accountIds, initial.pool.provider, initial.model, controller.signal, allowed);
+      // Codex's explicit usage permission expires even for Manual. Refresh
+      // only the picked member; keep Manual's eligibility rules and account pin.
+      if (initial.manual && initial.pool.provider !== "codex") await evidence.discover([initial.manual], controller.signal, allowed);
+      else await evidence.refreshAdmission(initial.manual ? [initial.manual] : initial.pool.accountIds, initial.pool.provider, initial.model, controller.signal, allowed);
       check();
       return this.preparePool(this.current(integration), body, evidence);
     } finally { controller.abort(new ControlError(409, "pool admission ended")); clearTimeout(timer); signal.removeEventListener("abort", abort); }
