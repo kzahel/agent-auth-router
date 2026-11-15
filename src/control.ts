@@ -7,12 +7,13 @@ import { OwnerService, type OwnerLifecycle } from "./owner.ts";
 import { AppHub, startAppSocket } from "./app.ts";
 import type { EventLog } from "./events.ts";
 import { Metrics } from "./metrics.ts";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { join } from "node:path";
 import { hashGatewayToken } from "./gateway-auth.ts";
+import { clientAddress } from "./public.ts";
 import { accountHelper } from "./helpers.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
 import { fetchAccountQuotas, readAccountQuotas, remainingCapacityUnits, type QuotaReadOptions } from "./quotas.ts";
@@ -41,6 +42,24 @@ export class ControlError extends Error {
   constructor(status: number, message: string, details?: Record<string, unknown>) { super(message); this.status = status; this.details = details; }
 }
 const reject = (status: number, message: string): never => { throw new ControlError(status, message); };
+type ControlSite = { kind: "local" } | { kind: "public"; origin: string };
+
+/** At most `limit` attempts per key within a sliding window; memory stays bounded. */
+class AttemptLimiter {
+  private readonly hits = new Map<string, number[]>();
+  private readonly limit: number;
+  private readonly windowMs: number;
+  constructor(limit: number, windowMs: number) { this.limit = limit; this.windowMs = windowMs; }
+  allow(key: string, now = Date.now()): boolean {
+    const recent = (this.hits.get(key) ?? []).filter(at => at > now - this.windowMs);
+    if (recent.length >= this.limit) { this.hits.set(key, recent); return false; }
+    recent.push(now);
+    this.hits.delete(key);
+    this.hits.set(key, recent);
+    while (this.hits.size > 1024) this.hits.delete(this.hits.keys().next().value!);
+    return true;
+  }
+}
 
 // Integrations quote 4xx messages to people, and Yep Anywhere accepts only
 // letters and light punctuation, so the text is fixed; the deadline goes in a field.
@@ -60,6 +79,19 @@ export function credentialRefusal(coordinator: CredentialCoordinator, error: Cre
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const PREPARE_MS = 5 * 60_000;
+/** Pending network pairings: how long a code stays valid, and how many may wait. */
+export const PAIRING_TTL_MS = 10 * 60_000;
+const MAX_PENDING_PAIRINGS = 16;
+const MAX_PENDING_PER_ADDRESS = 4;
+// No 0/O or 1/I, so a code read aloud or retyped from another screen survives.
+const PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+interface PendingPairing { id: string; name: string; tokenHash: string; userCode: string; address: string | null; createdAt: number; expiresAt: number }
+/** Uppercases and drops separators, so `4f7q k9m2` matches `4F7Q-K9M2`. */
+export function normalizePairingCode(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 32) return undefined;
+  const code = value.toUpperCase().replace(/[\s-]/g, "");
+  return code.length === 8 && [...code].every(c => PAIRING_ALPHABET.includes(c)) ? code : undefined;
+}
 const SESSION_PIN_MS = 7 * 86_400_000;
 const MAX_SESSION_PINS = 10_000;
 function record(value: unknown): Record<string, unknown> {
@@ -77,6 +109,7 @@ function requestedServiceTier(body: Record<string, unknown>): string | undefined
   if (!validServiceTier(tier)) reject(400, "invalid service tier");
   return tier as string;
 }
+const formatCode = (code: string) => `${code.slice(0, 4)}-${code.slice(4)}`;
 function equalHash(a: string, b: string): boolean {
   return HASH.test(a) && HASH.test(b) && timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
 }
@@ -109,6 +142,8 @@ export class ControlRegistry {
   private state: ControlState;
   private readonly path: string;
   private readonly store: StateStore;
+  /** Network pairing requests awaiting owner approval; in memory only, so a restart drops them. */
+  private readonly pending = new Map<string, PendingPairing>();
   constructor(store: StateStore) {
     this.store = store;
     this.path = join(store.dir, "control.json");
@@ -159,14 +194,17 @@ export class ControlRegistry {
   }
   pools(integration?: Integration): Pool[] { return (this.state.pools ?? []).filter(p => !p.deleted && (!integration || this.current(integration).poolIds.includes(p.id))); }
   ownerIntegrations() { return this.state.integrations.map(({ id, name, accountIds, poolIds, revision, revoked }) => ({ id, name, accountIds, poolIds, revision, revoked })); }
+  private validGrants(poolIds: unknown, accountIds: unknown): { poolIds: string[]; accountIds: string[] } {
+    if (!Array.isArray(poolIds) || poolIds.length > 256 || new Set(poolIds).size !== poolIds.length || poolIds.some(id => !this.pools().some(p => p.id === id))) reject(400, "invalid pool grants");
+    if (!Array.isArray(accountIds) || accountIds.length > 256 || new Set(accountIds).size !== accountIds.length || accountIds.some(id => !this.store.loadAccounts().some(a => a.id === id))) reject(400, "invalid account grants");
+    return { poolIds: poolIds as string[], accountIds: accountIds as string[] };
+  }
   grant(body: Record<string, unknown>): object {
     const id = field(body, "id", UUID), i = this.state.integrations.find(i => i.id === id) ?? reject(404, "integration not found");
     if (i.revoked) reject(409, "integration revoked");
     if (body.revision !== i.revision) reject(409, "grants changed; reload before editing");
-    const { poolIds, accountIds = i.accountIds } = body;
-    if (!Array.isArray(poolIds) || poolIds.length > 256 || new Set(poolIds).size !== poolIds.length || poolIds.some(id => !this.pools().some(p => p.id === id))) reject(400, "invalid pool grants");
-    if (!Array.isArray(accountIds) || accountIds.length > 256 || new Set(accountIds).size !== accountIds.length || accountIds.some(id => !this.store.loadAccounts().some(a => a.id === id))) reject(400, "invalid account grants");
-    this.change(state => { const next = state.integrations.find(i => i.id === id)!; next.poolIds = poolIds as string[]; next.accountIds = accountIds as string[]; next.revision++; });
+    const { poolIds, accountIds } = this.validGrants(body.poolIds, body.accountIds ?? i.accountIds);
+    this.change(state => { const next = state.integrations.find(i => i.id === id)!; next.poolIds = poolIds; next.accountIds = accountIds; next.revision++; });
     return { updated: true };
   }
   pool(integration: Integration, id: string): Pool {
@@ -438,7 +476,75 @@ export class ControlRegistry {
     const token = authorization?.match(/^Bearer (aar_ctl_[A-Za-z0-9_-]{43})$/)?.[1];
     if (!token) return reject(401, "control credential required");
     const hash = hashGatewayToken(token);
-    return this.state.integrations.find((i) => !i.revoked && equalHash(i.tokenHash, hash)) ?? reject(401, "control credential revoked or unknown");
+    const found = this.state.integrations.find((i) => !i.revoked && equalHash(i.tokenHash, hash));
+    if (found) return found;
+    const waiting = this.pendingByHash(hash);
+    if (waiting) throw new ControlError(403, "Pairing is waiting for approval in the AAR dashboard", { code: "pairing_pending", userCode: formatCode(waiting.userCode), expiresAt: new Date(waiting.expiresAt).toISOString() });
+    return reject(401, "control credential revoked or unknown");
+  }
+  private prunePending(now = Date.now()): void {
+    let removed = false;
+    for (const [id, p] of this.pending) if (p.expiresAt <= now) { this.pending.delete(id); removed = true; }
+    if (removed) this.onChange?.();
+  }
+  private pendingByHash(hash: string): PendingPairing | undefined {
+    this.prunePending();
+    return [...this.pending.values()].find(p => equalHash(p.tokenHash, hash));
+  }
+  /**
+   * A network pairing request. Reaching the public listener is not owner
+   * authority, so this records a pending request with a short code that the
+   * owner types into the dashboard; it never grants anything by itself.
+   */
+  requestPairing(body: Record<string, unknown>, address: string | null, verificationUri: string): object {
+    const id = field(body, "id", UUID), name = field(body, "name"), tokenHash = field(body, "tokenHash", HASH);
+    if (name.length > 80 || !name.trim() || /[\x00-\x1f\x7f]/.test(name)) reject(400, "invalid name");
+    const existing = this.state.integrations.find(i => i.id === id);
+    if (existing) {
+      if (existing.revoked || !equalHash(existing.tokenHash, tokenHash)) reject(409, "pairing identity already used");
+      return { id, routerId: this.routerId, state: "active" };
+    }
+    this.prunePending();
+    let request = this.pending.get(id);
+    if (request && !equalHash(request.tokenHash, tokenHash)) reject(409, "pairing identity already used");
+    if (!request) {
+      if (this.pending.size >= MAX_PENDING_PAIRINGS) reject(429, "too many pending pairing requests; try again later");
+      if (address && [...this.pending.values()].filter(p => p.address === address).length >= MAX_PENDING_PER_ADDRESS) reject(429, "too many pending pairing requests; try again later");
+      const codes = new Set([...this.pending.values()].map(p => p.userCode));
+      let userCode: string;
+      do userCode = Array.from({ length: 8 }, () => PAIRING_ALPHABET[randomInt(PAIRING_ALPHABET.length)]).join(""); while (codes.has(userCode));
+      const now = Date.now();
+      request = { id, name: name.trim(), tokenHash, userCode, address, createdAt: now, expiresAt: now + PAIRING_TTL_MS };
+      this.pending.set(id, request);
+      this.events?.write("pairing", { action: "requested", integrationId: id, address });
+      this.onChange?.();
+    }
+    return { id, routerId: this.routerId, state: "pending", userCode: formatCode(request.userCode), verificationUri, expiresAt: new Date(request.expiresAt).toISOString(), interval: 5 };
+  }
+  /** Pending requests for the owner. Codes are deliberately absent: the owner types the one shown on the device. */
+  pendingPairings(): object[] {
+    this.prunePending();
+    return [...this.pending.values()].map(({ id, name, address, createdAt, expiresAt }) => ({ id, name, address, createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(expiresAt).toISOString() }));
+  }
+  /** Owner approval by code: pairs the requester and applies the chosen grants in one durable change. */
+  approvePairing(body: Record<string, unknown>): object {
+    const code = normalizePairingCode(body.userCode) ?? reject(400, "Enter the 8-character code shown on the device");
+    this.prunePending();
+    const request = [...this.pending.values()].find(p => p.userCode === code) ?? reject(404, "No pending pairing has that code; check the code shown on the device, or pair again if it expired");
+    const { poolIds, accountIds } = this.validGrants(body.poolIds ?? [], body.accountIds ?? []);
+    if (this.state.integrations.some(i => i.id === request.id)) reject(409, "pairing identity already used");
+    if (this.state.integrations.length >= 256) reject(409, "integration limit reached");
+    this.change(state => state.integrations.push({ id: request.id, name: request.name, tokenHash: request.tokenHash, accountIds, poolIds, revision: 1, revoked: false }));
+    this.pending.delete(request.id);
+    this.events?.write("pairing", { action: "approved", integrationId: request.id, address: request.address });
+    return { id: request.id, name: request.name };
+  }
+  denyPairing(body: Record<string, unknown>): object {
+    const id = field(body, "id", UUID);
+    if (!this.pending.delete(id)) reject(404, "pairing request not found");
+    this.events?.write("pairing", { action: "denied", integrationId: id });
+    this.onChange?.();
+    return { denied: true };
   }
   account(integration: Integration, id: string) {
     if (!this.visibleIds(integration).has(id)) return reject(403, "account not granted");
@@ -576,20 +682,33 @@ export async function startControl(store: StateStore, origin: string, coordinato
     metrics.quota(id, observation.quota?.windows ?? []);
     events?.write("quota", { accountId: id, provider: observation.quota?.provider ?? null, source: observed.source, requestId: observed.requestId ?? null, windows: observed.windows });
   };
-  let active = 0;
+  let active = 0, publicActive = 0;
   let stopping = false;
   let closing: Promise<void> | undefined;
-  const server = http.createServer({ maxHeaderSize: 8192 }, (req, res) => {
+  const capabilities = ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1", "service-tiers-v1", "gateway-token-header-v1"];
+  /**
+   * One handler for both transports. The owner-only socket also carries owner
+   * administration and trusted pairing; the public listener (behind a TLS
+   * proxy) carries integration operations and code-approved pairing only.
+   */
+  const handle = (req: http.IncomingMessage, res: http.ServerResponse, site: ControlSite) => {
     const reply = (status: number, body: object) => { res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }); res.end(JSON.stringify(body)); };
     if (stopping) { reply(503, { error: "router stopping" }); req.resume(); return; }
-    if (++active > 16) { active--; reply(503, { error: "control busy" }); req.resume(); return; }
-    res.once("close", () => { active--; });
+    const remote = site.kind === "public";
+    if ((remote ? ++publicActive : ++active) > 16) { if (remote) publicActive--; else active--; reply(503, { error: "control busy" }); req.resume(); return; }
+    res.once("close", () => { if (remote) publicActive--; else active--; });
     void (async () => {
-      if (req.headers.origin || req.headers.host !== "localhost") reject(403, "invalid control origin");
+      // Browsers always send Origin on these requests; control is for servers only.
+      if (req.headers.origin || (!remote && req.headers.host !== "localhost")) reject(403, "invalid control origin");
       const path = req.url;
-      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: origin, capabilities: ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1", "service-tiers-v1", "gateway-token-header-v1"], supportedPolicies: POOL_POLICIES, policies: POLICY_LIST });
+      if (req.method === "GET" && path === "/v1/info") return reply(200, { protocol: 1, routerId: registry.routerId, inferenceOrigin: remote ? site.origin : origin, capabilities: remote ? [...capabilities, "remote-pairing-v1"] : capabilities, supportedPolicies: POOL_POLICIES, policies: POLICY_LIST });
       const isOwner = path?.startsWith("/v1/owner/");
+      if (isOwner && remote) reject(404, "unknown control operation");
       if (isOwner) owner.authenticate(req.headers.authorization);
+      if (remote && req.method === "GET" && path === "/v1/pair/status") {
+        registry.authenticate(req.headers.authorization);
+        return reply(200, { state: "active", routerId: registry.routerId });
+      }
       let integration = path === "/v1/pair" || isOwner ? undefined : registry.authenticate(req.headers.authorization);
       if (req.method === "GET" && path === "/v1/accounts" && integration) return reply(200, { accounts: registry.accounts(integration) });
       if (req.method !== "POST") reject(404, "unknown control operation");
@@ -599,7 +718,12 @@ export async function startControl(store: StateStore, origin: string, coordinato
       let body: Record<string, unknown>;
       try { body = record(JSON.parse(Buffer.concat(chunks).toString())); } catch { return reject(400, "invalid JSON request"); }
       if (isOwner) { owner.authenticate(req.headers.authorization); return reply(200, await owner.operation(path!.slice("/v1/owner/".length), body)); }
-      if (path === "/v1/pair") return reply(200, registry.pair(body));
+      if (path === "/v1/pair") {
+        if (!remote) return reply(200, registry.pair(body));
+        const address = clientAddress(req);
+        if (!pairingAttempts.allow(address ?? "unknown")) reject(429, "too many pairing requests; try again later");
+        return reply(200, registry.requestPairing(body, address, `${site.origin}/#pair`));
+      }
       integration = registry.authenticate(req.headers.authorization);
       if (path === "/v1/pools/save") return reject(403, "pools are managed by the local router owner");
       if (path === "/v1/pools/remove") return reject(403, "pools are managed by the local router owner");
@@ -664,7 +788,9 @@ export async function startControl(store: StateStore, origin: string, coordinato
       }
       reject(404, "unknown control operation");
     })().catch((error: unknown) => { if (!res.destroyed && !res.headersSent) reply(error instanceof ControlError ? error.status : 503, error instanceof ControlError ? { ...error.details, error: error.message } : { error: "control operation unavailable" }); });
-  });
+  };
+  const pairingAttempts = new AttemptLimiter(10, PAIRING_TTL_MS);
+  const server = http.createServer({ maxHeaderSize: 8192 }, (req, res) => handle(req, res, { kind: "local" }));
   server.requestTimeout = 15_000; server.headersTimeout = 10_000; server.timeout = 20_000;
   await new Promise<void>((resolve, rejectPromise) => { server.once("error", rejectPromise); server.listen(socketPath, resolve); });
   chmodSync(socketPath, 0o600);
@@ -676,7 +802,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
     void Promise.allSettled([...coordinators.values()].map(c => c.signIn())).then(() => hub?.notifyChange());
     if (events) registry.events = events;
     owner = new OwnerService(store, registry, coordinators, evidence, id => { generations.set(id, (generations.get(id) ?? 0) + 1); catalogs.delete(id); evidence.invalidate(id); hub?.notifyChange(); }, origin,
-      { active: lifecycle.active, busy: (excludingCaller = true) => catalogJobs.size + quotaJobs.size + evidence.active() + Math.max(0, active + (hub?.inflight() ?? 0) - (excludingCaller ? 1 : 0)),
+      { active: lifecycle.active, busy: (excludingCaller = true) => catalogJobs.size + quotaJobs.size + evidence.active() + publicActive + Math.max(0, active + (hub?.inflight() ?? 0) - (excludingCaller ? 1 : 0)),
         stop: lifecycle.stop, ...(lifecycle.restart ? { restart: lifecycle.restart } : {}) });
     owner.extensions.metrics = metrics;
     const liveHub = hub = new AppHub(owner, metrics, () => registry.routerId);
@@ -684,7 +810,9 @@ export async function startControl(store: StateStore, origin: string, coordinato
     store.onWrite = () => liveHub.notifyChange();
     appSocket = await startAppSocket(join(store.dir, "app.sock"), liveHub);
   } catch (error) { hub?.close(); server.close(); if (existsSync(socketPath) && lstatSync(socketPath).ino === identity.ino) unlinkSync(socketPath); throw error; }
-  return { registry, evidence, socketPath, hub, owner, metrics, close: () => closing ??= (async () => {
+  /** The request listener the public listener mounts under /control for one public origin. */
+  const publicHandler = (publicOrigin: string) => (req: http.IncomingMessage, res: http.ServerResponse) => handle(req, res, { kind: "public", origin: publicOrigin });
+  return { registry, evidence, socketPath, hub, owner, metrics, publicHandler, close: () => closing ??= (async () => {
     stopping = true;
     hub?.close();
     await appSocket?.close();

@@ -19,6 +19,9 @@ import { READY_MESSAGE, RESTART_EXIT_CODE, Supervisor } from "./supervisor.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { generateGatewayToken, hashGatewayToken } from "./gateway-auth.ts";
 import { DEFAULT_DASHBOARD_PORT } from "./dashboard.ts";
+import { parsePublicOrigin } from "./public.ts";
+
+const DEFAULT_PUBLIC_PORT = 8420;
 import { fetchAccountQuotas } from "./quotas.ts";
 import { startRouter } from "./runtime.ts";
 import { defaultStateDir, StateStore } from "./state.ts";
@@ -45,13 +48,16 @@ const USAGE = `usage: aar [--state DIR] <command>
   client list
   client revoke <id-or-name>
   serve [--dashboard-port N] [--no-dashboard] [--dashboard-public-readonly]
-        [--dev] [--no-event-log]
+        [--dev] [--no-event-log] [--public-origin URL [--public-port N]]
                                          run the router on the configured loopback port,
                                          with the web dashboard on 127.0.0.1:${DEFAULT_DASHBOARD_PORT};
                                          --dev reloads browsers when UI files change;
                                          --no-event-log skips the analysis log in events/
                                          --dashboard-public-readonly allows viewing without sign-in;
-                                         management still requires a sign-in link
+                                         management still requires a sign-in link;
+                                         --public-origin https://HOST opens a loopback port
+                                         (default ${DEFAULT_PUBLIC_PORT}) for a TLS reverse proxy serving
+                                         inference, /control/ and the dashboard at HOST
   restart [--quiet-seconds N] [--cancel] restart aar serve with the current code once nothing
                                          has been in flight for N seconds (default 5)
   restart --now                          restart at once, cutting off open requests (clients
@@ -64,9 +70,15 @@ const USAGE = `usage: aar [--state DIR] <command>
   dashboard url                          print a new single-use dashboard access link
   dashboard sessions                     list signed-in dashboard browsers
   dashboard revoke <session-id>|--all    sign out dashboard browsers
+  pairing list                           list devices waiting to pair over the public origin
+  pairing approve <code> [--pool POOL]...
+                                         approve the device showing <code>, granting each
+                                         POOL (id or name)
+  pairing deny <request-id>              refuse a waiting device
 
 State defaults to $AAR_STATE_DIR or ~/.agent-auth-router. The dashboard port can
-also be set with $AAR_DASHBOARD_PORT. AAR_EVENT_LOG=0 disables the event log;
+also be set with $AAR_DASHBOARD_PORT, the public origin and port with
+$AAR_PUBLIC_ORIGIN and $AAR_PUBLIC_PORT. AAR_EVENT_LOG=0 disables the event log;
 AAR_LOG_FILE=0 disables the log file.`;
 
 function fail(message: string): never {
@@ -168,6 +180,9 @@ async function main(argv: string[]): Promise<void> {
       "no-dashboard": { type: "boolean" },
       "dashboard-public-readonly": { type: "boolean" },
       "no-event-log": { type: "boolean" },
+      "public-origin": { type: "string" },
+      "public-port": { type: "string" },
+      pool: { type: "string", multiple: true },
       dev: { type: "boolean" },
       all: { type: "boolean" },
       cancel: { type: "boolean" },
@@ -355,8 +370,8 @@ async function main(argv: string[]): Promise<void> {
     case "dashboard": {
       if (!existsSync(join(store.dir, "control.sock"))) fail("the router is not running; start it with aar serve");
       if (sub === "url") {
-        const { url, expiresAt } = await ownerRequest(store, "dashboard/code", {});
-        process.stdout.write(`${url}\n(single use; expires ${expiresAt})\n`);
+        const { url, publicUrl, expiresAt } = await ownerRequest(store, "dashboard/code", {});
+        process.stdout.write(publicUrl ? `${publicUrl}\n  or on this host: ${url}\n(single use, either address; expires ${expiresAt})\n` : `${url}\n(single use; expires ${expiresAt})\n`);
         return;
       }
       if (sub === "sessions") {
@@ -372,6 +387,35 @@ async function main(argv: string[]): Promise<void> {
         return;
       }
       fail("dashboard requires url, sessions or revoke");
+    }
+    case "pairing": {
+      if (!existsSync(join(store.dir, "control.sock"))) fail("the router is not running; start it with aar serve");
+      if (sub === "list") {
+        const { pairings } = await ownerRequest(store, "pairings/list", {}) as { pairings: { id: string; name: string; address: string | null; createdAt: string; expiresAt: string }[] };
+        for (const p of pairings) process.stdout.write(`${p.id}\t${p.name}\tfrom ${p.address ?? "unknown"}\trequested ${p.createdAt}\texpires ${p.expiresAt}\n`);
+        if (!pairings.length) process.stdout.write("no devices waiting to pair\n");
+        return;
+      }
+      if (sub === "approve") {
+        if (!arg) fail("pairing approve requires the code shown on the device");
+        const wanted = values.pool ?? [];
+        const known = wanted.length ? ((await ownerRequest(store, "overview", {})) as { pools: { id: string; name: string }[] }).pools : [];
+        const poolIds = wanted.map(name => {
+          const matches = known.filter(pool => pool.id === name || pool.name === name);
+          if (matches.length !== 1) fail(matches.length ? `ambiguous pool ${name}` : `no pool ${name}`);
+          return matches[0]!.id;
+        });
+        const { name } = await ownerRequest(store, "pairings/approve", { userCode: arg, poolIds }) as { name: string };
+        process.stdout.write(`paired ${name}${poolIds.length ? ` with ${poolIds.length} pool grant${poolIds.length === 1 ? "" : "s"}` : "; it has no access until you grant pools in the dashboard's Connections tab"}\n`);
+        return;
+      }
+      if (sub === "deny") {
+        if (!arg) fail("pairing deny requires a request id from aar pairing list");
+        await ownerRequest(store, "pairings/deny", { id: arg });
+        process.stdout.write("denied\n");
+        return;
+      }
+      fail("pairing requires list, approve or deny");
     }
     case "restart": {
       if (!existsSync(join(store.dir, "control.sock"))) fail("the router is not running; start it with aar serve");
@@ -424,6 +468,14 @@ async function main(argv: string[]): Promise<void> {
         // A test configuration with an ephemeral inference port gets an ephemeral dashboard too.
         dashboard = { port: raw !== undefined ? Number(raw) : store.loadConfig().listen.port === 0 ? 0 : DEFAULT_DASHBOARD_PORT, dev: values.dev === true, publicReadonly: values["dashboard-public-readonly"] === true };
       }
+      let publicListener: { origin: string; port: number } | undefined;
+      const publicOrigin = values["public-origin"] ?? process.env.AAR_PUBLIC_ORIGIN;
+      if (!desktop && publicOrigin) {
+        try { parsePublicOrigin(publicOrigin); } catch (error) { fail((error as Error).message); }
+        const raw = values["public-port"] ?? process.env.AAR_PUBLIC_PORT;
+        if (raw !== undefined && (!/^\d{1,5}$/.test(raw) || Number(raw) > 65535)) fail("public port must be a number from 0 to 65535");
+        publicListener = { origin: publicOrigin, port: raw !== undefined ? Number(raw) : DEFAULT_PUBLIC_PORT };
+      } else if (values["public-port"] !== undefined) fail("--public-port needs --public-origin");
       let parentClosed = false;
       let router: Awaited<ReturnType<typeof startRouter>> | undefined;
       let stopping = false, restarting = false;
@@ -457,13 +509,15 @@ async function main(argv: string[]): Promise<void> {
       process.on("SIGINT", shutdown);
       process.on("SIGTERM", shutdown);
       installCrashHandler(store.dir, () => router?.events?.flush());
-      try { router = await startRouter(store, {}, { desktop, recoverStaleSocket: true, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(restarting ? RESTART_EXIT_CODE : 0), ...(desktop ? {} : { restart }), ...(dashboard ? { dashboard } : {}), ...(values["no-event-log"] ? { eventLog: false } : {}) }); }
+      try { router = await startRouter(store, {}, { desktop, recoverStaleSocket: true, cancelProcesses: stopManagedProcesses, onClosed: () => process.exit(restarting ? RESTART_EXIT_CODE : 0), ...(desktop ? {} : { restart }), ...(dashboard ? { dashboard } : {}), ...(publicListener ? { public: publicListener } : {}), ...(values["no-event-log"] ? { eventLog: false } : {}) }); }
       catch (error) {
         if (desktop) { process.stderr.write(`AAR_STARTUP_ERROR:${JSON.stringify({ message: desktopStartupError(error) })}\n`); process.exit(1); }
         throw error;
       }
+      if (router.public) process.stdout.write(`Public origin: ${router.public.origin} (proxy it to 127.0.0.1:${router.public.port})\n`);
       if (router.dashboard) {
-        process.stdout.write(`Web dashboard: ${router.dashboard.mintCode().url}\n  This link signs in one browser. Run \`aar dashboard url\` for another.\n`);
+        const { url, publicUrl } = router.dashboard.mintCode();
+        process.stdout.write(`Web dashboard: ${publicUrl ?? url}\n${publicUrl ? `  or on this host: ${url}\n` : ""}  This link signs in one browser. Run \`aar dashboard url\` for another.\n`);
         if (dashboard?.publicReadonly) process.stdout.write(`  View without signing in: ${router.dashboard.origin}/ (view only)\n`);
         if (dashboard?.dev) process.stdout.write("  Dev mode: signed-in browsers reload when the UI build in ui/dist changes.\n");
       }

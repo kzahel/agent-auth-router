@@ -2,6 +2,7 @@ import { recoverDesktopSocket } from "./desktop-lifecycle.ts";
 import type { QuotaReadOptions } from "./quotas.ts";
 import { startControl } from "./control.ts";
 import { startDashboard, type Dashboard } from "./dashboard.ts";
+import { parsePublicOrigin, startPublic, type PublicListener } from "./public.ts";
 import { EventLog, eventLogEnabled } from "./events.ts";
 import { HistoryStore } from "./history.ts";
 import { Metrics } from "./metrics.ts";
@@ -41,6 +42,8 @@ export interface RunningRouter extends RouterServer {
   coordinators: Map<string, CredentialCoordinator>;
   controlSocket?: string;
   dashboard?: Dashboard;
+  /** The opt-in listener a TLS reverse proxy exposes at a public origin. */
+  public?: PublicListener;
   metrics: Metrics;
   /** Present when the analysis event log is enabled. */
   events?: EventLog;
@@ -48,8 +51,12 @@ export interface RunningRouter extends RouterServer {
 }
 
 export interface DashboardOptions { port: number; uiDir?: string; dev?: boolean; publicReadonly?: boolean }
+/** `origin` is the https origin the proxy serves; `port` is the loopback port it forwards to. */
+export interface PublicOptions { origin: string; port: number }
 
-export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}, lifecycle: { desktop?: boolean; recoverStaleSocket?: boolean; cancelProcesses?: () => Promise<void>; onClosed?: () => void; dashboard?: DashboardOptions; eventLog?: boolean; restart?: OwnerLifecycle["restart"] } = {}): Promise<RunningRouter> {
+export async function startRouter(store: StateStore, quotaOptions: QuotaReadOptions = {}, lifecycle: { desktop?: boolean; recoverStaleSocket?: boolean; cancelProcesses?: () => Promise<void>; onClosed?: () => void; dashboard?: DashboardOptions; public?: PublicOptions; eventLog?: boolean; restart?: OwnerLifecycle["restart"] } = {}): Promise<RunningRouter> {
+  const publicOrigin = lifecycle.public ? parsePublicOrigin(lifecycle.public.origin).origin : undefined;
+  if (lifecycle.public && process.platform === "win32") throw new Error("the public listener needs the control socket, which Windows does not support yet");
   store.init();
   // History is best effort: without it the router still routes and charts live traffic.
   let history: HistoryStore | undefined;
@@ -68,14 +75,17 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   const close = (force = false): Promise<void> => {
     if (force) {
       router.server.closeAllConnections();
+      publicListener?.server.closeAllConnections();
       cancelling ??= lifecycle.cancelProcesses?.() ?? Promise.resolve();
     }
     return closing ??= (async () => {
       // Stop admission synchronously before waiting for accepted streams.
       const stopped = new Promise<void>(resolve => { router.server.close(() => resolve()); router.server.closeIdleConnections(); });
+      const publicStopped = publicListener?.close();
       await dashboard?.close();
       await control?.close();
       await stopped;
+      await publicStopped;
       await cancelling;
       metrics.close();
       history?.close();
@@ -86,6 +96,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   };
   let control: Awaited<ReturnType<typeof startControl>> | undefined;
   let dashboard: Dashboard | undefined;
+  let publicListener: PublicListener | undefined;
   const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, observer: metrics,
     requestCompression: provider => store.loadSettings().requestCompression[provider] ?? "off",
     describeClient: client => control?.registry.describeClient(client) ?? { name: client.name },
@@ -121,11 +132,17 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
       events?.write("router", { action: "start", routerId: control.registry.routerId, pid: process.pid, accounts: coordinators.size });
       if (lifecycle.dashboard) {
         const owner = control.owner;
-        dashboard = await startDashboard({ store, hub: control.hub, authenticateOwner: header => owner.authenticate(header), port: lifecycle.dashboard.port, ...(lifecycle.dashboard.uiDir ? { uiDir: lifecycle.dashboard.uiDir } : {}), dev: lifecycle.dashboard.dev === true, publicReadonly: lifecycle.dashboard.publicReadonly === true });
+        dashboard = await startDashboard({ store, hub: control.hub, authenticateOwner: header => owner.authenticate(header), port: lifecycle.dashboard.port, ...(lifecycle.dashboard.uiDir ? { uiDir: lifecycle.dashboard.uiDir } : {}), dev: lifecycle.dashboard.dev === true, publicReadonly: lifecycle.dashboard.publicReadonly === true, ...(publicOrigin ? { publicOrigin } : {}) });
         owner.extensions.dashboard = dashboard;
       }
+      if (lifecycle.public && publicOrigin) {
+        publicListener = await startPublic({ origin: publicOrigin, port: lifecycle.public.port, maxHeaderBytes: router.limits.maxHeaderBytes, requestTimeoutMs: router.limits.clientRequestTimeoutMs,
+          surfaces: { inference: router.handleRequest, control: control.publicHandler(publicOrigin), ...(dashboard?.public ? { dashboard: dashboard.public } : {}) } });
+        control.owner.extensions.publicOrigin = publicOrigin;
+        log("public.listening", { origin: publicOrigin, port: publicListener.port });
+      }
     }
-    catch (error) { router.server.close(); await control?.close(); metrics.close(); history?.close(); events?.close(); throw error; }
+    catch (error) { router.server.close(); await dashboard?.close(); await control?.close(); metrics.close(); history?.close(); events?.close(); throw error; }
   }
   log("router.listening", { origin: boundOrigin, accounts: coordinators.size });
 
@@ -135,6 +152,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
     coordinators,
     ...(control ? { controlSocket: control.socketPath } : {}),
     ...(dashboard ? { dashboard } : {}),
+    ...(publicListener ? { public: publicListener } : {}),
     metrics,
     ...(events ? { events } : {}),
     close,

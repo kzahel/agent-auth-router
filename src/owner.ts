@@ -58,7 +58,7 @@ export function loginCommand(account: AccountConfig): string {
 /** The running web dashboard, when one is enabled. */
 export interface DashboardControl {
   origin: string;
-  mintCode(): { url: string; expiresAt: string };
+  mintCode(): { url: string; publicUrl?: string; expiresAt: string };
   sessions(): object[];
   revoke(id?: string): number;
 }
@@ -132,7 +132,7 @@ export const DISPLAY_QUOTA_STALE_MS = 15 * 60_000;
 
 export class OwnerService {
   /** Optional services attached after construction by the runtime. */
-  extensions: { metrics?: Metrics; dashboard?: DashboardControl } = {};
+  extensions: { metrics?: Metrics; dashboard?: DashboardControl; publicOrigin?: string } = {};
   private readonly token: string;
   private readonly store: StateStore;
   private readonly registry: ControlRegistry;
@@ -290,6 +290,8 @@ export class OwnerService {
         origin: this.origin,
         activeRequests: this.lifecycle.active(),
         integrations: this.registry.ownerIntegrations(),
+        pairings: this.registry.pendingPairings(),
+        ...(this.extensions.publicOrigin ? { publicOrigin: this.extensions.publicOrigin } : {}),
         logins: [...this.logins, ...this.terminals].map(([id, login]) => ({ id, status: login.status })),
         crashes: unacknowledgedCrashes(this.store.dir).map(summarize),
       };
@@ -366,6 +368,9 @@ export class OwnerService {
     if (operation === "pools/save") return this.registry.savePool(body);
     if (operation === "pools/remove") return this.registry.removePool(body);
     if (operation === "grants/save") return this.registry.grant(body);
+    if (operation === "pairings/list") return { pairings: this.registry.pendingPairings() };
+    if (operation === "pairings/approve") return this.registry.approvePairing(body);
+    if (operation === "pairings/deny") return this.registry.denyPairing(body);
     if (operation === "integrations/revoke") {
       const integration = this.registry.ownerIntegrations().find((i) => i.id === body.id);
       if (!integration) throw new ControlError(404, "integration not found");

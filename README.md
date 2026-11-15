@@ -125,6 +125,13 @@ management tabs show a command to get a sign-in link. Editing still requires
 sign-in. This option applies to the headless web server; the Tauri app uses
 its native owner connection.
 
+To host one router for several machines, run `aar serve --public-origin
+https://aar.example.com` behind a TLS reverse proxy forwarding to
+`127.0.0.1:8420`. Inference, `/control/` and the dashboard then share that
+origin, and other machines pair by showing a code that you approve with
+`aar pairing approve CODE` or in the dashboard's Connections tab. Yep Anywhere
+does not use this yet. See [the hosted router](docs/remote.md).
+
 For UI work, `npm run dev` rebuilds the UI in `ui/` whenever its source changes
 and runs `aar serve --dev`, which reloads signed-in browsers after each rebuild.
 The UI is React and TypeScript built with Vite; see [ui/README.md](ui/README.md).

@@ -5,6 +5,7 @@ import { ActionButton } from "../components/ActionButton.tsx";
 import type { Integration } from "../protocol/types.ts";
 import ui from "../styles/ui.module.css";
 import { GrantEditor } from "./GrantEditor.tsx";
+import { PairDevice } from "./PairDevice.tsx";
 
 /** Apps paired with the router, such as Yep Anywhere, and what each may use. */
 export function ConnectionsTab() {
@@ -16,6 +17,7 @@ export function ConnectionsTab() {
   return (
     <>
       <div className={ui.sectionHeading}><h2>Connections</h2></div>
+      {overview && <PairDevice overview={overview} />}
       <div id="integrations" className={ui.cards}>
         {integrations.map(i => (
           <article key={i.id} className={ui.card}>

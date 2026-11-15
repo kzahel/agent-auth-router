@@ -23,7 +23,8 @@ export function App({ signedOut, loginCommand = "aar dashboard url" }: { signedO
   const { native, router } = useApp();
   const { overview, access } = useRouterView();
   const readOnly = !native && access === "viewer";
-  const [tab, setTab] = useState<TabId>("dashboard");
+  // `#pair` is the verification link a pairing device shows; it opens Connections.
+  const [tab, setTab] = useState<TabId>(() => location.hash === "#pair" ? "integrations" : "dashboard");
   const [presentation, setPresentation] = useLocalStorage<TerminalPresentation>("terminal-presentation", stored => stored === "embedded" ? "embedded" : "external");
   const panel = (id: TabId, content: ReactNode) => (
     <section id={`panel-${id}`} role="tabpanel" aria-labelledby={`tab-${id}`} hidden={tab !== id}><PanelBoundary>{content}</PanelBoundary></section>

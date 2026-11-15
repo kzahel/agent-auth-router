@@ -33,6 +33,9 @@ export interface RouterDeps {
 export interface RouterServer {
   server: http.Server;
   activeRequests(): number;
+  /** The inference request handler, also mounted by the public listener. */
+  handleRequest: http.RequestListener;
+  limits: Limits;
 }
 
 const MAX_RELAYED_ERROR_BYTES = 64 * 1024;
@@ -65,7 +68,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
   }
   let active = 0;
 
-  const server = http.createServer({ maxHeaderSize: limits.maxHeaderBytes }, (req, res) => {
+  const handleRequest: http.RequestListener = (req, res) => {
     const requestId = randomUUID();
     const started = Date.now();
     const meta: Record<string, string | number | undefined> = { requestId, method: req.method };
@@ -109,7 +112,8 @@ export function createRouter(deps: RouterDeps): RouterServer {
     }
 
     handle(req, res, meta, tracking).catch(fail);
-  });
+  };
+  const server = http.createServer({ maxHeaderSize: limits.maxHeaderBytes }, handleRequest);
 
   server.headersTimeout = Math.min(limits.clientRequestTimeoutMs, 60_000);
   server.requestTimeout = limits.clientRequestTimeoutMs;
@@ -338,7 +342,7 @@ export function createRouter(deps: RouterDeps): RouterServer {
     });
   }
 
-  return { server, activeRequests: () => active };
+  return { server, activeRequests: () => active, handleRequest, limits };
 }
 
 function observe(upstreamRes: IncomingMessage, observed: RequestHandle, provider: Provider, route: string, status: number): void {

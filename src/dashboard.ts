@@ -9,6 +9,7 @@ import { existsSync, lstatSync, readFileSync, statSync, watch, type FSWatcher } 
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { extname, join, resolve, sep } from "node:path";
+import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { AppHub, MAX_MESSAGE_CHARS, type AppAccess } from "./app.ts";
 import { ControlError } from "./control.ts";
@@ -71,10 +72,20 @@ const equalHash = (a: string, b: string) => a.length === 64 && b.length === 64 &
 
 export interface Dashboard extends DashboardControl {
   port: number;
+  /** Handlers the public listener mounts for its HTTPS origin, when one is configured. */
+  public?: { request(req: IncomingMessage, res: ServerResponse): void; upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void };
   close(): Promise<void>;
 }
 
-export async function startDashboard(options: { store: StateStore; hub: AppHub; authenticateOwner: (header: string | undefined) => void; port: number; uiDir?: string; dev?: boolean; publicReadonly?: boolean }): Promise<Dashboard> {
+/**
+ * Where a request arrived: the loopback listener, or the public listener
+ * behind a TLS proxy. Each site has its own exact Host/Origin, cookie and
+ * whether view-only access applies. The public site never accepts the owner
+ * credential and never allows view-only access.
+ */
+interface Site { hosts: ReadonlySet<string>; origin: (host: string) => string; cookieName: string; secure: boolean; publicReadonly: boolean; ownerBearer: boolean; socketScheme: "ws" | "wss" }
+
+export async function startDashboard(options: { store: StateStore; hub: AppHub; authenticateOwner: (header: string | undefined) => void; port: number; uiDir?: string; dev?: boolean; publicReadonly?: boolean; publicOrigin?: string }): Promise<Dashboard> {
   const { store, hub } = options;
   const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   // Use this installation and state even when aar is not on the shell's PATH.
@@ -96,7 +107,6 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
   const codes = new Map<string, number>();
   let sessions = loadSessions(sessionsPath);
   let port = options.port;
-  let cookieName = "";
   const sockets = new Set<import("node:stream").Duplex>();
   // Development: reload signed-in browsers when a served UI file changes.
   let watcher: FSWatcher | undefined, reloadTimer: NodeJS.Timeout | undefined;
@@ -111,22 +121,27 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
     } catch (error) { log("dashboard.ui_watch_failed", { uiDir, error: errorText(error) }); }
   }
 
-  const origins = () => new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
-  const hostAllowed = (req: IncomingMessage) => req.headers.host === `127.0.0.1:${port}` || req.headers.host === `localhost:${port}`;
+  // Filled in once the loopback port is known.
+  const local: Site = { hosts: new Set(), origin: host => `http://${host}`, cookieName: "", secure: false, publicReadonly: options.publicReadonly === true, ownerBearer: true, socketScheme: "ws" };
+  const publicUrl = options.publicOrigin ? new URL(options.publicOrigin) : undefined;
+  // `__Host-` cookies must be Secure, host-only and Path=/, which the public site guarantees.
+  const remote: Site | undefined = publicUrl && { hosts: new Set([publicUrl.host.toLowerCase()]), origin: () => publicUrl.origin, cookieName: "__Host-aar_dashboard", secure: true, publicReadonly: false, ownerBearer: false, socketScheme: "wss" };
+  const hostAllowed = (req: IncomingMessage, site: Site) => site.hosts.has(String(req.headers.host ?? "").toLowerCase());
   /** Browser requests must come from this exact origin. */
-  const originAllowed = (req: IncomingMessage) => {
+  const originAllowed = (req: IncomingMessage, site: Site) => {
     const origin = req.headers.origin;
-    return typeof origin === "string" && origins().has(origin) && origin === `http://${req.headers.host}`;
+    return typeof origin === "string" && hostAllowed(req, site) && origin === site.origin(String(req.headers.host).toLowerCase());
   };
-  const cookie = (req: IncomingMessage): string | undefined => {
+  const cookie = (req: IncomingMessage, site: Site): string | undefined => {
     for (const part of String(req.headers.cookie ?? "").split(/;\s*/)) {
       const at = part.indexOf("=");
-      if (at > 0 && part.slice(0, at) === cookieName) return part.slice(at + 1);
+      if (at > 0 && part.slice(0, at) === site.cookieName) return part.slice(at + 1);
     }
     return undefined;
   };
-  const session = (req: IncomingMessage): Session | undefined => {
-    const token = cookie(req);
+  const cookieAttributes = (site: Site) => `HttpOnly; SameSite=Strict; Path=/${site.secure ? "; Secure" : ""}`;
+  const session = (req: IncomingMessage, site: Site): Session | undefined => {
+    const token = cookie(req, site);
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return undefined;
     const tokenHash = hash(token);
     const found = sessions.find(s => equalHash(s.tokenHash, tokenHash));
@@ -168,16 +183,16 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
     } catch { throw new ControlError(400, "invalid JSON request"); }
   };
 
-  const server = http.createServer({ maxHeaderSize: 16_384 }, (req, res) => {
+  const handleRequest = (req: IncomingMessage, res: ServerResponse, site: Site) => {
     void (async () => {
-      if (!hostAllowed(req)) return json(res, 403, { error: "invalid host" });
+      if (!hostAllowed(req, site)) return json(res, 403, { error: "invalid host" });
       const url = new URL(req.url ?? "/", "http://dashboard.invalid");
       const path = url.pathname;
       const file = path === "/" ? "/index.html" : path;
       if (req.method === "GET" && servedNow().has(file)) {
         let content: Buffer;
         try { content = readFileSync(join(uiDir, file.slice(1))); } catch { return json(res, 404, { error: "not found" }); }
-        const csp = `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://${req.headers.host}; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`;
+        const csp = `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ${site.socketScheme}://${req.headers.host}; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`;
         // Built assets are named by content hash, so they never change.
         const cache = file.startsWith("/assets/") ? { "cache-control": "public, max-age=31536000, immutable" } : {};
         res.writeHead(200, headers({ "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream", "content-security-policy": csp, ...cache }));
@@ -190,11 +205,12 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
         return;
       }
       if (path === "/auth/status" && req.method === "GET") return json(res, 200, {
-        authenticated: !!session(req), publicReadonly: options.publicReadonly === true,
-        loginCommand,
+        authenticated: !!session(req, site), publicReadonly: site.publicReadonly,
+        // Signed-out public visitors do not learn local paths or the account name.
+        loginCommand: site.ownerBearer ? loginCommand : "aar dashboard url",
       });
       if (path === "/auth/exchange" && req.method === "POST") {
-        if (!originAllowed(req)) return json(res, 403, { error: "invalid origin" });
+        if (!originAllowed(req, site)) return json(res, 403, { error: "invalid origin" });
         const body = await readJson(req);
         const code = typeof body.code === "string" && /^[A-Za-z0-9_-]{43}$/.test(body.code) ? body.code : undefined;
         const codeHash = code ? hash(code) : "";
@@ -210,13 +226,13 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
         sessions.sort((a, b) => Date.parse(b.lastUsedAt) - Date.parse(a.lastUsedAt));
         sessions = sessions.slice(0, MAX_SESSIONS);
         saveSessions();
-        return json(res, 200, { authenticated: true }, { "set-cookie": `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${COOKIE_MAX_AGE_SECONDS}` });
+        return json(res, 200, { authenticated: true }, { "set-cookie": `${site.cookieName}=${token}; ${cookieAttributes(site)}; Max-Age=${COOKIE_MAX_AGE_SECONDS}` });
       }
       if (path === "/auth/logout" && req.method === "POST") {
-        if (!originAllowed(req)) return json(res, 403, { error: "invalid origin" });
-        const current = session(req);
+        if (!originAllowed(req, site)) return json(res, 403, { error: "invalid origin" });
+        const current = session(req, site);
         if (current) { sessions = sessions.filter(s => s !== current); saveSessions(); }
-        return json(res, 200, { authenticated: false }, { "set-cookie": `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
+        return json(res, 200, { authenticated: false }, { "set-cookie": `${site.cookieName}=; ${cookieAttributes(site)}; Max-Age=0` });
       }
       if (path.startsWith("/v1/app/") && req.method === "POST") {
         let access: AppAccess = "owner";
@@ -224,12 +240,14 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
         // instead present the owner credential; browsers cannot send it
         // cross-origin without a CORS preflight this server never grants.
         if (req.headers.authorization !== undefined) {
-          if (req.headers.origin !== undefined && !originAllowed(req)) return json(res, 403, { error: "invalid origin" });
+          // The owner credential is a local file; it is never accepted from the public site.
+          if (!site.ownerBearer) return json(res, 401, { error: "dashboard session required" });
+          if (req.headers.origin !== undefined && !originAllowed(req, site)) return json(res, 403, { error: "invalid origin" });
           try { options.authenticateOwner(req.headers.authorization); } catch { return json(res, 401, { error: "local owner credential required" }); }
         } else {
-          if (!originAllowed(req)) return json(res, 403, { error: "invalid origin" });
-          if (!session(req)) {
-            if (!options.publicReadonly) return json(res, 401, { error: "dashboard session required" });
+          if (!originAllowed(req, site)) return json(res, 403, { error: "invalid origin" });
+          if (!session(req, site)) {
+            if (!site.publicReadonly) return json(res, 401, { error: "dashboard session required" });
             access = "viewer";
           }
         }
@@ -242,17 +260,18 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
       if (error instanceof ControlError) json(res, error.status, { error: error.message });
       else { log("dashboard.request_failed", { error: errorText(error) }); json(res, 503, { error: "dashboard request failed" }); }
     });
-  });
+  };
+  const server = http.createServer({ maxHeaderSize: 16_384 }, (req, res) => handleRequest(req, res, local));
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
-  server.on("upgrade", (req, socket, head) => {
+  const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer, site: Site) => {
     const deny = (status: number, reason: string) => socket.end(`HTTP/1.1 ${status} ${reason}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`);
     // Browsers apply no CORS to WebSockets: exact Origin is required even for
     // public viewing. A session cookie upgrades the connection to owner access.
-    if (!hostAllowed(req) || !originAllowed(req)) return deny(403, "Forbidden");
+    if (!hostAllowed(req, site) || !originAllowed(req, site)) return deny(403, "Forbidden");
     if (new URL(req.url ?? "/", "http://dashboard.invalid").pathname !== "/v1/app/ws") return deny(404, "Not Found");
-    const access: AppAccess = session(req) ? "owner" : "viewer";
-    if (access === "viewer" && !options.publicReadonly) return deny(401, "Unauthorized");
+    const access: AppAccess = session(req, site) ? "owner" : "viewer";
+    if (access === "viewer" && !site.publicReadonly) return deny(401, "Unauthorized");
     if (sockets.size >= 32) return deny(503, "Service Unavailable");
     const ws = acceptWebSocket(req, socket, head, MAX_MESSAGE_CHARS * 4);
     if (!ws) return;
@@ -260,11 +279,12 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
     const app = hub.open("web", { send: text => ws.send(text), close: () => ws.close() }, true, access);
     ws.onMessage(text => {
       // A revoked browser session must not retain management access on its socket.
-      if (access === "owner" && !session(req)) { app.close(); return; }
+      if (access === "owner" && !session(req, site)) { app.close(); return; }
       app.receive(text);
     });
     ws.onClose(() => { sockets.delete(socket); app.close(); });
-  });
+  };
+  server.on("upgrade", (req, socket, head) => handleUpgrade(req, socket, head, local));
 
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", (error: NodeJS.ErrnoException) => reject(error.code === "EADDRINUSE"
@@ -273,19 +293,21 @@ export async function startDashboard(options: { store: StateStore; hub: AppHub; 
     server.listen(options.port, "127.0.0.1", () => resolveListen());
   });
   port = (server.address() as AddressInfo).port;
-  cookieName = `aar_dashboard_${port}`;
+  local.cookieName = `aar_dashboard_${port}`;
+  local.hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const origin = `http://127.0.0.1:${port}`;
 
   return {
     port,
     origin,
+    ...(remote ? { public: { request: (req, res) => handleRequest(req, res, remote), upgrade: (req, socket, head) => handleUpgrade(req, socket, head, remote) } } : {}),
     mintCode() {
       const now = Date.now();
       for (const [key, expiry] of codes) if (expiry < now) codes.delete(key);
       while (codes.size >= MAX_CODES) codes.delete(codes.keys().next().value!);
       const code = randomBytes(32).toString("base64url");
       codes.set(hash(code), now + CODE_TTL_MS);
-      return { url: `${origin}/#code=${code}`, expiresAt: new Date(now + CODE_TTL_MS).toISOString() };
+      return { url: `${origin}/#code=${code}`, ...(publicUrl ? { publicUrl: `${publicUrl.origin}/#code=${code}` } : {}), expiresAt: new Date(now + CODE_TTL_MS).toISOString() };
     },
     sessions: () => sessions.map(({ id, createdAt, lastUsedAt, userAgent }) => ({ id, createdAt, lastUsedAt, userAgent })),
     revoke(id) {

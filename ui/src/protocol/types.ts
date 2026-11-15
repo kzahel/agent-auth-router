@@ -60,6 +60,15 @@ export interface Integration {
   accountIds: string[];
 }
 
+/** A device waiting to pair over the public origin. The code is absent: the owner types the one shown on the device. */
+export interface PendingPairing {
+  id: string;
+  name: string;
+  address: string | null;
+  createdAt: string;
+  expiresAt: string;
+}
+
 export interface Overview {
   routerId: string;
   build?: { version?: string; source?: string };
@@ -67,6 +76,10 @@ export interface Overview {
   accounts: Account[];
   pools: Pool[];
   integrations: Integration[];
+  /** Devices waiting to pair over the public origin. Older routers omit it. */
+  pairings?: PendingPairing[];
+  /** The public HTTPS origin, when the router runs a public listener. */
+  publicOrigin?: string;
   logins: { id: string; status: string }[];
   /** Crashes the owner has not acknowledged, oldest first. Older routers omit it. */
   crashes?: Crash[];

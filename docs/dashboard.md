@@ -277,7 +277,7 @@ specifies. Nothing in this document is served on the inference listener.
 LAN, Tailscale and remote access are out of scope. They need their own design
 (rstorrent's basic-auth and tailscale-serve modes are a reference) and are
 not enabled by this work. Username/password login is a possible addition
-for that case.
+for that case. The opt-in public HTTPS listener in [remote](remote.md) serves this dashboard at a public origin behind a TLS proxy.
 
 ## Dashboard tab
 

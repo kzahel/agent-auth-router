@@ -19,6 +19,7 @@ The router appends one JSON object per line to
 | `quota` | a usage probe returns, or a proxied 2xx carries rate-limit headers | `accountId`, `provider`, `source` (`probe`/`inference`), `requestId` (inference only), `windows` as the normalizer produced them: `bucket`, `windowMinutes`, `usedPercent`, `remainingPercent`, `resetsAt` |
 | `rejection` | a provider answers 401, 403 or 429 | `accountId`, `provider`, `status`, `retryAfter`, `requestId` |
 | `cyber-access` | upstream headers arrive for a Codex `/responses` request with an explicit recognized cyber program | `accountId`, `model`, `program`, `status`, `requestId` |
+| `pairing` | a network pairing request arrives on the public listener, or the owner approves or denies one ([remote](remote.md)) | `action` (`requested`/`approved`/`denied`), `integrationId`, `address` (as the reverse proxy reported it; absent for denials) |
 | `request` | a proxied request ends | the dashboard's request entry: `requestId`, `startedAt`, `endedAt`, `client`, `accountId`, `provider`, `poolId`, `bindingId`, `sessionId`, `route`, `model`, `status`, `outcome`, `bytesUp`, `bytesDown`, `usage`, `estimated` |
 | `binding` | a session binding is prepared, committed, cancelled, or a pool prepare is refused | `action`, `bindingId`, `integrationId`, `accountId`, `provider`, `model`, `poolId`, `policy`, `state`, `createdAt`, and for pool prepares the stored `reason`, `selectionEvidence`, `observedAt` and `candidates` |
 
