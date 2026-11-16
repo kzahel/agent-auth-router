@@ -43,7 +43,7 @@ test("public viewing gates management tabs, signs in with the displayed command 
     await mkdir(captures, { recursive: true });
     await page.screenshot({ path: join(captures, "web-dashboard-view-only.png"), fullPage: true });
   }
-  for (const name of ["Accounts", "Pools", "Connections", "Settings"]) {
+  for (const name of ["Accounts", "Resets", "Pools", "Connections", "Settings"]) {
     await page.getByRole("tab", { name, exact: true }).click();
     await page.getByRole("heading", { name: "Sign in to manage the router" }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Add account", exact: true }).isVisible(), false);

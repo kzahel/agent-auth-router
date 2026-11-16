@@ -277,7 +277,7 @@ test("management UI preserves typing while observations update, and offers owner
   await page.waitForFunction(() => document.querySelectorAll("#accounts article").length === 4);
   await page.getByRole("tab", { name: "Accounts", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
-  assert.equal(await page.getByRole("tab", { name: "Pools", exact: true }).getAttribute("aria-selected"), "true");
+  assert.equal(await page.getByRole("tab", { name: "Resets", exact: true }).getAttribute("aria-selected"), "true");
   await page.keyboard.press("Home");
   assert.equal(await page.getByRole("tab", { name: "Dashboard", exact: true }).getAttribute("aria-selected"), "true");
   await page.getByRole("tab", { name: "Accounts", exact: true }).click();
