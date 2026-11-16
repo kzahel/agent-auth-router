@@ -40,7 +40,8 @@ sessions and ranges show what the traffic would cost at the providers'
 published API prices ([pricing](docs/pricing.md)). Request bodies pass
 through unchanged by default; Settings can have the router compress them
 upstream ([compression](docs/compression.md)). Settings can also show each
-account's free usage-limit resets and their expiry; this is off by default
+account's free usage-limit resets; the **Resets** tab lists them all by expiry,
+marking those due within two weeks, a week and a day. This is off by default
 because Claude reports them only through an undocumented endpoint, read
 with the installed CLI's User-Agent ([sources](docs/sources.md#limit-resets)). See the
 [desktop guide](desktop/README.md) for details.

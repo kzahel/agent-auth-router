@@ -15,8 +15,8 @@ it("moves between tabs with the arrow keys, Home and End, with one tab stop", as
   await userEvent.click(screen.getByRole("tab", { name: "Accounts" }));
   expect(selected()).toBe("Accounts");
   await userEvent.keyboard("{ArrowRight}");
-  expect(selected()).toBe("Pools");
-  expect(document.activeElement?.textContent).toBe("Pools");
+  expect(selected()).toBe("Resets");
+  expect(document.activeElement?.textContent).toBe("Resets");
   await userEvent.keyboard("{End}");
   expect(selected()).toBe("Settings");
   await userEvent.keyboard("{ArrowRight}");
@@ -24,4 +24,9 @@ it("moves between tabs with the arrow keys, Home and End, with one tab stop", as
   await userEvent.keyboard("{ArrowLeft}{Home}");
   expect(selected()).toBe("Dashboard");
   expect(screen.getAllByRole("tab").filter(t => t.tabIndex === 0)).toHaveLength(1);
+});
+
+it("shows a badge with its own description", () => {
+  render(<Tabs selected="dashboard" onSelect={() => {}} badges={{ resets: { text: "2", label: "2 limit resets expire within a week" } }} />);
+  expect(screen.getByRole("tab", { name: "Resets 2 limit resets expire within a week" })).toBeTruthy();
 });

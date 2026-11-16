@@ -2,3 +2,4 @@
 .tabs button { border-color: transparent; background: transparent; padding: 5px 12px; }
 .tabs button:hover { background: var(--hover); }
 .tabs button[aria-selected="true"] { background: var(--hover); color: var(--accent); }
+.badge { display: inline-block; margin-left: 5px; min-width: 16px; padding: 0 5px; border-radius: 999px; background: var(--warning); color: var(--surface); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }

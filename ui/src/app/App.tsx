@@ -4,7 +4,9 @@ import { ConnectionsTab } from "../connections/ConnectionsTab.tsx";
 import { PanelBoundary } from "../components/PanelBoundary.tsx";
 import { ActionButton } from "../components/ActionButton.tsx";
 import { DashboardTab } from "../dashboard/DashboardTab.tsx";
+import { soonCount } from "../lib/resets.ts";
 import { PoolsTab } from "../pools/PoolsTab.tsx";
+import { ResetsTab } from "../resets/ResetsTab.tsx";
 import { SettingsTab, type TerminalPresentation } from "../settings/SettingsTab.tsx";
 import ui from "../styles/ui.module.css";
 import styles from "./app.module.css";
@@ -25,6 +27,10 @@ export function App({ signedOut, loginCommand = "aar dashboard url" }: { signedO
   const readOnly = !native && access === "viewer";
   // `#pair` is the verification link a pairing device shows; it opens Connections.
   const [tab, setTab] = useState<TabId>(() => location.hash === "#pair" ? "integrations" : "dashboard");
+  // Opening an account from Resets scrolls Accounts to it; the count makes each request distinct.
+  const [focusAccount, setFocusAccount] = useState<{ id: string; request: number }>();
+  const openAccount = (id: string) => { setTab("accounts"); setFocusAccount(current => ({ id, request: (current?.request ?? 0) + 1 })); };
+  const soon = soonCount(overview?.accounts ?? []);
   const [presentation, setPresentation] = useLocalStorage<TerminalPresentation>("terminal-presentation", stored => stored === "embedded" ? "embedded" : "external");
   const panel = (id: TabId, content: ReactNode) => (
     <section id={`panel-${id}`} role="tabpanel" aria-labelledby={`tab-${id}`} hidden={tab !== id}><PanelBoundary>{content}</PanelBoundary></section>
@@ -44,10 +50,11 @@ export function App({ signedOut, loginCommand = "aar dashboard url" }: { signedO
         ) : (
           <div id="app-shell">
             {readOnly && <p className={styles.viewOnly}>View only · <button type="button" onClick={() => setTab("settings")}>Sign in to manage</button></p>}
-            <Tabs selected={tab} onSelect={setTab} />
+            <Tabs selected={tab} onSelect={setTab} badges={soon ? { resets: { text: String(soon), label: `${soon} limit ${soon === 1 ? "reset expires" : "resets expire"} within a week` } } : {}} />
             <ErrorLine />
             {panel("dashboard", <DashboardTab visible={tab === "dashboard"} onAddAccount={() => setTab("accounts")} />)}
-            {panel("accounts", readOnly ? <SignInGuide command={loginCommand} manage /> : <AccountsTab presentation={presentation} />)}
+            {panel("accounts", readOnly ? <SignInGuide command={loginCommand} manage /> : <AccountsTab presentation={presentation} focus={focusAccount} />)}
+            {panel("resets", readOnly ? <SignInGuide command={loginCommand} manage /> : <ResetsTab visible={tab === "resets"} onOpenAccount={openAccount} onOpenSettings={() => setTab("settings")} />)}
             {panel("pools", readOnly ? <SignInGuide command={loginCommand} manage /> : <PoolsTab />)}
             {panel("integrations", readOnly ? <SignInGuide command={loginCommand} manage /> : <ConnectionsTab />)}
             {panel("settings", readOnly ? <SignInGuide command={loginCommand} manage /> : <SettingsTab visible={tab === "settings"} presentation={presentation} onPresentation={setPresentation} onNavigate={setTab} />)}

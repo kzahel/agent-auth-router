@@ -3,6 +3,8 @@ import { useConfirm } from "../app/ConfirmDialog.tsx";
 import { useApp } from "../app/context.tsx";
 import { ActionButton } from "../components/ActionButton.tsx";
 import type { Account, LimitResets, LoginStatus } from "../protocol/types.ts";
+import { ExpiryBadge } from "../resets/ExpiryBadge.tsx";
+import { useNow } from "../resets/use-now.ts";
 import type { TerminalPresentation } from "../settings/SettingsTab.tsx";
 import ui from "../styles/ui.module.css";
 import styles from "./accounts.module.css";
@@ -33,16 +35,20 @@ function loginNotice(loginExpiresAt: string | null | undefined, now = Date.now()
 
 /** Granted limit resets: how many are left and when each kind expires. Read only. */
 function LimitResetList({ resets: r }: { resets: LimitResets }) {
+  const now = useNow();
   if (r.error) return <p className={ui.hint} data-testid="limit-resets">{`Limit resets unknown: ${r.error}`}</p>;
   return (
     <div className={styles.resets} data-testid="limit-resets">
       <span>{`Limit resets · ${r.available ?? "unknown"} available`}</span>
       {r.resets.map((reset, i) => (
-        <small key={i}>{[
-          `${reset.label ?? "Reset"}${reset.available > 1 || (reset.total ?? 0) > 1 ? ` · ${reset.available}${reset.total ? ` of ${reset.total}` : ""} left` : ""}`,
-          reset.expiresAt ? `expires ${new Date(reset.expiresAt).toLocaleString()}` : "no expiry reported",
-          ...(reset.usableNow === false ? ["not usable now"] : []),
-        ].join(" · ")}</small>
+        <small key={i} className={styles.reset}>
+          <ExpiryBadge expiresAt={reset.expiresAt} now={now} />
+          <span>{[
+            `${reset.label ?? "Reset"}${reset.available > 1 || (reset.total ?? 0) > 1 ? ` · ${reset.available}${reset.total ? ` of ${reset.total}` : ""} left` : ""}`,
+            reset.expiresAt ? `expires ${new Date(reset.expiresAt).toLocaleString()}` : "no expiry reported",
+            ...(reset.usableNow === false ? ["not usable now"] : []),
+          ].join(" · ")}</span>
+        </small>
       ))}
     </div>
   );
@@ -92,7 +98,7 @@ export function AccountCard({ account: a, login, presentation, onEditNickname, o
   );
 
   return (
-    <article className={ui.card}>
+    <article id={`account-${a.id}`} tabIndex={-1} className={`${ui.card} ${styles.target}`}>
       <h3 className={ui.profilePath}>{a.home ?? a.id}</h3>
       {a.nickname && <p className={styles.nickname}>{a.nickname}</p>}
       <span className={ui.badge}>{`${a.provider} · ${a.retired ? "retired" : a.enabled ? "enabled" : "disabled"} · usage ${a.freshness}`}</span>

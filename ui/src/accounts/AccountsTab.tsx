@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useApp, useRouterView } from "../app/context.tsx";
 import { useAction } from "../app/use-action.ts";
 import type { Account, RemovalPreview } from "../protocol/types.ts";
@@ -10,7 +10,7 @@ import { AddAccountForm } from "./AddAccountForm.tsx";
 import { NicknameEditor } from "./NicknameEditor.tsx";
 import { RemoveAccountDialog } from "./RemoveAccountDialog.tsx";
 
-export function AccountsTab({ presentation }: { presentation: TerminalPresentation }) {
+export function AccountsTab({ presentation, focus }: { presentation: TerminalPresentation; focus?: { id: string; request: number } | undefined }) {
   const { api } = useApp();
   const { overview } = useRouterView();
   // Each Edit nickname opens a fresh editor, even for the same account.
@@ -19,6 +19,13 @@ export function AccountsTab({ presentation }: { presentation: TerminalPresentati
   const [providers, setProviders] = useState("");
   const [checking, check] = useAction();
   const accounts = overview?.accounts ?? [];
+  // Another tab asked to show one account: bring its card into view and focus it.
+  useEffect(() => {
+    if (!focus) return;
+    const card = document.getElementById(`account-${focus.id}`);
+    card?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    card?.focus({ preventScroll: true });
+  }, [focus]);
   return (
     <>
       <details className={styles.help}>

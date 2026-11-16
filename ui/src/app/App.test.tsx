@@ -27,7 +27,7 @@ describe("dashboard access", () => {
     app.render(<App loginCommand="aar --state '/server/state' dashboard url" />);
     expect(screen.getByText(/View only/)).toBeTruthy();
     expect(screen.getByRole("combobox")).toBeTruthy();
-    for (const name of ["Accounts", "Pools", "Connections", "Settings"]) {
+    for (const name of ["Accounts", "Resets", "Pools", "Connections", "Settings"]) {
       await userEvent.click(screen.getByRole("tab", { name }));
       const panel = within(screen.getByRole("tabpanel"));
       expect(panel.getByRole("heading", { name: "Sign in to manage the router" })).toBeTruthy();
@@ -84,5 +84,22 @@ describe("crash banner", () => {
     await app.router.reload();
     app.render(<App />);
     expect(screen.queryByText(/The router crashed/)).toBeNull();
+  });
+});
+
+describe("limit resets", () => {
+  it("badges resets expiring within a week, and opens an account from the Resets tab", async () => {
+    const soon = new Date(Date.now() + 3 * 86_400_000).toISOString(), later = new Date(Date.now() + 40 * 86_400_000).toISOString();
+    const resets = (expiresAt: string, available = 1) => ({ observedAt: soon, available, resets: [{ label: "Full reset", available, total: available, expiresAt, usableNow: true }] });
+    const app = await fakeApp({ overview: () => overview({ accounts: [
+      account("work", { nickname: "Work", provider: "claude", quota: { observedAt: soon, limitResets: resets(soon, 2) } }),
+      account("home", { quota: { observedAt: soon, limitResets: resets(later) } }),
+    ] }) }, { snapshots });
+    await app.router.reload();
+    app.render(<App />);
+    await userEvent.click(screen.getByRole("tab", { name: "Resets 2 limit resets expire within a week" }));
+    await userEvent.click(within(screen.getByRole("tabpanel")).getByRole("button", { name: "Work · claude" }));
+    expect(screen.getByRole("tab", { selected: true }).textContent).toBe("Accounts");
+    expect(document.activeElement?.id).toBe("account-work");
   });
 });
