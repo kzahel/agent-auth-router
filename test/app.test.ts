@@ -167,6 +167,20 @@ test("desktop pipe: owner hello, core-side policy, subscriptions and change even
   await app.next(() => appended().reduce((total, m) => total + outputIn(m), 0) === 33, 4000);
   assert.ok(appended().every((m) => m.data.start > history.completeThrough));
 
+  // The 24-hour range also pushes the bucket still filling, once per change.
+  app.send({ id: 8, subscribe: "history", body: { range: "24h", scope: "account:work", metrics: ["output"] } });
+  const day = (await app.next((m) => m.id === 8)).result;
+  assert.equal(day.partial.bucket, day.completeThrough + 1);
+  const before = day.partial.series.output;
+  await infer();
+  const daily = () => app.messages.filter((m) => m.sub === 8 && m.event === "history");
+  // Across a five-minute boundary the output lands in a completed bucket instead.
+  const dayOutput = () => daily().reduce((total, m) => total + outputIn(m), 0) + (daily().at(-1)?.data.partial.series.output ?? before) - before;
+  await app.next(() => dayOutput() === 33, 4000);
+  const sent = daily().length;
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  assert.ok(daily().length - sent <= 1, "an unchanged bucket is not sent again each second");
+
   // Registry edits from any owner surface notify connected UIs.
   await ownerRequest(store, "pools/save", { id: randomUUID(), revision: 0, name: "Work", provider: "claude", policy: "manual", accountIds: ["work"] });
   await app.next((m) => m.event === "change");

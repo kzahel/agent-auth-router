@@ -14,12 +14,16 @@ import { USAGE_FIELDS, zeroUsage, type UsageAttributes, type UsageFigures } from
 export const COUNTERS = ["requests", "errors", "input", "cacheRead", "cacheWrite", "output", "reasoning", "cacheWrite1h", "webSearches", "bytesUp", "bytesSent", "bytesDown", "unreported"] as const;
 export type Counter = (typeof COUNTERS)[number];
 
+/**
+ * `partial` ranges also report the bucket still filling: their buckets are
+ * long enough that leaving it out hides recent traffic for minutes or an hour.
+ */
 export const RANGES = {
-  "2m": { bucketMs: 1_000, count: 120, persist: false },
-  "10m": { bucketMs: 5_000, count: 120, persist: false },
-  "1h": { bucketMs: 30_000, count: 120, persist: false },
-  "24h": { bucketMs: 300_000, count: 288, persist: true },
-  "30d": { bucketMs: 3_600_000, count: 720, persist: true },
+  "2m": { bucketMs: 1_000, count: 120, persist: false, partial: false },
+  "10m": { bucketMs: 5_000, count: 120, persist: false, partial: false },
+  "1h": { bucketMs: 30_000, count: 120, persist: false, partial: false },
+  "24h": { bucketMs: 300_000, count: 288, persist: true, partial: true },
+  "30d": { bucketMs: 3_600_000, count: 720, persist: true, partial: true },
 } as const;
 export type RangeName = keyof typeof RANGES;
 export const isRange = (value: unknown): value is RangeName => typeof value === "string" && Object.hasOwn(RANGES, value);
@@ -107,6 +111,12 @@ class Tier {
     }
     return { start, completeThrough, series };
   }
+  /** The head bucket so far: sums are not scaled up, so it only grows towards its final value. */
+  partial(metrics: readonly string[], now: number): PartialBucket {
+    const series: Record<string, number | null> = {};
+    for (const metric of metrics) series[metric] = this.value(metric, this.head);
+    return { bucket: this.head, elapsedMs: Math.max(0, Math.min(this.bucketMs, now - this.head * this.bucketMs)), series };
+  }
   sum(metric: string, buckets: number): number {
     let total = 0;
     for (let b = this.head - buckets; b < this.head; b++) total += this.value(metric, b) ?? 0;
@@ -115,6 +125,9 @@ class Tier {
 }
 
 type Scope = Record<RangeName, Tier>;
+
+/** The bucket still filling, after `completeThrough`, and how much of it has passed. */
+export interface PartialBucket { bucket: number; elapsedMs: number; series: Record<string, number | null> }
 
 export interface RequestEntry {
   id: number;
@@ -341,11 +354,13 @@ export class Metrics {
     return { range, metrics: [...metrics], bucketMs, count, start, completeThrough, accounts };
   }
   history(range: RangeName, scopeKey: string, metrics: readonly string[] = COUNTERS, after?: number) {
-    const tier = this.scope(scopeKey)[range];
-    tier.advance(this.now());
+    const tier = this.scope(scopeKey)[range], now = this.now();
+    tier.advance(now);
     const quotaMetrics = metrics.includes("quota") ? [...tier.series.keys()].filter(isGauge) : [];
-    const rows = tier.rows([...metrics.filter(m => m !== "quota"), ...quotaMetrics], after);
-    return { range, scope: scopeKey, bucketMs: tier.bucketMs, count: tier.count, epoch: this.epoch, ...rows };
+    const columns = [...metrics.filter(m => m !== "quota"), ...quotaMetrics];
+    const rows = tier.rows(columns, after);
+    const partial = RANGES[range].partial ? { partial: tier.partial(columns, now) } : {};
+    return { range, scope: scopeKey, bucketMs: tier.bucketMs, count: tier.count, epoch: this.epoch, ...rows, ...partial };
   }
   private touchSessions(scopes: readonly string[], sessionId: string, change: 1 | -1): void {
     const now = this.now();

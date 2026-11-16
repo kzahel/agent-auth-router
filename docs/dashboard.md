@@ -87,7 +87,15 @@ History follows rstorrent's `crates/rstorrent-session/src/speed.rs`. Each
 tier is a fixed ring keyed by `floor(time / bucketMs) % count`, and every
 event adds into all tiers at once. Buckets hold sums, and rates are
 `sum × 1000 / bucketMs`. A bucket carries a covered flag, so time the router
-was not running is a gap, not zero. Only complete buckets are reported.
+was not running is a gap, not zero. Complete buckets are reported as
+history. The 24-hour and 30-day ranges also report the bucket still filling,
+as `partial` (its bucket number, the time elapsed in it and the sums so far),
+because their 5-minute and 1-hour buckets would otherwise hide recent traffic
+for that long. The chart draws it faded at the right edge at the sums so far
+over the whole bucket length, so it only rises towards its final value and
+cannot inflate the scale the way a rate over the elapsed time could early in
+the bucket. The shorter ranges leave it out: there an unfinished bucket would
+only show as a dip at the edge.
 
 | Range | Bucket | Count | Persisted |
 | --- | --- | --- | --- |
@@ -141,7 +149,9 @@ pipe underneath differs.
   five-second rates, one-minute totals per scope, the latest quota windows
   and active requests. `history` sends a snapshot and then appends each newly
   completed bucket, with an epoch and `completeThrough` for continuity
-  checks. `requests` sends the recent list and then each request as it starts
+  checks. For the 24-hour and 30-day ranges each message also carries the
+  bucket still filling, and an append with no new buckets is sent when its
+  sums change, at most once a second. `requests` sends the recent list and then each request as it starts
   and ends. A session may hold 16 subscriptions and 16 calls in flight.
 - **Change events** are coalesced to at most four a second. They are emitted
   for registry writes (accounts, clients, `control.json`) and for owner-side

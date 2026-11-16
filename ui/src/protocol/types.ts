@@ -153,6 +153,8 @@ export interface HistoryData {
   start: number;
   completeThrough: number;
   series: Record<string, (number | null)[]>;
+  /** 24-hour and 30-day ranges: sums so far in the bucket after `completeThrough`, which an append replaces. */
+  partial?: { bucket: number; elapsedMs: number; series: Record<string, number | null> };
 }
 
 /** The `activity` subscription: per account, the summed series per second. */

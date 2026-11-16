@@ -56,6 +56,27 @@ describe("TrafficGraph data", () => {
     expect(g.update({ type: "history", data: snapshot({ start: 13, completeThrough: 13, scope: "pool:x" }) })).toBe(false);
   });
 
+  it("holds the bucket still filling after the complete ones until an append replaces it", () => {
+    const g = graph();
+    g.update({ type: "snapshot", data: snapshot({ partial: { bucket: 13, elapsedMs: 400, series: { output: 2 } } }) });
+    expect(g.points).toBe(4);
+    expect(g.value("output", 3)).toBe(2);
+    // Sums so far, with no new complete bucket: the data stays put.
+    expect(g.update({ type: "history", data: snapshot({ start: 13, completeThrough: 12, series: { output: [] }, partial: { bucket: 13, elapsedMs: 900, series: { output: 6 } } }) })).toBe(true);
+    expect(g.data).toMatchObject({ start: 10, completeThrough: 12, series: { output: [1, null, 3] } });
+    expect(g.value("output", 3)).toBe(6);
+    // The bucket completes and the next one starts filling.
+    g.update({ type: "history", data: snapshot({ start: 13, completeThrough: 13, series: { output: [7] }, partial: { bucket: 14, elapsedMs: 10, series: { output: 0 } } }) });
+    expect(g.data).toMatchObject({ start: 10, completeThrough: 13, series: { output: [1, null, 3, 7] } });
+    expect(g.points).toBe(5);
+    expect(g.value("output", 3)).toBe(7);
+    expect(g.value("output", 4)).toBe(0);
+    // A filling bucket that does not follow the complete ones is not drawn.
+    g.update({ type: "snapshot", data: snapshot({ partial: { bucket: 20, elapsedMs: 10, series: { output: 5 } } }) });
+    expect(g.partial).toBeUndefined();
+    expect(g.points).toBe(3);
+  });
+
   it("converts sums to rates, and holds gauges between samples", () => {
     const g = graph();
     g.update({ type: "snapshot", data: snapshot({ bucketMs: 5000, series: { output: [10, null, 30] } }) });

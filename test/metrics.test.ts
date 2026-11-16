@@ -45,6 +45,27 @@ describe("metrics", () => {
     assert.equal(entry.bytesUp, 1000);
   });
 
+  test("24-hour and 30-day history also report the bucket still filling, unscaled", () => {
+    let now = 3_000_000_000_000 + 120_000;
+    const metrics = new Metrics({ now: () => now });
+    const handle = metrics.begin({ provider: "claude", route: "/v1/messages", accountId: "work", client: "laptop", tapped: true });
+    handle.usage(usage({ output: 600 }), false, true);
+    handle.end(200);
+    now += 60_000;
+    const day = metrics.history("24h", "all", ["output", "input"]);
+    assert.equal(day.partial!.bucket, day.completeThrough + 1);
+    assert.equal(day.partial!.elapsedMs, 180_000);
+    assert.deepEqual(day.partial!.series, { output: 600, input: 0 });
+    assert.equal(day.series.output!.reduce((a, b) => a! + (b ?? 0), 0), 0, "the filling bucket is not among the complete ones");
+    assert.equal(metrics.history("30d", "account:work", ["output"]).partial!.series.output, 600);
+    for (const range of ["2m", "10m", "1h"] as const) assert.equal("partial" in metrics.history(range, "all", ["output"]), false);
+    // Once the bucket completes it is an ordinary bucket, and the next one starts empty.
+    now += 300_000;
+    const later = metrics.history("24h", "all", ["output"], day.completeThrough);
+    assert.deepEqual(later.series.output, [600]);
+    assert.deepEqual(later.partial!.series, { output: 0 });
+  });
+
   test("active streams, errors, unreported usage and live rates", () => {
     let now = 2_000_000_000_000;
     const metrics = new Metrics({ now: () => now });

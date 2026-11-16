@@ -8,7 +8,7 @@ import { existsSync, lstatSync, chmodSync, unlinkSync } from "node:fs";
 import net from "node:net";
 import { ControlError } from "./control.ts";
 import { errorText, log } from "./log.ts";
-import { COUNTERS, isMetric, isRange, isScope, RANGES, type Counter, type Metrics, type RangeName } from "./metrics.ts";
+import { COUNTERS, isMetric, isRange, isScope, RANGES, type Counter, type Metrics, type PartialBucket, type RangeName } from "./metrics.ts";
 import type { OwnerService } from "./owner.ts";
 
 export const APP_PROTOCOL = 1;
@@ -46,9 +46,11 @@ export interface AppTransport {
 type Subscription =
   | { kind: "live" }
   | { kind: "requests" }
-  | { kind: "history"; range: RangeName; scope: string; metrics: string[]; completeThrough: number }
+  | { kind: "history"; range: RangeName; scope: string; metrics: string[]; completeThrough: number; partial: string | undefined }
   | { kind: "activity"; range: RangeName; metrics: Counter[]; completeThrough: number };
 
+/** Identifies a partial bucket's sums, so unchanged ones are not sent again. */
+const partialKey = (partial: PartialBucket | undefined): string | undefined => partial && `${partial.bucket}:${JSON.stringify(partial.series)}`;
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 
@@ -246,7 +248,7 @@ export class AppSession {
         return;
       }
       const snapshot = this.hub.history(range, scope, metrics as string[]);
-      this.subscriptions.set(id, { kind: "history", range, scope, metrics: metrics as string[], completeThrough: snapshot.completeThrough });
+      this.subscriptions.set(id, { kind: "history", range, scope, metrics: metrics as string[], completeThrough: snapshot.completeThrough, partial: partialKey(snapshot.partial) });
       this.send({ id, result: snapshot });
     } else if (kind === "activity") {
       // Per-account sparklines of the series the chart shows: the whole window
@@ -264,9 +266,16 @@ export class AppSession {
   periodicTick(live: ReturnType<AppHub["snapshot"]>): void {
     for (const [id, sub] of this.subscriptions) {
       if (sub.kind === "live") this.send({ sub: id, event: "live", data: live });
-      else if (sub.kind === "history" && Math.floor(live.at / RANGES[sub.range].bucketMs) - 1 > sub.completeThrough) {
+      else if (sub.kind === "history") {
+        // Appends follow each completed bucket; ranges that report the bucket
+        // still filling also send an empty append whenever its sums change.
+        const completed = Math.floor(live.at / RANGES[sub.range].bucketMs) - 1 > sub.completeThrough;
+        if (!completed && !RANGES[sub.range].partial) continue;
         const data = this.hub.history(sub.range, sub.scope, sub.metrics, sub.completeThrough);
+        const partial = partialKey(data.partial);
+        if (!completed && partial === sub.partial) continue;
         sub.completeThrough = data.completeThrough;
+        sub.partial = partial;
         this.send({ sub: id, event: "history", data });
       } else if (sub.kind === "activity" && Math.floor(live.at / RANGES[sub.range].bucketMs) - 1 > sub.completeThrough) {
         const data = this.hub.activity(sub.range, sub.metrics);

@@ -189,7 +189,7 @@ export function DashboardTab({ visible, onAddAccount }: { visible: boolean; onAd
           title="Back to 2 min, all traffic, tokens, the default series and requests">Reset view</button>
       </div>
       <StatTiles rates={live?.scopes[scope]} units={units} />
-      <figure className={styles.chart} title="Per-second rates from complete buckets. While a response streams, its output is estimated at about four characters per token; the provider's count replaces the estimate when the response ends.">
+      <figure className={styles.chart} title="Per-second rates per bucket. In the 24-hour and 30-day ranges the faded bucket at the right edge is still filling: its rate is the traffic so far over the whole bucket, so it only rises. While a response streams, its output is estimated at about four characters per token; the provider's count replaces the estimate when the response ends.">
         {/* Every series with its total for the selected range, which leads the legend
             so the totals are not read as running counts. Each entry switches its
             series on or off; the full values table sits collapsed under the chart. */}
@@ -280,7 +280,10 @@ function scopeOptions(overview: Overview | undefined): [string, string][] {
     ...(overview?.accounts ?? []).map(a => [`account:${a.id}`, `Account · ${accountName(a)}`] as [string, string])];
 }
 
-/** Each series' last, average and peak rate and its total over the graph's range. */
+/**
+ * Each series' last, average and peak rate over complete buckets, and its
+ * total over the graph's range including any bucket still filling.
+ */
 function seriesTotals(graph: TrafficGraph | undefined, keys: SeriesKey[], units: Units) {
   const data = graph?.data;
   const format = units === "tokens" ? formatNumber : formatBytes;
@@ -292,13 +295,13 @@ function seriesTotals(graph: TrafficGraph | undefined, keys: SeriesKey[], units:
   for (const key of keys) {
     const values: number[] = [];
     for (let i = 0; i < length; i++) { const v = data.series[key]?.[i]; if (v !== null && v !== undefined) values.push(v); }
-    const total = values.reduce((a, b) => a + b, 0);
+    const complete = values.reduce((a, b) => a + b, 0), filling = graph?.partial?.series[key] ?? 0, total = complete + filling;
     result.set(key, {
       last: values.length ? values.at(-1)! / perSecond : null,
-      average: values.length ? total / values.length / perSecond : null,
+      average: values.length ? complete / values.length / perSecond : null,
       peak: values.length ? Math.max(...values) / perSecond : null,
       total: formatTotal(total),
-      legend: values.length ? formatTotal(total) : "–",
+      legend: values.length || filling ? formatTotal(total) : "–",
       format,
     });
   }

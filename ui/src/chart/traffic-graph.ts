@@ -1,6 +1,7 @@
-// Canvas traffic graph after rstorrent's speed panel: complete buckets only,
-// a scroll phase that slides one bucket per bucket interval, a 1/2/5 y scale
-// that snaps to the visible maximum, and an exact-bucket cursor.
+// Canvas traffic graph after rstorrent's speed panel: complete buckets (for
+// long buckets, plus a faded one still filling at the right edge), a scroll
+// phase that slides one bucket per bucket interval, a 1/2/5 y scale that
+// snaps to the visible maximum, and an exact-bucket cursor.
 // Panes stack on a shared time axis and each keeps its own labelled scale.
 
 import type { HistoryData } from "../protocol/types.ts";
@@ -84,6 +85,8 @@ export class TrafficGraph {
   #panes: GraphPane[] = [];
   #data: HistoryData | undefined;
   #phaseStart = 0;
+  /** When the bucket still filling was last received, to age its elapsed time. */
+  #partialAt = 0;
   #frame = 0;
   #cursor: number | null = null;
   #live = true;
@@ -127,15 +130,29 @@ export class TrafficGraph {
     this.draw();
   }
   get data(): HistoryData | undefined { return this.#data; }
+  /** The bucket still filling, when it directly follows the complete ones; it is drawn at index `completeThrough - start + 1`. */
+  get partial(): NonNullable<HistoryData["partial"]> | undefined {
+    const data = this.#data;
+    return data?.partial && data.partial.bucket === data.completeThrough + 1 ? data.partial : undefined;
+  }
+  /** Complete buckets, then the one still filling if there is one. */
+  get points(): number {
+    const data = this.#data;
+    return data ? data.completeThrough - data.start + 1 + (this.partial ? 1 : 0) : 0;
+  }
   set visible(value: boolean) { this.#visible = value; if (value) this.#kick(); }
   set stale(value: boolean) { if (this.#stale !== value) { this.#stale = value; this.draw(); } }
   /** Accepts a snapshot or an append; returns false when the caller must refetch. */
   update(message: GraphMessage): boolean {
     const data = message.data;
+    this.#partialAt = Date.now();
     if (message.type === "snapshot") this.#data = structuredClone(data);
     else {
       const current = this.#data;
       if (!current || data.epoch !== current.epoch || data.range !== current.range || data.scope !== current.scope || data.start !== current.completeThrough + 1) return false;
+      // An append replaces the bucket still filling; one without new buckets only does that.
+      if (data.partial) current.partial = data.partial; else delete current.partial;
+      if (data.completeThrough === current.completeThrough) { this.#kick(); return true; }
       for (const [key, values] of Object.entries(data.series)) {
         const column = (current.series[key] ??= new Array<number | null>(current.completeThrough - current.start + 1).fill(null));
         column.push(...values);
@@ -153,8 +170,9 @@ export class TrafficGraph {
   }
   /** Value per second (or raw gauge) for a series at a bucket index. */
   value(key: string, index: number): number | null {
-    const column = this.#data?.series[key];
-    let raw = column?.[index];
+    const column = this.#data?.series[key], partial = this.partial;
+    const complete = this.#data ? this.#data.completeThrough - this.#data.start + 1 : 0;
+    let raw = partial && index === complete ? partial.series[key] : column?.[index];
     // Gauges hold their last sample until the next one.
     if (!this.#rate && (raw === null || raw === undefined)) {
       for (let i = index - 1; i >= 0 && (raw === null || raw === undefined); i--) raw = column?.[i];
@@ -205,7 +223,7 @@ export class TrafficGraph {
     const now = performance.now();
     const phase = this.#phase(now);
     const data = this.#data;
-    const length = data ? data.completeThrough - data.start + 1 : 0;
+    const length = this.points, partial = this.partial;
     const count = data?.count ?? 120;
     for (const area of this.#layout(width, height)) {
       const { pane, left, right } = area;
@@ -248,48 +266,57 @@ export class TrafficGraph {
         ctx.stroke();
         if (fraction) ctx.fillText(pane.format(scale * fraction), left - 6, gy);
       }
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(left, area.top - 1, right - left, area.height + 2);
-      ctx.clip();
-      for (const run of runs(length, covered)) {
-        const edges = pane.series.map((_, k) => run.map(i => ({ x: x(i), y: y(stacks[k]![i]!) })));
-        const dot = (point: Point, color: string) => { ctx.beginPath(); ctx.arc(point.x, point.y, 1.5, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); };
-        // Bands first: a line per layer would sit on the band above it, so bands are solid.
-        pane.series.forEach((s, k) => {
-          if (!banded[k]) return;
-          const top = edges[k]!;
-          if (top.length === 1) { dot(top[0]!, s.color); return; }
-          ctx.beginPath();
-          trace(ctx, top);
-          if (below[k]! >= 0) trace(ctx, edges[below[k]!]!, true, false);
-          else { ctx.lineTo(top.at(-1)!.x, baseline); ctx.lineTo(top[0]!.x, baseline); }
-          ctx.closePath();
-          ctx.fillStyle = s.color;
-          ctx.fill();
-        });
-        // A hairline of surface between stacked bands.
-        const bands = pane.series.flatMap((_, k) => banded[k] ? [k] : []);
-        if (run.length > 1) for (const k of bands.slice(0, -1)) {
-          ctx.beginPath();
-          trace(ctx, edges[k]!);
-          ctx.strokeStyle = surface;
-          ctx.lineWidth = 1;
-          ctx.stroke();
+      const paint = () => {
+        for (const run of runs(length, covered)) {
+          const edges = pane.series.map((_, k) => run.map(i => ({ x: x(i), y: y(stacks[k]![i]!) })));
+          const dot = (point: Point, color: string) => { ctx.beginPath(); ctx.arc(point.x, point.y, 1.5, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); };
+          // Bands first: a line per layer would sit on the band above it, so bands are solid.
+          pane.series.forEach((s, k) => {
+            if (!banded[k]) return;
+            const top = edges[k]!;
+            if (top.length === 1) { dot(top[0]!, s.color); return; }
+            ctx.beginPath();
+            trace(ctx, top);
+            if (below[k]! >= 0) trace(ctx, edges[below[k]!]!, true, false);
+            else { ctx.lineTo(top.at(-1)!.x, baseline); ctx.lineTo(top[0]!.x, baseline); }
+            ctx.closePath();
+            ctx.fillStyle = s.color;
+            ctx.fill();
+          });
+          // A hairline of surface between stacked bands.
+          const bands = pane.series.flatMap((_, k) => banded[k] ? [k] : []);
+          if (run.length > 1) for (const k of bands.slice(0, -1)) {
+            ctx.beginPath();
+            trace(ctx, edges[k]!);
+            ctx.strokeStyle = surface;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+          // Lines on top.
+          pane.series.forEach((s, k) => {
+            if (banded[k]) return;
+            const line = edges[k]!;
+            if (line.length === 1) { dot(line[0]!, s.color); return; }
+            ctx.beginPath();
+            trace(ctx, line);
+            ctx.strokeStyle = s.color;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+          });
         }
-        // Lines on top.
-        pane.series.forEach((s, k) => {
-          if (banded[k]) return;
-          const line = edges[k]!;
-          if (line.length === 1) { dot(line[0]!, s.color); return; }
-          ctx.beginPath();
-          trace(ctx, line);
-          ctx.strokeStyle = s.color;
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        });
+      };
+      // The bucket still filling is drawn faded, from the last complete bucket on.
+      const split = !partial ? right : length > 1 ? x(length - 2) : left;
+      const passes: [number, number, number][] = partial ? [[left, split, 1], [split, right, 0.4]] : [[left, right, 1]];
+      for (const [from, to, alpha] of passes) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(from, area.top - 1, to - from, area.height + 2);
+        ctx.clip();
+        ctx.globalAlpha = alpha;
+        paint();
+        ctx.restore();
       }
-      ctx.restore();
       // Cursor hairline and markers.
       const cursor = this.#cursor;
       if (cursor !== null && cursor < length) {
@@ -330,7 +357,7 @@ export class TrafficGraph {
     if (!data) return null;
     const rect = this.#canvas.getBoundingClientRect(), area = this.#layout(rect.width, rect.height)[0];
     if (!area) return null;
-    const length = data.completeThrough - data.start + 1, spacing = (area.right - area.left) / Math.max(1, data.count - 1);
+    const length = this.points, spacing = (area.right - area.left) / Math.max(1, data.count - 1);
     const offset = Math.round((area.right - (clientX - rect.left)) / spacing - this.#phase(performance.now()));
     const index = length - 1 - offset;
     return index >= 0 && index < length ? index : null;
@@ -342,7 +369,7 @@ export class TrafficGraph {
   #key(event: KeyboardEvent) {
     const data = this.#data;
     if (!data) return;
-    const length = data.completeThrough - data.start + 1;
+    const length = this.points;
     if (event.key === "ArrowLeft") this.#cursor = Math.max(0, (this.#cursor ?? length) - 1);
     else if (event.key === "ArrowRight") this.#cursor = Math.min(length - 1, (this.#cursor ?? length - 2) + 1);
     else if (event.key === "Home") this.#cursor = 0;
@@ -369,14 +396,14 @@ export class TrafficGraph {
       row.append(swatch, s.label, value);
       rows.push(row);
     }
-    const heading = element("div", "tooltip-time");
-    heading.textContent = time;
+    const heading = element("div", "tooltip-time"), partial = this.partial;
+    heading.textContent = partial && bucket === partial.bucket ? `${time} · so far, ${spanLabel(Math.min(data.bucketMs, partial.elapsedMs + Date.now() - this.#partialAt))} of ${spanLabel(data.bucketMs)}` : time;
     tooltip.replaceChildren(heading, ...rows);
     tooltip.hidden = false;
     const rect = this.#canvas.getBoundingClientRect();
     const area = this.#layout(rect.width, rect.height)[0];
     if (!area) return;
-    const length = data.completeThrough - data.start + 1, spacing = (area.right - area.left) / Math.max(1, data.count - 1);
+    const length = this.points, spacing = (area.right - area.left) / Math.max(1, data.count - 1);
     const cx = area.right - (length - 1 - cursor + this.#phase(performance.now())) * spacing;
     // Keep the newest data visible: flip to the left of the cursor in the right half.
     const leftSide = cx > rect.width / 2 ? cx - tooltip.offsetWidth - 12 : cx + 12;
