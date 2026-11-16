@@ -140,15 +140,23 @@ earlier are left out of the overview. They are kept in memory only.
   keep the response body. The read has a 10-second deadline and a 256 KiB bound,
   and every field is optional. Any failure, including a missing block, is
   reported as the resets' `error`, and the quota read still succeeds.
-  Observed 2026-11-16 on four enrolled Claude profiles: the endpoint answered
-  200, but `cedar_ember` was `eligible: false` with
-  `ineligible_reason: "surface"` and no grants, while the owner's claude.ai
-  settings for a work account listed three resets. The server decides the client
-  surface itself (the CLI sends a `claude-cli/…` or `claude-code/…`
-  User-Agent; the router sends neither and does not impersonate the CLI). An
-  ineligible answer is shown as unknown with that reason, not as zero
-  resets. The CLI's `get_usage` and other control requests do not carry
-  the grants.
+  Claude lists grants only to its interactive CLI, which it tells apart by
+  User-Agent. Probed 2026-11-16 on one profile whose claude.ai settings
+  listed three resets: `claude-cli/2.1.322 (external, cli)` and
+  `claude-cli/2.1.312 (external, cli)` returned all three; no User-Agent,
+  `claude-code/2.1.322`, `claude-cli/2.1.322` alone and the Agent SDK's
+  `claude-cli/2.1.322 (external, sdk-ts, agent-sdk/0.3.322)` were
+  `eligible: false` with `ineligible_reason: "surface"`; and
+  `claude-cli/2.0.0 (external, cli)` was refused as `cli_version`. The
+  router therefore sends `claude-cli/<version> (external, cli)` on this read
+  only. The version is the one the `claude` on PATH prints for `--version`.
+  That CLI owns the login, and the string is the one it sends from a
+  terminal. The version is cached per resolved binary, so an update is read
+  on next use, and a failed read is retried after five minutes. Without a
+  version the router skips the read and reports why. An ineligible answer
+  is shown as unknown with its reason, not as zero resets. The CLI's
+  `get_usage` and other control requests do not carry the grants. (Agent
+  SDK `0.3.N` bundles Claude Code `2.1.N`.)
 - Redeeming a reset (Claude `POST /api/organizations/{org}/reset_rate_limits`,
   Codex `account/rateLimitResetCredit/consume`) is not implemented.
 

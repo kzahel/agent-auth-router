@@ -41,8 +41,8 @@ published API prices ([pricing](docs/pricing.md)). Request bodies pass
 through unchanged by default; Settings can have the router compress them
 upstream ([compression](docs/compression.md)). Settings can also show each
 account's free usage-limit resets and their expiry; this is off by default
-because Claude reports them only through an undocumented endpoint
-([sources](docs/sources.md#limit-resets)). See the
+because Claude reports them only through an undocumented endpoint, read
+with the installed CLI's User-Agent ([sources](docs/sources.md#limit-resets)). See the
 [desktop guide](desktop/README.md) for details.
 
 ## How it works

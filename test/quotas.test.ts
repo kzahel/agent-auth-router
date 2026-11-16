@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { fetchAccountQuotas, normalizeClaudeLimitResets, normalizeClaudeQuotas, normalizeCodexLimitResets, readAccountQuotas, normalizeCodexQuotas, normalizeResponseHeaderQuotas } from "../src/quotas.ts";
+import { cliVersion, fetchAccountQuotas, normalizeClaudeLimitResets, normalizeClaudeQuotas, normalizeCodexLimitResets, readAccountQuotas, normalizeCodexQuotas, normalizeResponseHeaderQuotas } from "../src/quotas.ts";
 import type { AccountConfig } from "../src/types.ts";
 import { captureLogs, FIXTURES, tempDir, writeClaudeCredentials } from "./support.ts";
 
@@ -280,9 +280,11 @@ test("Codex limit resets come from the same usage read, only when the setting is
   assert.equal(plain.limitResets?.error, "Codex did not report limit resets");
 });
 
+const fakeVersion = (output = "2.1.322 (Claude Code)") => ({ claudeVersionCommand: process.execPath, claudeVersionArgs: [join(FIXTURES, "fake-version.ts"), output] });
+
 async function resetServer(t: { after(fn: () => unknown): void }, respond: (req: http.IncomingMessage, res: http.ServerResponse) => void) {
-  const seen: { url: string | undefined; authorization: string | undefined }[] = [];
-  const server = http.createServer((req, res) => { seen.push({ url: req.url, authorization: req.headers.authorization }); respond(req, res); });
+  const seen: { url: string | undefined; authorization: string | undefined; userAgent: string | undefined }[] = [];
+  const server = http.createServer((req, res) => { seen.push({ url: req.url, authorization: req.headers.authorization, userAgent: req.headers["user-agent"] }); respond(req, res); });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
   return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen };
@@ -295,14 +297,15 @@ test("Claude limit resets are a separate read with the renewed token, only when 
   });
   const account = profile("claude");
   writeClaudeCredentials(account.home, "SECRET-expired", Date.now() - 1000);
-  const off = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude("renew"), claudeOrigin: origin });
+  const off = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude("renew"), ...fakeVersion(), claudeOrigin: origin });
   assert.equal(off.limitResets, undefined);
   assert.equal(seen.length, 0, "no limit-reset read while the setting is off");
-  const on = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude("renew"), claudeOrigin: origin, limitResets: true });
+  const on = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude("renew"), ...fakeVersion(), claudeOrigin: origin, limitResets: true });
   assert.equal(on.status, "ok");
   assert.deepEqual(on.limitResets?.resets, [{ label: "Full reset", available: 1, total: 1, expiresAt: "2026-12-10T22:00:00.000Z", usableNow: true }]);
   assert.equal(seen[0]?.url, "/api/oauth/usage?cedar_ember=1&skip_spend=1");
   assert.match(seen[0]?.authorization ?? "", /^Bearer renewed-/, "read after the CLI renewed the token");
+  assert.equal(seen[0]?.userAgent, "claude-cli/2.1.322 (external, cli)", "Claude lists grants only to its interactive CLI");
   assert.doesNotMatch(JSON.stringify(on), /SECRET/);
 });
 
@@ -320,7 +323,7 @@ test("a failed or vanished Claude limit-reset read never fails the quota read", 
     const { origin } = await resetServer(t, respond);
     const account = profile("claude");
     writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
-    const snapshot = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude("ok", name === "hang" ? 400 : 5000), claudeOrigin: origin, limitResets: true });
+    const snapshot = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude("ok", name === "hang" ? 400 : 5000), ...fakeVersion(), claudeOrigin: origin, limitResets: true });
     assert.equal(snapshot.status, "ok", name);
     assert.equal(snapshot.windows.length, 2, name);
     assert.equal(snapshot.limitResets?.available, null, name);
@@ -329,7 +332,37 @@ test("a failed or vanished Claude limit-reset read never fails the quota read", 
   }
   const account = profile("claude");
   writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
-  const refused = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude(), claudeOrigin: "http://example.com", limitResets: true });
+  const refused = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude(), ...fakeVersion(), claudeOrigin: "http://example.com", limitResets: true });
   assert.equal(refused.status, "ok");
   assert.equal(refused.limitResets?.error, "invalid limit-reset endpoint", "plain http only to loopback");
+});
+
+test("the installed CLI's version is read once per binary; failures and odd output stay unknown and retry later", async (t) => {
+  const { origin, seen } = await resetServer(t, (_req, res) => { res.end("{}"); });
+  const account = profile("claude");
+  writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
+  const noVersion = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude(), ...fakeVersion("fail"), claudeOrigin: origin, limitResets: true });
+  assert.equal(noVersion.status, "ok");
+  assert.equal(noVersion.limitResets?.error, "could not read the installed Claude CLI version");
+  assert.equal(seen.length, 0, "no read without the CLI's User-Agent");
+
+  const script = join(FIXTURES, "fake-version.ts"), dir = tempDir();
+  const runs = (file: string) => { try { return readFileSync(file, "utf8").split("\n").filter(Boolean).length; } catch { return 0; } };
+  const counted = join(dir, "ok"), now = Date.now();
+  assert.equal(await cliVersion(process.execPath, [script, "2.1.330 (Claude Code)", counted], now), "2.1.330");
+  assert.equal(await cliVersion(process.execPath, [script, "2.1.330 (Claude Code)", counted], now + 86_400_000), "2.1.330");
+  assert.equal(runs(counted), 1, "cached for the same binary");
+  const together = join(dir, "together");
+  const shared = await Promise.all([1, 2, 3].map(() => cliVersion(process.execPath, [script, "2.1.331", together], now)));
+  assert.deepEqual(shared, ["2.1.331", "2.1.331", "2.1.331"]);
+  assert.equal(runs(together), 1, "concurrent reads share one run");
+  const failing = join(dir, "fail");
+  assert.equal(await cliVersion(process.execPath, [script, "fail", failing], now), null);
+  assert.equal(await cliVersion(process.execPath, [script, "fail", failing], now + 1000), null);
+  assert.equal(runs(failing), 1, "a failure is not rerun at once");
+  assert.equal(await cliVersion(process.execPath, [script, "fail", failing], now + 5 * 60_000), null);
+  assert.equal(runs(failing), 2, "and is retried after five minutes");
+  for (const odd of ["Claude Code", "v2.1.330", "2.1.330; rm -rf /", ""]) {
+    assert.equal(await cliVersion(process.execPath, [script, odd]), null, JSON.stringify(odd));
+  }
 });

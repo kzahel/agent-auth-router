@@ -1,10 +1,14 @@
 // On-demand, metadata-only quota reads. OAuth remains owned by official CLIs.
+import { realpathSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CliModel } from "./contract.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { directProviderProblem, probeClaudeCli } from "./helpers.ts";
 import { log, sanitize } from "./log.ts";
+import { providerExecutable } from "./platform.ts";
 import { helperEnv, startBounded } from "./process.ts";
 import type { AccountConfig, Provider } from "./types.ts";
 
@@ -121,6 +125,9 @@ export interface QuotaReadOptions {
   limitResets?: boolean;
   /** Origin for the Claude limit-reset read; tests point it at a local server. */
   claudeOrigin?: string;
+  /** The CLI whose `--version` names the limit-reset read's User-Agent; default `claude` on PATH. */
+  claudeVersionCommand?: string;
+  claudeVersionArgs?: string[];
 }
 
 const MAX_BYTES = 256 * 1024;
@@ -202,7 +209,7 @@ const MAX_RESET_ROWS = 32;
 const count = (value: unknown): number | null =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 const label = (value: unknown): string | null =>
-  typeof value === "string" && /^[^\x00-\x1f\x7f]{1,80}$/.test(value.trim()) ? value.trim() : null;
+  typeof value === "string" && /^[^\x00-\x1f\x7f]{1,160}$/.test(value.trim()) ? value.trim() : null;
 
 /** Resets of the same label and expiry form one row, so a list of single credits reads as counts. */
 function limitResets(observedAt: string, rows: LimitReset[], available: number | null): LimitResets {
@@ -268,6 +275,53 @@ export function normalizeClaudeLimitResets(value: unknown, observedAt = new Date
 
 const LIMIT_RESET_PATH = "/api/oauth/usage?cedar_ember=1&skip_spend=1";
 
+const VERSION_RETRY_MS = 5 * 60_000;
+const cliVersions = new Map<string, { version: Promise<string | null>; at: number }>();
+
+/**
+ * An installed CLI's version from `--version`, cached per resolved binary:
+ * an update installs a new file, which is read once on its next use.
+ * Concurrent callers share one read; a failed read is retried after five minutes.
+ */
+export async function cliVersion(command: string, args: string[] = ["--version"], now = Date.now()): Promise<string | null> {
+  let key = command;
+  try { key = realpathSync(command); } catch { /* A bare name or missing file keys by name. */ }
+  key = `${key}\0${args.join("\0")}`;
+  const cached = cliVersions.get(key);
+  if (cached) {
+    const version = await cached.version;
+    if (version !== null || now - cached.at < VERSION_RETRY_MS) return version;
+  }
+  const version = readCliVersion(command, args);
+  cliVersions.set(key, { version, at: now });
+  return version;
+}
+
+async function readCliVersion(command: string, args: string[]): Promise<string | null> {
+  try {
+    // --version gets an isolated, empty profile location without creating it.
+    const probe = startBounded({ command, args, env: helperEnv("claude", join(tmpdir(), `aar-version-${process.pid}-claude`)),
+      cwd: tmpdir(), timeoutMs: 3000, maxStderrBytes: 0, killGraceMs: 100 });
+    let output = "";
+    probe.child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString().slice(0, Math.max(0, 256 - output.length)); });
+    probe.child.stdin?.end();
+    const result = await probe.done;
+    return result.code === 0 && !result.timedOut ? /^\s*(\d{1,4}\.\d{1,4}\.\d{1,6})(?:\s|$)/.exec(output)?.[1] ?? null : null;
+  } catch { return null; }
+}
+
+/**
+ * Claude reports grants only to its interactive CLI, which it tells apart by
+ * User-Agent: `claude-cli/<version> (external, cli)`. Observed 2026-11-16, the
+ * SDK's `sdk-ts` entrypoint, no entrypoint or another client name was
+ * ineligible ("surface"), and version 2.0.0 was too old ("cli_version").
+ * The version is that of the `claude` on PATH, the CLI that owns the login.
+ */
+async function claudeUserAgent(options: QuotaReadOptions): Promise<string | null> {
+  const version = await cliVersion(options.claudeVersionCommand ?? providerExecutable("claude"), options.claudeVersionArgs);
+  return version ? `claude-cli/${version} (external, cli)` : null;
+}
+
 /**
  * Claude's granted limit resets, read with the profile's current access token
  * after the CLI's usage read has renewed it. The router never renews or
@@ -278,8 +332,10 @@ async function claudeLimitResets(account: AccountConfig, options: QuotaReadOptio
   try {
     const credential = await credentialReaderFor("claude", account.home, account.credentialStore)();
     if (credential.status !== "ok") return resetsUnknown(observedAt(), "no usable Claude access token for the limit-reset read");
+    const userAgent = await claudeUserAgent(options);
+    if (!userAgent) return resetsUnknown(observedAt(), "could not read the installed Claude CLI version");
     const response = await getJson(options.claudeOrigin ?? "https://api.anthropic.com", LIMIT_RESET_PATH, {
-      authorization: `Bearer ${credential.credential.accessToken}`, accept: "application/json",
+      authorization: `Bearer ${credential.credential.accessToken}`, accept: "application/json", "user-agent": userAgent,
       "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01" }, Math.min(options.timeoutMs ?? 10_000, 10_000));
     return "error" in response ? resetsUnknown(observedAt(), response.error) : normalizeClaudeLimitResets(response.value, observedAt());
   } catch {

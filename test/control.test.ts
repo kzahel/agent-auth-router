@@ -294,7 +294,8 @@ test("limit resets follow the owner's setting: read per quota read, hidden from 
   await new Promise<void>(resolve => resetServer.listen(0, "127.0.0.1", resolve));
   t.after(() => { resetServer.closeAllConnections(); resetServer.close(); });
   writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
-  const router = await startRouter(store, { ...fakeClaude, claudeOrigin: `http://127.0.0.1:${(resetServer.address() as { port: number }).port}` });
+  const router = await startRouter(store, { ...fakeClaude, claudeOrigin: `http://127.0.0.1:${(resetServer.address() as { port: number }).port}`,
+    claudeVersionCommand: process.execPath, claudeVersionArgs: [join(FIXTURES, "fake-version.ts"), "2.1.322 (Claude Code)"] });
   t.after(() => router.close());
   const resets = (overview: { accounts: { id: string; quota?: { limitResets?: { available: number | null } } }[] }) => overview.accounts.find(a => a.id === "fixture")?.quota?.limitResets;
   const off = await ownerRequest(store, "accounts/refresh", { id: "fixture" });
