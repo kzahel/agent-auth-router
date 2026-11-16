@@ -11,6 +11,8 @@
   padding: 3px 0;
 }
 .quota small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
+.resets { display: grid; gap: 2px; font-size: 12px; padding: 3px 0; }
+.resets small { color: var(--muted); font-size: 11px; }
 .more { margin: 0; }
 .more summary { padding: 5px 7px; min-height: 28px; font-size: 12px; }
 .more[open] { flex-basis: 100%; }

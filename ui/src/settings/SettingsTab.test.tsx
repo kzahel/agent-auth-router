@@ -44,6 +44,29 @@ describe("SettingsTab", () => {
     await waitFor(() => expect(claude).toHaveProperty("value", "off"));
   });
 
+  it("turns limit resets on and off, and puts a refused change back", async () => {
+    let enabled = false, refuse = false;
+    const app = await fakeApp({
+      "settings/limit-resets": (body) => {
+        if (refuse && body.enabled !== undefined) throw new Error("synthetic refusal");
+        if (typeof body.enabled === "boolean") enabled = body.enabled;
+        return { enabled };
+      },
+    });
+    app.render(<SettingsTab visible {...settings} />);
+    const box = screen.getByRole("checkbox", { name: "Show limit resets" });
+    await waitFor(() => expect(app.called("settings/limit-resets")).toHaveLength(1));
+    expect(box).toHaveProperty("checked", false);
+    await userEvent.click(box);
+    await waitFor(() => expect(box).toHaveProperty("checked", true));
+    expect(app.called("settings/limit-resets").at(-1)).toEqual({ operation: "settings/limit-resets", body: { enabled: true } });
+    expect(await screen.findByText(/after its next usage check/)).toBeTruthy();
+    refuse = true;
+    await userEvent.click(box);
+    expect(await screen.findByText("synthetic refusal")).toBeTruthy();
+    await waitFor(() => expect(box).toHaveProperty("checked", true));
+  });
+
   it("shows desktop controls only in the desktop app, and Log out only in a browser", async () => {
     const web = await fakeApp();
     const { unmount } = web.render(<SettingsTab visible {...settings} />);

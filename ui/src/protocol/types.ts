@@ -22,6 +22,21 @@ export interface QuotaWindow {
   resetsAt: string | null;
 }
 
+/** Granted usage-limit resets, read only while the owner's setting is on (src/quotas.ts). */
+export interface LimitReset {
+  label: string | null;
+  available: number;
+  total: number | null;
+  expiresAt: string | null;
+  usableNow: boolean | null;
+}
+export interface LimitResets {
+  observedAt: string;
+  available: number | null;
+  resets: LimitReset[];
+  error?: string;
+}
+
 export interface Account {
   id: string;
   home?: string;
@@ -34,7 +49,7 @@ export interface Account {
   bindingCount?: number;
   freshness: "fresh" | "stale" | "unknown";
   windows: (QuotaWindow & { scope: string })[];
-  quota?: { observedAt: string } | null;
+  quota?: { observedAt: string; limitResets?: LimitResets } | null;
   error?: string | null;
   blocked?: string | null;
   /** When the saved login needs an interactive sign-in, as last read by the router. */

@@ -16,7 +16,7 @@ import { hashGatewayToken } from "./gateway-auth.ts";
 import { clientAddress } from "./public.ts";
 import { accountHelper } from "./helpers.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
-import { fetchAccountQuotas, readAccountQuotas, remainingCapacityUnits, type QuotaReadOptions } from "./quotas.ts";
+import { fetchAccountQuotas, readAccountQuotas, remainingCapacityUnits, type QuotaReadOptions, type QuotaSnapshot } from "./quotas.ts";
 import { PoolEvidence, burnWithCeiling, eligibility, withCeiling, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, policyVersion, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
 import { CredentialUnavailable, LOGIN_IN_PROGRESS, type CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
@@ -252,7 +252,10 @@ export class ControlRegistry {
   }
   overview(integration: Integration | undefined, evidence: PoolEvidence, body: Record<string, unknown> = {}): object {
     const now = Date.now(), model = body.model === undefined ? undefined : field(body, "model");
+    const showResets = this.store.loadSettings().limitResets === true;
     const accounts = this.accounts(integration).map(a => { const o = evidence.get(a.id); return { ...a, ...o,
+      // Resets read before the owner turned the setting off are not shown.
+      ...(o.quota?.limitResets && !showResets ? { quota: withoutResets(o.quota) } : {}),
       freshness: !o.quota ? "unknown" : o.error || now - Date.parse(o.quota.observedAt) >= QUOTA_FRESH_MS ? "stale" : "fresh",
       windows: o.quota?.windows.map(w => ({ ...w, scope: windowScope(a.provider, w.bucket), remainingCapacityUnits: remainingCapacityUnits(o.quota!, w) })) ?? []
     };
@@ -642,6 +645,8 @@ export async function readCatalog(coordinator: CredentialCoordinator, origin?: s
   });
 }
 
+function withoutResets({ limitResets: _resets, ...quota }: QuotaSnapshot): QuotaSnapshot { return quota; }
+
 export async function startControl(store: StateStore, origin: string, coordinators: Map<string, CredentialCoordinator>, quotaOptions: QuotaReadOptions = {}, lifecycle: Pick<OwnerLifecycle, "active" | "stop" | "restart"> = { active: () => 0, stop: () => { throw new ControlError(409, "stop unavailable"); } }, metrics: Metrics = new Metrics(), events?: EventLog) {
   assertPrivatePath(store.dir);
   const socketPath = join(store.dir, "control.sock");
@@ -677,7 +682,9 @@ export async function startControl(store: StateStore, origin: string, coordinato
     }
     return job;
   };
-  const evidence = new PoolEvidence(id => catalog(id, true), id => readAccountQuotas(store.loadAccounts().find(a => a.id === id)!, store.workDir, quotaOptions));
+  // The owner's limit-reset setting is read per quota read, so a change applies to the next one.
+  const readOptions = (): QuotaReadOptions => ({ ...quotaOptions, limitResets: store.loadSettings().limitResets === true });
+  const evidence = new PoolEvidence(id => catalog(id, true), id => readAccountQuotas(store.loadAccounts().find(a => a.id === id)!, store.workDir, readOptions()));
   evidence.onQuota = (id, observation, observed) => {
     metrics.quota(id, observation.quota?.windows ?? []);
     events?.write("quota", { accountId: id, provider: observation.quota?.provider ?? null, source: observed.source, requestId: observed.requestId ?? null, windows: observed.windows });
@@ -770,7 +777,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
           return reply(200, { models, ...(cliModels ? { cliModels, cliModelsAt } : {}) } satisfies AccountCatalog);
         }
         let job = quotaJobs.get(account.id);
-        if (!job) { job = fetchAccountQuotas(account, store.workDir, quotaOptions).finally(() => quotaJobs.delete(account.id)); quotaJobs.set(account.id, job); }
+        if (!job) { job = fetchAccountQuotas(account, store.workDir, readOptions()).finally(() => quotaJobs.delete(account.id)); quotaJobs.set(account.id, job); }
         const snapshot = await job; registry.account(registry.authenticate(req.headers.authorization), account.id); return reply(200, snapshot);
       }
       if (path === "/v1/bindings/prepare") {

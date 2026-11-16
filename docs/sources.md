@@ -113,6 +113,45 @@ Quota interfaces used by the prototype:
   the SDK. The SDK labels the usage request experimental; it is not a stable
   public contract. See [the probe observations](prototype.md#claude-cli-control-probe).
 
+### Limit resets
+
+Both providers grant some accounts free resets of their usage limits. The
+router can report how many an account holds and when they expire. It never
+uses one. The **Show limit resets** setting (`settings/limit-resets`, stored
+as `limitResets` in `settings.json`) is off by default and is read at each
+quota read, so a change applies to the next one. While it is off, resets read
+earlier are left out of the overview. They are kept in memory only.
+
+- Codex 0.160.0's app-server schema (`codex app-server generate-json-schema`)
+  has `rateLimitResetCredits` in the `account/rateLimits/read` answer:
+  `availableCount` and `credits[]` with `status`, `title`, `grantedAt` and
+  `expiresAt` in epoch seconds. Detail rows come unless the request sets
+  `excludeResetCreditDetails`, and the backend may list fewer credits than the
+  count. The router reads them from the answer it already gets and sends the
+  same request as before.
+- Claude Code 2.1.322 reads its grants with
+  `GET /api/oauth/usage?cedar_ember=1&skip_spend=1`, separately from the
+  `get_usage` control reply, which does not include them. The `cedar_ember`
+  block holds `grants[]` with `label`, `resets_total`, `resets_left`,
+  `ends_at`, `usable_now` and `paused`. The endpoint is undocumented and named
+  after an experiment. With the setting on, the router reads it once after
+  each successful CLI usage read, with the access token the CLI has just
+  renewed. The router does not renew the token, retry, follow redirects or
+  keep the response body. The read has a 10-second deadline and a 256 KiB bound,
+  and every field is optional. Any failure, including a missing block, is
+  reported as the resets' `error`, and the quota read still succeeds.
+  Observed 2026-11-16 on four enrolled Claude profiles: the endpoint answered
+  200, but `cedar_ember` was `eligible: false` with
+  `ineligible_reason: "surface"` and no grants, while the owner's claude.ai
+  settings for a work account listed three resets. The server decides the client
+  surface itself (the CLI sends a `claude-cli/…` or `claude-code/…`
+  User-Agent; the router sends neither and does not impersonate the CLI). An
+  ineligible answer is shown as unknown with that reason, not as zero
+  resets. The CLI's `get_usage` and other control requests do not carry
+  the grants.
+- Redeeming a reset (Claude `POST /api/organizations/{org}/reset_rate_limits`,
+  Codex `account/rateLimitResetCredit/consume`) is not implemented.
+
 ## Existing desktop and agent projects
 
 | Repository | Inspected revision | Relevance |

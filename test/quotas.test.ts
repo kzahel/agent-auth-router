@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fetchAccountQuotas, normalizeClaudeQuotas, readAccountQuotas, normalizeCodexQuotas, normalizeResponseHeaderQuotas } from "../src/quotas.ts";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { fetchAccountQuotas, normalizeClaudeLimitResets, normalizeClaudeQuotas, normalizeCodexLimitResets, readAccountQuotas, normalizeCodexQuotas, normalizeResponseHeaderQuotas } from "../src/quotas.ts";
 import type { AccountConfig } from "../src/types.ts";
 import { captureLogs, FIXTURES, tempDir, writeClaudeCredentials } from "./support.ts";
 
@@ -219,4 +221,115 @@ test("percentages are rounded to a tenth so fraction scaling leaves no float noi
   }).map(w => [w.usedPercent, w.remainingPercent]), [[57, 43], [33.3, 66.7]]);
   assert.deepEqual(normalizeClaudeQuotas({ five_hour: { utilization: 12.3456, resets_at: null } })
     .map(w => [w.usedPercent, w.remainingPercent]), [[12.3, 87.7]]);
+});
+
+test("Codex limit resets: available credits merge by title and expiry; redeemed and malformed rows are skipped", () => {
+  const at = "2026-11-16T00:00:00.000Z";
+  const resets = normalizeCodexLimitResets({ rateLimitResetCredits: { availableCount: 4, credits: [
+    { id: "a", status: "available", grantedAt: 1, expiresAt: 1795000000, title: "Reset" },
+    { id: "b", status: "available", grantedAt: 1, expiresAt: 1795000000, title: "Reset" },
+    { id: "c", status: "redeemed", grantedAt: 1, expiresAt: 1795000000, title: "Reset" },
+    { id: "d", status: "available", grantedAt: 1, expiresAt: null, title: "x".repeat(200) },
+    "junk", null,
+  ] } }, at);
+  assert.deepEqual(resets, { observedAt: at, available: 4, resets: [
+    { label: "Reset", available: 2, total: null, expiresAt: new Date(1795000000 * 1000).toISOString(), usableNow: null },
+    { label: null, available: 1, total: null, expiresAt: null, usableNow: null },
+  ] }, "the reported count is kept even when the list is capped");
+  assert.equal(normalizeCodexLimitResets({ rateLimitResetCredits: { availableCount: 0, credits: null } }, at).available, 0);
+  for (const missing of [{}, null, "text", { rateLimitResetCredits: [] }]) {
+    assert.deepEqual(normalizeCodexLimitResets(missing, at), { observedAt: at, available: null, resets: [], error: "Codex did not report limit resets" });
+  }
+});
+
+test("Claude limit resets: grants with resets left, their expiry and usability; anything unexpected is ignored", () => {
+  const at = "2026-11-16T00:00:00.000Z";
+  const resets = normalizeClaudeLimitResets({ five_hour: { utilization: 1 }, cedar_ember: { eligible: true, grants: [
+    { id: "g1", label: "Full reset", resets_total: 1, resets_left: 1, ends_at: "2026-12-10T22:00:00Z", usable_now: true, paused: false },
+    { id: "g2", label: "Fable reset", resets_total: 2, resets_left: 2, ends_at: "2027-03-09T07:59:00Z", usable_now: true, paused: true },
+    { id: "g3", label: "Spent", resets_total: 1, resets_left: 0, ends_at: "2027-01-01T00:00:00Z" },
+    { id: "g4", resets_left: -1 }, { id: "g5", resets_left: "2" }, 7,
+  ] } }, at);
+  assert.deepEqual(resets, { observedAt: at, available: 3, resets: [
+    { label: "Full reset", available: 1, total: 1, expiresAt: "2026-12-10T22:00:00.000Z", usableNow: true },
+    { label: "Fable reset", available: 2, total: 2, expiresAt: "2027-03-09T07:59:00.000Z", usableNow: false },
+  ] });
+  assert.deepEqual(normalizeClaudeLimitResets({ cedar_ember: { eligible: true, grants: "nope" } }, at), { observedAt: at, available: 0, resets: [] });
+  assert.deepEqual(normalizeClaudeLimitResets({ cedar_ember: { eligible: false, ineligible_reason: "surface", grants: [] } }, at),
+    { observedAt: at, available: null, resets: [], error: "Claude does not report limit resets to the router (ineligible: surface)" },
+    "ineligible is unknown, not zero");
+  assert.equal(normalizeClaudeLimitResets({ cedar_ember: { eligible: false, ineligible_reason: "Weird <b>" } }, at).error, "Claude does not report limit resets to the router");
+  for (const missing of [{}, null, { cedar_ember: null }, { cedar_ember: [] }]) {
+    assert.equal(normalizeClaudeLimitResets(missing, at).error, "Claude did not report limit resets");
+  }
+});
+
+test("Codex limit resets come from the same usage read, only when the setting is on", async () => {
+  const off = await fetchAccountQuotas(profile("codex"), tempDir(), fakeCodex("resets"));
+  assert.equal(off.limitResets, undefined);
+  const account = profile("codex");
+  const on = await fetchAccountQuotas(account, tempDir(), { ...fakeCodex("resets"), limitResets: true });
+  assert.equal(on.status, "ok");
+  assert.equal(on.limitResets?.available, 2);
+  assert.deepEqual(on.limitResets?.resets.map(r => [r.label, r.available]), [["Usage reset", 2]]);
+  assert.doesNotMatch(JSON.stringify(on), /SECRET/);
+  const methods = readFileSync(join(account.home, "requests.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(methods.find(m => m.method === "account/rateLimits/read").params, {}, "no extra request or changed parameters");
+  const plain = await fetchAccountQuotas(profile("codex"), tempDir(), { ...fakeCodex(), limitResets: true });
+  assert.equal(plain.status, "ok", "an app-server without reset credits still reads quota");
+  assert.equal(plain.limitResets?.error, "Codex did not report limit resets");
+});
+
+async function resetServer(t: { after(fn: () => unknown): void }, respond: (req: http.IncomingMessage, res: http.ServerResponse) => void) {
+  const seen: { url: string | undefined; authorization: string | undefined }[] = [];
+  const server = http.createServer((req, res) => { seen.push({ url: req.url, authorization: req.headers.authorization }); respond(req, res); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen };
+}
+
+test("Claude limit resets are a separate read with the renewed token, only when the setting is on", async (t) => {
+  const { origin, seen } = await resetServer(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ cedar_ember: { eligible: true, grants: [{ id: "SECRET-grant", label: "Full reset", resets_total: 1, resets_left: 1, ends_at: "2026-12-10T22:00:00Z", usable_now: true }] } }));
+  });
+  const account = profile("claude");
+  writeClaudeCredentials(account.home, "SECRET-expired", Date.now() - 1000);
+  const off = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude("renew"), claudeOrigin: origin });
+  assert.equal(off.limitResets, undefined);
+  assert.equal(seen.length, 0, "no limit-reset read while the setting is off");
+  const on = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude("renew"), claudeOrigin: origin, limitResets: true });
+  assert.equal(on.status, "ok");
+  assert.deepEqual(on.limitResets?.resets, [{ label: "Full reset", available: 1, total: 1, expiresAt: "2026-12-10T22:00:00.000Z", usableNow: true }]);
+  assert.equal(seen[0]?.url, "/api/oauth/usage?cedar_ember=1&skip_spend=1");
+  assert.match(seen[0]?.authorization ?? "", /^Bearer renewed-/, "read after the CLI renewed the token");
+  assert.doesNotMatch(JSON.stringify(on), /SECRET/);
+});
+
+test("a failed or vanished Claude limit-reset read never fails the quota read", async (t) => {
+  const cases: [string, (req: http.IncomingMessage, res: http.ServerResponse) => void, RegExp][] = [
+    ["gone", (_q, res) => { res.writeHead(404); res.end("SECRET-body"); }, /not offered/],
+    ["denied", (_q, res) => { res.writeHead(401); res.end(); }, /denied/],
+    ["not json", (_q, res) => { res.writeHead(200); res.end("SECRET-<html>"); }, /not valid JSON/],
+    ["no block", (_q, res) => { res.writeHead(200); res.end(JSON.stringify({ five_hour: null })); }, /did not report/],
+    ["oversized", (_q, res) => { res.writeHead(200); res.end("x".repeat(300 * 1024)); }, /size bound/],
+    ["hang", () => {}, /timed out/],
+    ["reset", (req) => { req.socket.destroy(); }, /failed/],
+  ];
+  for (const [name, respond, error] of cases) {
+    const { origin } = await resetServer(t, respond);
+    const account = profile("claude");
+    writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
+    const snapshot = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude("ok", name === "hang" ? 400 : 5000), claudeOrigin: origin, limitResets: true });
+    assert.equal(snapshot.status, "ok", name);
+    assert.equal(snapshot.windows.length, 2, name);
+    assert.equal(snapshot.limitResets?.available, null, name);
+    assert.match(snapshot.limitResets?.error ?? "", error, name);
+    assert.doesNotMatch(JSON.stringify(snapshot), /SECRET/, name);
+  }
+  const account = profile("claude");
+  writeClaudeCredentials(account.home, "SECRET-access", Date.now() + 100000);
+  const refused = await fetchAccountQuotas(account, tempDir(), { ...fakeClaude(), claudeOrigin: "http://example.com", limitResets: true });
+  assert.equal(refused.status, "ok");
+  assert.equal(refused.limitResets?.error, "invalid limit-reset endpoint", "plain http only to loopback");
 });

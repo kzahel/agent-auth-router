@@ -24,6 +24,7 @@ export function SettingsTab({ visible, presentation, onPresentation, onNavigate 
     <div className={styles.settings}>
       <HistorySettings visible={visible} />
       <CompressionSettings visible={visible} />
+      <LimitResetSettings visible={visible} />
       <Diagnostics onNavigate={onNavigate} />
       {native && <AppSettings presentation={presentation} onPresentation={onPresentation} />}
       {web && (
@@ -108,6 +109,38 @@ function CompressionSettings({ visible }: { visible: boolean }) {
       {choose("codex", [["off", "Pass through"], ["zstd", "Compress with zstd"]])}
       <p className={ui.hint}>Pass through sends each request as the client sent it. Compressing shrinks uploads about 2–4×.</p>
       <p id="compression-status" className={`${ui.hint} ${styles.note}`} role="status">{status}</p>
+    </div>
+  );
+}
+
+// Off by default: Claude's resets come from an undocumented endpoint that may go away.
+function LimitResetSettings({ visible }: { visible: boolean }) {
+  const { api, router } = useApp();
+  const [enabled, setEnabled] = useState(false);
+  const [status, setStatus] = useState("");
+  const load = useCallback(async (report = true) => {
+    try {
+      setEnabled((await api<{ enabled: boolean }>("settings/limit-resets")).enabled);
+      if (report) setStatus("");
+    } catch (failure) { setStatus(errorText(failure)); }
+  }, [api]);
+  useEffect(() => { if (visible) void load(); }, [visible, load]);
+  return (
+    <div className={styles.group}>
+      <h3>Limit resets</h3>
+      <label className={styles.row}>Show limit resets
+        <input id="limit-resets" type="checkbox" checked={enabled} onChange={async (event) => {
+          const desired = event.target.checked;
+          setEnabled(desired);
+          try {
+            setEnabled((await api<{ enabled: boolean }>("settings/limit-resets", { enabled: desired })).enabled);
+            setStatus(desired ? "Resets appear on each account after its next usage check." : "");
+            await router.reload();
+          } catch (failure) { setStatus(errorText(failure)); void load(false); }
+        }} />
+      </label>
+      <p className={ui.hint}>Reads how many free usage-limit resets each account has and when they expire, with each usage check. Codex reports them in its usage read. Claude needs a separate read of an undocumented endpoint, which may stop working. The router never uses a reset.</p>
+      <p id="limit-resets-status" className={`${ui.hint} ${styles.note}`} role="status">{status}</p>
     </div>
   );
 }

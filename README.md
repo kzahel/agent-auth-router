@@ -39,7 +39,10 @@ directory for 30 days by default, adjustable in Settings, up to forever. Request
 sessions and ranges show what the traffic would cost at the providers'
 published API prices ([pricing](docs/pricing.md)). Request bodies pass
 through unchanged by default; Settings can have the router compress them
-upstream ([compression](docs/compression.md)). See the
+upstream ([compression](docs/compression.md)). Settings can also show each
+account's free usage-limit resets and their expiry; this is off by default
+because Claude reports them only through an undocumented endpoint
+([sources](docs/sources.md#limit-resets)). See the
 [desktop guide](desktop/README.md) for details.
 
 ## How it works

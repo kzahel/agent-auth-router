@@ -1,4 +1,6 @@
 // On-demand, metadata-only quota reads. OAuth remains owned by official CLIs.
+import http from "node:http";
+import https from "node:https";
 import type { CliModel } from "./contract.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { directProviderProblem, probeClaudeCli } from "./helpers.ts";
@@ -31,6 +33,37 @@ export interface QuotaSnapshot {
   source?: "probe" | "inference";
   error?: string;
   retryAfterSeconds?: number;
+  /** Granted usage-limit resets; present only while the owner's limit-reset setting is on. */
+  limitResets?: LimitResets;
+}
+
+/** One kind of granted usage-limit reset, as the provider describes it. */
+export interface LimitReset {
+  /** Provider display text, such as "Full reset"; null when absent. */
+  label: string | null;
+  /** Resets of this kind still unused. */
+  available: number;
+  /** Resets of this kind granted in total, when the provider says. */
+  total: number | null;
+  /** When the unused resets expire; null if they do not or it is unknown. */
+  expiresAt: string | null;
+  /** Whether the provider says one could be used now; null when it does not say. */
+  usableNow: boolean | null;
+}
+
+/**
+ * Usage-limit resets an account holds. Read only, never redeemed: the router
+ * reports them and leaves using one to the owner. Claude's source is an
+ * undocumented endpoint, so a failed read is recorded here and never fails
+ * the quota read it accompanies.
+ */
+export interface LimitResets {
+  observedAt: string;
+  /** Unused resets of every kind; null when unknown. */
+  available: number | null;
+  resets: LimitReset[];
+  /** Why the resets are unknown. */
+  error?: string;
 }
 
 /** Lower-cased single header values; repeated headers keep the last value. */
@@ -84,6 +117,10 @@ export interface QuotaReadOptions {
   claudeCommand?: string;
   claudeArgs?: string[];
   env?: NodeJS.ProcessEnv;
+  /** Also read granted limit resets: the owner's setting, decided per read. */
+  limitResets?: boolean;
+  /** Origin for the Claude limit-reset read; tests point it at a local server. */
+  claudeOrigin?: string;
 }
 
 const MAX_BYTES = 256 * 1024;
@@ -159,6 +196,142 @@ export function normalizeClaudeQuotas(value: unknown): QuotaWindow[] {
     if (data && "utilization" in data) windows.push(window(bucket, null, data.utilization, iso(data.resets_at)));
   }
   return windows;
+}
+
+const MAX_RESET_ROWS = 32;
+const count = (value: unknown): number | null =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+const label = (value: unknown): string | null =>
+  typeof value === "string" && /^[^\x00-\x1f\x7f]{1,80}$/.test(value.trim()) ? value.trim() : null;
+
+/** Resets of the same label and expiry form one row, so a list of single credits reads as counts. */
+function limitResets(observedAt: string, rows: LimitReset[], available: number | null): LimitResets {
+  const merged: LimitReset[] = [];
+  for (const row of rows) {
+    const same = merged.find(m => m.label === row.label && m.expiresAt === row.expiresAt && m.usableNow === row.usableNow);
+    if (!same) merged.push({ ...row });
+    else {
+      same.available += row.available;
+      same.total = same.total !== null && row.total !== null ? same.total + row.total : null;
+    }
+  }
+  // Soonest expiry first; resets without one last.
+  const expiry = (r: LimitReset) => r.expiresAt === null ? Infinity : Date.parse(r.expiresAt);
+  merged.sort((a, b) => (expiry(a) - expiry(b)) || 0);
+  return { observedAt, available: available ?? merged.reduce((sum, r) => sum + r.available, 0), resets: merged };
+}
+
+const resetsUnknown = (observedAt: string, error: string): LimitResets => ({ observedAt, available: null, resets: [], error });
+
+/**
+ * Codex app-server's `rateLimitResetCredits`, from the same
+ * `account/rateLimits/read` answer as the windows: an available count and
+ * per-credit rows with epoch-second expiry. The list may be capped below the
+ * count, so the count is kept as reported.
+ */
+export function normalizeCodexLimitResets(value: unknown, observedAt = new Date().toISOString()): LimitResets {
+  const summary = object(object(value)?.rateLimitResetCredits);
+  if (!summary) return resetsUnknown(observedAt, "Codex did not report limit resets");
+  const rows = (Array.isArray(summary.credits) ? summary.credits : []).slice(0, MAX_RESET_ROWS).flatMap((item): LimitReset[] => {
+    const credit = object(item);
+    if (!credit || (credit.status !== undefined && credit.status !== "available")) return [];
+    const expires = credit.expiresAt === null ? null : iso(credit.expiresAt, true);
+    return [{ label: label(credit.title), available: 1, total: null, expiresAt: expires, usableNow: null }];
+  });
+  return limitResets(observedAt, rows, count(summary.availableCount));
+}
+
+/**
+ * The `cedar_ember` block of Claude's `/api/oauth/usage?cedar_ember=1`, as
+ * Claude Code 2.1.322 reads it: grants with a label, resets left and total,
+ * an `ends_at` expiry and whether one is usable now. Undocumented and
+ * experiment-named, so every field is optional and anything else is ignored.
+ */
+export function normalizeClaudeLimitResets(value: unknown, observedAt = new Date().toISOString()): LimitResets {
+  const status = object(object(value)?.cedar_ember);
+  if (!status) return resetsUnknown(observedAt, "Claude did not report limit resets");
+  // Ineligible means "not shown to this caller", not "none held": claude.ai can list
+  // grants that the same account's read here reports as ineligible for its surface.
+  if (status.eligible === false) {
+    const reason = label(status.ineligible_reason);
+    return resetsUnknown(observedAt, `Claude does not report limit resets to the router${reason && /^[a-z_]{1,40}$/.test(reason) ? ` (ineligible: ${reason})` : ""}`);
+  }
+  const rows = (Array.isArray(status.grants) ? status.grants : []).slice(0, MAX_RESET_ROWS).flatMap((item): LimitReset[] => {
+    const grant = object(item);
+    const left = count(grant?.resets_left);
+    if (!grant || !left) return [];
+    const usable = typeof grant.usable_now === "boolean" ? grant.usable_now && grant.paused !== true : null;
+    return [{ label: label(grant.label), available: left, total: count(grant.resets_total), expiresAt: iso(grant.ends_at), usableNow: usable }];
+  });
+  return limitResets(observedAt, rows, null);
+}
+
+const LIMIT_RESET_PATH = "/api/oauth/usage?cedar_ember=1&skip_spend=1";
+
+/**
+ * Claude's granted limit resets, read with the profile's current access token
+ * after the CLI's usage read has renewed it. The router never renews or
+ * redeems here. Every failure becomes `error`; nothing is retried.
+ */
+async function claudeLimitResets(account: AccountConfig, options: QuotaReadOptions): Promise<LimitResets> {
+  const observedAt = () => new Date().toISOString();
+  try {
+    const credential = await credentialReaderFor("claude", account.home, account.credentialStore)();
+    if (credential.status !== "ok") return resetsUnknown(observedAt(), "no usable Claude access token for the limit-reset read");
+    const response = await getJson(options.claudeOrigin ?? "https://api.anthropic.com", LIMIT_RESET_PATH, {
+      authorization: `Bearer ${credential.credential.accessToken}`, accept: "application/json",
+      "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01" }, Math.min(options.timeoutMs ?? 10_000, 10_000));
+    return "error" in response ? resetsUnknown(observedAt(), response.error) : normalizeClaudeLimitResets(response.value, observedAt());
+  } catch {
+    return resetsUnknown(observedAt(), "limit-reset read failed");
+  }
+}
+
+/** One bounded GET: no redirects, retries or retained error bodies. */
+function getJson(origin: string, path: string, headers: http.OutgoingHttpHeaders, timeoutMs: number): Promise<ReadResponse> {
+  let url: URL;
+  try {
+    const base = new URL(origin);
+    if (base.username || base.password || base.pathname !== "/" || base.search || base.hash ||
+      !(base.protocol === "https:" || (base.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(base.hostname)))) {
+      return Promise.resolve({ error: "invalid limit-reset endpoint" });
+    }
+    url = new URL(path, base);
+  } catch { return Promise.resolve({ error: "invalid limit-reset endpoint" }); }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: ReadResponse) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      request.destroy();
+      resolve(result);
+    };
+    const request = (url.protocol === "https:" ? https : http).request(url, { method: "GET", headers }, (response) => {
+      const code = response.statusCode ?? 0;
+      if (code !== 200) {
+        finish({ error: code === 401 || code === 403 ? "limit-reset read denied"
+          : code === 404 ? "limit-reset read not offered by the provider"
+          : code === 429 ? "limit-reset read rate limited" : `limit-reset read returned HTTP ${code}` });
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      response.on("data", (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > MAX_BYTES) finish({ error: "limit-reset response exceeded size bound" });
+        else chunks.push(chunk);
+      });
+      response.on("error", () => finish({ error: "limit-reset response interrupted" }));
+      response.on("end", () => {
+        try { finish({ value: JSON.parse(Buffer.concat(chunks).toString("utf8")) }); }
+        catch { finish({ error: "limit-reset response is not valid JSON" }); }
+      });
+    });
+    const deadline = setTimeout(() => finish({ error: "limit-reset read timed out" }), timeoutMs);
+    request.on("error", () => finish({ error: "limit-reset read failed" }));
+    request.end();
+  });
 }
 
 type ReadResponse = { value: unknown } | { error: string; retryAfterSeconds?: number };
@@ -281,11 +454,17 @@ export async function readAccountQuotas(account: AccountConfig, workDir: string,
     const general = object(object(codex?.rateLimitsByLimitId)?.codex) ?? object(codex?.rateLimits);
     const planType = general?.planType;
     const planCapacityUnits = codexPlanCapacityUnits(planType);
+    let resets: LimitResets | undefined;
+    if (options.limitResets) {
+      try { resets = account.provider === "codex" ? normalizeCodexLimitResets(response.value) : await claudeLimitResets(account, options); }
+      catch { resets = resetsUnknown(new Date().toISOString(), "limit-reset read failed"); }
+    }
     return read({
       ...base, observedAt: new Date().toISOString(), status: "ok", windows,
       ...(typeof codex?.ordinaryUsageAllowed === "boolean" ? { ordinaryUsageAllowed: codex.ordinaryUsageAllowed, ordinaryUsageObservedAt: new Date().toISOString() } : {}),
       ...(planCapacityUnits !== undefined ? { planCapacityUnits } : {}),
-      ...(typeof planType === "string" && /^[a-z_]{1,64}$/.test(planType) ? { planType } : {})
+      ...(typeof planType === "string" && /^[a-z_]{1,64}$/.test(planType) ? { planType } : {}),
+      ...(resets ? { limitResets: resets } : {})
     });
   } catch {
     // Process/network/credential errors may contain private data. No raw errors.

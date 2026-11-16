@@ -2,7 +2,7 @@ import { useRef, useState, type ReactNode } from "react";
 import { useConfirm } from "../app/ConfirmDialog.tsx";
 import { useApp } from "../app/context.tsx";
 import { ActionButton } from "../components/ActionButton.tsx";
-import type { Account, LoginStatus } from "../protocol/types.ts";
+import type { Account, LimitResets, LoginStatus } from "../protocol/types.ts";
 import type { TerminalPresentation } from "../settings/SettingsTab.tsx";
 import ui from "../styles/ui.module.css";
 import styles from "./accounts.module.css";
@@ -29,6 +29,23 @@ function loginNotice(loginExpiresAt: string | null | undefined, now = Date.now()
   if (ends <= now) return { text: `Login expired ${when} · sign in again`, urgent: true };
   if (ends - now <= LOGIN_WARNING_MS) return { text: `Login expires ${when} · sign in again before then`, urgent: true };
   return { text: `Login expires ${when}`, urgent: false };
+}
+
+/** Granted limit resets: how many are left and when each kind expires. Read only. */
+function LimitResetList({ resets: r }: { resets: LimitResets }) {
+  if (r.error) return <p className={ui.hint} data-testid="limit-resets">{`Limit resets unknown: ${r.error}`}</p>;
+  return (
+    <div className={styles.resets} data-testid="limit-resets">
+      <span>{`Limit resets · ${r.available ?? "unknown"} available`}</span>
+      {r.resets.map((reset, i) => (
+        <small key={i}>{[
+          `${reset.label ?? "Reset"}${reset.available > 1 || (reset.total ?? 0) > 1 ? ` · ${reset.available}${reset.total ? ` of ${reset.total}` : ""} left` : ""}`,
+          reset.expiresAt ? `expires ${new Date(reset.expiresAt).toLocaleString()}` : "no expiry reported",
+          ...(reset.usableNow === false ? ["not usable now"] : []),
+        ].join(" · ")}</small>
+      ))}
+    </div>
+  );
 }
 
 /**
@@ -87,6 +104,7 @@ export function AccountCard({ account: a, login, presentation, onEditNickname, o
         </div>
       ))}
       {!a.windows.length && <p className={ui.hint}>Quota not checked</p>}
+      {a.quota?.limitResets && <LimitResetList resets={a.quota.limitResets} />}
       {(a.error || a.blocked) && <p className={ui.unknown}>{a.blocked ?? a.error}</p>}
       {notice && <p className={notice.urgent ? ui.unknown : ui.hint}>{notice.text}</p>}
       {login && <p className={ui.hint}>{`Sign-in: ${login.status}`}</p>}

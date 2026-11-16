@@ -36,7 +36,10 @@ rl.on("line", (line) => {
       codex: { primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1791000000 },
         secondary: { usedPercent: 0, windowDurationMins: 10080, resetsAt: null } },
       codex_other: { primary: { usedPercent: 101, windowDurationMins: null, resetsAt: null } },
-    } } });
+    }, ...(mode === "resets" ? { rateLimitResetCredits: { availableCount: 2, credits: [
+      { id: "SECRET-credit-1", resetType: "codexRateLimits", status: "available", grantedAt: 1790000000, expiresAt: 1795000000, title: "Usage reset" },
+      { id: "SECRET-credit-2", resetType: "codexRateLimits", status: "available", grantedAt: 1790000000, expiresAt: 1795000000, title: "Usage reset" },
+    ] } } : {}) } });
   }
   if (request.id === "server" && request.error?.code === -32601) send({ id: 2, result: { rateLimits: {
     limitId: "codex", primary: { usedPercent: 50, windowDurationMins: 300, resetsAt: null },

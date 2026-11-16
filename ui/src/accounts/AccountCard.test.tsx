@@ -19,6 +19,24 @@ describe("AccountCard", () => {
     expect(screen.getAllByText("Reset time unknown · scope: all", { selector: "small" })).toHaveLength(2);
   });
 
+  it("shows limit resets with their expiry, an unknown read's reason, and nothing when not read", async () => {
+    const app = await fakeApp();
+    const expires = "2026-12-10T22:00:00.000Z";
+    const { unmount } = app.render(<AccountCard {...props} account={account("work", { quota: { observedAt: expires, limitResets: { observedAt: expires, available: 3, resets: [
+      { label: "Full reset", available: 1, total: 1, expiresAt: expires, usableNow: true },
+      { label: "Fable reset", available: 2, total: 2, expiresAt: null, usableNow: false },
+    ] } } })} />);
+    expect(screen.getByText("Limit resets · 3 available")).toBeTruthy();
+    expect(screen.getByText(`Full reset · expires ${new Date(expires).toLocaleString()}`)).toBeTruthy();
+    expect(screen.getByText("Fable reset · 2 of 2 left · no expiry reported · not usable now")).toBeTruthy();
+    unmount();
+    const failed = app.render(<AccountCard {...props} account={account("work", { quota: { observedAt: expires, limitResets: { observedAt: expires, available: null, resets: [], error: "limit-reset read not offered by the provider" } } })} />);
+    expect(screen.getByText("Limit resets unknown: limit-reset read not offered by the provider")).toBeTruthy();
+    failed.unmount();
+    app.render(<AccountCard {...props} account={account("work", { quota: { observedAt: expires } })} />);
+    expect(screen.queryByTestId("limit-resets")).toBeNull();
+  });
+
   it("folds More after one of its actions is chosen", async () => {
     const app = await fakeApp();
     const onEditNickname = vi.fn();

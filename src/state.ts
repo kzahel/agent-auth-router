@@ -17,6 +17,8 @@ export function defaultStateDir(env: NodeJS.ProcessEnv = process.env): string {
 export interface RouterSettings {
   /** Absent providers pass request bodies through ("off"). */
   requestCompression: Partial<Record<"claude" | "codex", RequestCompression>>;
+  /** Read granted usage-limit resets with each quota read. Off unless the owner turns it on. */
+  limitResets?: boolean;
 }
 
 export function ensurePrivateDir(path: string): void {
@@ -87,12 +89,12 @@ export class StateStore {
   /** Owner-adjustable router settings; the router reads them per request, so they are cached. */
   loadSettings(): RouterSettings {
     if (this.settingsCache) return this.settingsCache;
-    const raw = readJsonFile<{ version?: number; requestCompression?: Record<string, unknown> }>(this.settingsPath, {});
+    const raw = readJsonFile<{ version?: number; requestCompression?: Record<string, unknown>; limitResets?: unknown }>(this.settingsPath, {});
     const compression: RouterSettings["requestCompression"] = {};
     for (const [provider, value] of Object.entries(raw.requestCompression ?? {})) {
       if (isProvider(provider) && typeof value === "string" && (COMPRESSION_CHOICES[provider] as readonly string[]).includes(value)) compression[provider] = value as RequestCompression;
     }
-    return this.settingsCache = { requestCompression: compression };
+    return this.settingsCache = { requestCompression: compression, ...(raw.limitResets === true ? { limitResets: true } : {}) };
   }
   saveSettings(settings: RouterSettings): void {
     writePrivateJson(this.settingsPath, { version: 1, ...settings });

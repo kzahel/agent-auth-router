@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { ownerRequest } from "../src/owner.ts";
 import { ControlRegistry, startControl } from "../src/control.ts";
+import { PoolEvidence } from "../src/pools.ts";
 import { authorize, generateGatewayToken, hashGatewayToken } from "../src/gateway-auth.ts";
 import { startRouter } from "../src/runtime.ts";
 import { StateStore, writePrivateJson } from "../src/state.ts";
@@ -276,4 +277,44 @@ test("tier-aware pool admission preserves retries and pins and rechecks before c
   registry = new ControlRegistry(store); integration = registry.authenticate(`Bearer ${token}`);
   assert.equal((registry.preparePool(integration, next, evidence) as { accountId: string }).accountId, "fast");
   assert.equal(registry.clients().length, 1);
+});
+
+test("limit resets follow the owner's setting: read per quota read, hidden from the overview while off", { skip: process.platform === "win32" }, async t => {
+  const store = storeFixture();
+  const upstream = await mockUpstream((_req, res, recorded) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(recorded.url === "/v1/models" ? { data: [{ id: "claude-sonnet-fixture" }] } : { ok: true }));
+  });
+  let resetReads = 0;
+  const resetServer = http.createServer((_req, res) => {
+    resetReads++;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ cedar_ember: { eligible: true, grants: [{ label: "Full reset", resets_total: 1, resets_left: 1, ends_at: "2026-12-10T22:00:00Z", usable_now: true }] } }));
+  });
+  await new Promise<void>(resolve => resetServer.listen(0, "127.0.0.1", resolve));
+  t.after(() => { resetServer.closeAllConnections(); resetServer.close(); });
+  writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
+  const router = await startRouter(store, { ...fakeClaude, claudeOrigin: `http://127.0.0.1:${(resetServer.address() as { port: number }).port}` });
+  t.after(() => router.close());
+  const resets = (overview: { accounts: { id: string; quota?: { limitResets?: { available: number | null } } }[] }) => overview.accounts.find(a => a.id === "fixture")?.quota?.limitResets;
+  const off = await ownerRequest(store, "accounts/refresh", { id: "fixture" });
+  assert.ok(off.accounts[0].windows.length, "quota was read");
+  assert.equal(resets(off), undefined, "off by default");
+  assert.equal(resetReads, 0);
+  await ownerRequest(store, "settings/limit-resets", { enabled: true });
+  await new Promise(resolve => setTimeout(resolve, 1100)); // A successful refresh is reused for a second.
+  assert.equal(resets(await ownerRequest(store, "accounts/refresh", { id: "fixture" }))?.available, 1, "the next read includes resets");
+  assert.equal(resetReads, 1);
+  await ownerRequest(store, "settings/limit-resets", { enabled: false });
+  assert.equal(resets(await ownerRequest(store, "overview")), undefined, "hidden at once, before the next read");
+});
+
+test("a proxied response's quota windows keep the last read's limit resets", async () => {
+  const limitResets = { observedAt: new Date().toISOString(), available: 1, resets: [] };
+  const evidence = new PoolEvidence(async () => [], async () => ({ accountId: "a", provider: "claude", observedAt: new Date().toISOString(), status: "ok",
+    windows: [{ bucket: "five_hour", windowMinutes: 300, usedPercent: 10, remainingPercent: 90, resetsAt: null }], limitResets }));
+  await evidence.refresh("a");
+  evidence.observe("a", "claude", { "anthropic-ratelimit-unified-5h-utilization": "0.4" });
+  assert.equal(evidence.get("a").quota?.windows[0]?.usedPercent, 40);
+  assert.deepEqual(evidence.get("a").quota?.limitResets, limitResets);
 });

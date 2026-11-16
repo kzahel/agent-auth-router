@@ -268,6 +268,13 @@ test("web dashboard: exact host and origin, single-use codes, sessions and logou
   assert.deepEqual((await ownerRequest(store, "settings/request-compression", { provider: "claude", value: "gzip" })).requestCompression, { claude: "gzip", codex: "off" });
   assert.equal(statSync(join(store.dir, "settings.json")).mode & 0o777, 0o600);
   assert.deepEqual(store.loadSettings().requestCompression, { claude: "gzip" });
+  // Limit resets are off until the owner turns them on; other settings are kept either way.
+  assert.deepEqual(await ownerRequest(store, "settings/limit-resets"), { enabled: false });
+  await assert.rejects(ownerRequest(store, "settings/limit-resets", { enabled: "yes" }), /true or false/);
+  assert.deepEqual(await ownerRequest(store, "settings/limit-resets", { enabled: true }), { enabled: true });
+  assert.deepEqual(store.loadSettings(), { requestCompression: { claude: "gzip" }, limitResets: true });
+  assert.deepEqual(await ownerRequest(store, "settings/limit-resets", { enabled: false }), { enabled: false });
+  assert.deepEqual(store.loadSettings(), { requestCompression: { claude: "gzip" } });
   await assert.rejects(ownerRequest(store, "sessions/recent", { range: "1y" }), /invalid range/);
   assert.equal(statSync(join(store.dir, "history.db")).mode & 0o777, 0o600);
   const logout = await httpRequest(origin, "/auth/logout", { method: "POST", headers: { host, cookie, origin, "content-type": "application/json" }, body: "{}" });

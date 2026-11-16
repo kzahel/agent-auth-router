@@ -280,7 +280,7 @@ async function main(argv: string[]): Promise<void> {
         const selected = arg ? [accounts.find((account) => account.id === arg) ?? fail(`unknown account ${arg}`)] : accounts;
         store.init();
         const snapshots = [];
-        for (const account of selected) snapshots.push(await fetchAccountQuotas(account, store.workDir));
+        for (const account of selected) snapshots.push(await fetchAccountQuotas(account, store.workDir, { limitResets: store.loadSettings().limitResets === true }));
         process.stdout.write(JSON.stringify(snapshots, null, 2) + "\n");
         if (snapshots.some((snapshot) => snapshot.status !== "ok")) process.exitCode = 2;
         return;

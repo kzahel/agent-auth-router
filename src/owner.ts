@@ -342,6 +342,16 @@ export class OwnerService {
       const saved = this.store.loadSettings().requestCompression;
       return { requestCompression: { claude: saved.claude ?? "off", codex: saved.codex ?? "off" }, choices: COMPRESSION_CHOICES };
     }
+    if (operation === "settings/limit-resets") {
+      // Off by default: Claude's source is an undocumented endpoint. See docs/sources.md.
+      const current = this.store.loadSettings();
+      if (body.enabled !== undefined) {
+        if (typeof body.enabled !== "boolean") throw new ControlError(400, "enabled must be true or false");
+        const { limitResets: _previous, ...rest } = current;
+        this.store.saveSettings(body.enabled ? { ...rest, limitResets: true } : rest);
+      }
+      return { enabled: this.store.loadSettings().limitResets === true };
+    }
     // retentionDays null keeps history forever.
     const retention = () => ({ stored: this.metrics().historyStored(), retentionDays: this.metrics().retentionDays(), maxRetentionDays: MAX_RETENTION_DAYS });
     if (operation === "history/settings") return retention();
