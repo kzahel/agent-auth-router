@@ -10,7 +10,7 @@ import { PoolEvidence } from "../src/pools.ts";
 import { authorize, generateGatewayToken, hashGatewayToken } from "../src/gateway-auth.ts";
 import { startRouter } from "../src/runtime.ts";
 import { StateStore, writePrivateJson } from "../src/state.ts";
-import { FIXTURES, mockUpstream, tempDir, writeClaudeCredentials, writeClearedClaudeCredentials } from "./support.ts";
+import { fakeJwt, FIXTURES, mockUpstream, tempDir, writeClaudeCredentials, writeClearedClaudeCredentials, writeCodexAuth } from "./support.ts";
 
 const fakeClaude = { claudeCommand: process.execPath, claudeArgs: [join(FIXTURES, "fake-claude-cli.ts"), "ok"] };
 const ctlToken = () => "aar_ctl_" + randomBytes(32).toString("base64url");
@@ -93,6 +93,27 @@ test("private control socket routes catalogs before allocation and revokes infer
   assert.equal((await request(socket, "/v1/disconnect", token, {})).status, 200);
   assert.equal((await infer(gateway)).status, 401);
   await router.close(); assert.equal(existsSync(socket), false);
+});
+
+test("the Codex control catalog requests models for a current client", { skip: process.platform === "win32" }, async () => {
+  const store = new StateStore(tempDir("ac-")); store.init();
+  const home = join(store.dir, "profiles", "fixture"); mkdirSync(home);
+  writeCodexAuth(home, fakeJwt(Math.floor(Date.now() / 1000) + 3600, "catalog"));
+  store.saveAccounts([{ id: "fixture", provider: "codex", home }]);
+  const upstream = await mockUpstream((_req, res, recorded) => {
+    const models = recorded.url === "/backend-api/codex/models?client_version=0.169.0"
+      ? [{ slug: "gpt-6.2-sol", display_name: "GPT-6.2 Sol" }]
+      : [{ slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol" }];
+    res.end(JSON.stringify({ models }));
+  });
+  writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { codex: upstream.origin } });
+  const router = await startRouter(store); after(() => router.close());
+  const socket = router.controlSocket!, token = ctlToken(), id = randomUUID();
+  await request(socket, "/v1/pair", undefined, { id, name: "YA fixture", tokenHash: hashGatewayToken(token) });
+  await ownerRequest(store, "grants/save", { id, revision: 1, poolIds: [], accountIds: ["fixture"] });
+  const catalog = await request(socket, "/v1/catalog", token, { accountId: "fixture" });
+  assert.equal(catalog.status, 200);
+  assert.deepEqual(catalog.value.models, [{ id: "gpt-6.2-sol", name: "GPT-6.2 Sol" }]);
 });
 
 test("a lapsed login is a specific refusal naming the account and its deadline", { skip: process.platform === "win32" }, async () => {

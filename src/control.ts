@@ -621,7 +621,7 @@ export class ControlRegistry {
 export async function readCatalog(coordinator: CredentialCoordinator, origin?: string): Promise<CatalogModel[]> {
   const provider = coordinator.account.provider, adapter = ADAPTERS[provider];
   const credential = await coordinator.credential();
-  const url = new URL(provider === "claude" ? "/v1/models" : "/backend-api/codex/models?client_version=0.159.0", parseUpstreamOrigin(origin ?? adapter.defaultOrigin));
+  const url = new URL(provider === "claude" ? "/v1/models" : "/backend-api/codex/models?client_version=0.169.0", parseUpstreamOrigin(origin ?? adapter.defaultOrigin));
   const value = await new Promise<unknown>((resolve, rejectPromise) => {
     const request = (url.protocol === "https:" ? https : http).get(url, { headers: { ...adapter.upstreamHeaders(credential, {}), accept: "application/json" } }, (response) => {
       if (response.statusCode !== 200) { response.destroy(); rejectPromise(new ControlError(502, "account catalog unavailable")); return; }
