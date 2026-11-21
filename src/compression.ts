@@ -9,7 +9,7 @@ import type { Provider } from "./types.ts";
 
 export type RequestCompression = "off" | "gzip" | "zstd";
 /** Encodings each upstream accepts on request bodies, verified 2026-10-15 (docs/compression.md). */
-export const COMPRESSION_CHOICES: Readonly<Record<Provider, readonly RequestCompression[]>> = { claude: ["off", "gzip"], codex: ["off", "zstd"] };
+export const COMPRESSION_CHOICES: Readonly<Record<Exclude<Provider, "antigravity">, readonly RequestCompression[]>> = { claude: ["off", "gzip"], codex: ["off", "zstd"] };
 /** Smaller bodies gain nothing worth the work. */
 const MIN_COMPRESS_BYTES = 1024;
 

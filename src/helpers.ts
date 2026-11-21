@@ -34,7 +34,9 @@ export function helperFor(config: HelperConfig): RenewalHelper | undefined {
 
 /** Explicit helper configuration, else the provider default. */
 export function accountHelper(account: AccountConfig): RenewalHelper | undefined {
-  return helperFor(account.helper ?? (account.provider === "claude" ? { kind: "claude-cli" } : { kind: "none" }));
+  if (account.helper) return helperFor(account.helper);
+  if (account.provider === "antigravity") return (context) => runCommand({ kind: "command", command: providerExecutable("antigravity"), args: ["models"] }, context);
+  return account.provider === "claude" ? helperFor({ kind: "claude-cli" }) : undefined;
 }
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
@@ -47,7 +49,7 @@ const DEFAULT_TIMEOUT_SECONDS = 60;
  */
 export async function directProviderProblem(context: HelperContext): Promise<string | undefined> {
   const { account } = context;
-  const file = account.provider === "codex" ? "config.toml" : "settings.json";
+  const file = account.provider === "codex" ? "config.toml" : account.provider === "antigravity" ? ".gemini/antigravity-cli/settings.json" : "settings.json";
   let text: string;
   try {
     text = await readFile(join(account.home, file), "utf8");
@@ -73,6 +75,11 @@ export async function directProviderProblem(context: HelperContext): Promise<str
     return "profile settings.json is not valid JSON";
   }
   const object = settings && typeof settings === "object" ? (settings as Record<string, unknown>) : {};
+  if (account.provider === "antigravity") {
+    const auth = object.auth as { type?: unknown } | undefined;
+    return object.modelProvider || (auth?.type !== undefined && auth.type !== "oauth-personal")
+      ? "Antigravity profile must use a personal Google login" : undefined;
+  }
   if ("apiKeyHelper" in object) return "profile settings.json defines apiKeyHelper";
   const env = object.env && typeof object.env === "object" ? Object.keys(object.env) : [];
   const overridden = env.filter((key) =>
@@ -90,18 +97,20 @@ function describeExit(result: ProcessResult): string {
 async function runCommand(config: Extract<HelperConfig, { kind: "command" }>, context: HelperContext): Promise<HelperOutcome> {
   const problem = await directProviderProblem(context);
   if (problem) return { outcome: "failed", detail: problem };
+  const antigravity = context.account.provider === "antigravity";
   const proc = startBounded({
     command: config.command,
     args: config.args,
     env: accountEnv(context.account, context.env),
     cwd: context.workDir,
     timeoutMs: (config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+    ...(antigravity ? { maxStderrBytes: 0 } : {}),
   });
   proc.child.stdin?.end();
   proc.child.stdout?.resume();
   const result = await proc.done;
   if (result.code === 0 && !result.timedOut) return { outcome: "completed" };
-  return { outcome: "failed", detail: `${describeExit(result)}: ${result.stderrTail.slice(-200)}` };
+  return { outcome: "failed", detail: antigravity ? describeExit(result) : `${describeExit(result)}: ${result.stderrTail.slice(-200)}` };
 }
 
 const MAX_LINE_BYTES = 1024 * 1024;

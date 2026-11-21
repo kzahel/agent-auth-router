@@ -92,7 +92,7 @@ export class StateStore {
     const raw = readJsonFile<{ version?: number; requestCompression?: Record<string, unknown>; limitResets?: unknown }>(this.settingsPath, {});
     const compression: RouterSettings["requestCompression"] = {};
     for (const [provider, value] of Object.entries(raw.requestCompression ?? {})) {
-      if (isProvider(provider) && typeof value === "string" && (COMPRESSION_CHOICES[provider] as readonly string[]).includes(value)) compression[provider] = value as RequestCompression;
+      if ((provider === "claude" || provider === "codex") && typeof value === "string" && (COMPRESSION_CHOICES[provider] as readonly string[]).includes(value)) compression[provider] = value as RequestCompression;
     }
     return this.settingsCache = { requestCompression: compression, ...(raw.limitResets === true ? { limitResets: true } : {}) };
   }

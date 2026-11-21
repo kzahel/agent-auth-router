@@ -43,10 +43,13 @@ const USAGE = `usage: aar [--state DIR] <command>
   terminal-login <id> [--browser link|open]
                                          interactive login; asks before opening a browser
   client add <name> [--claude ACCT|--claude-pool POOL] [--codex ACCT|--codex-pool POOL]
+                   [--antigravity ACCT]
                                          POOL is a pool id or name: each client session
                                          is pinned to the member the pool's policy picks
   client list
   client revoke <id-or-name>
+  antigravity bridge --gateway ORIGIN --home DIR --token-file FILE [--port N]
+                                         run a loopback bridge for a dedicated agy profile
   serve [--dashboard-port N] [--no-dashboard] [--dashboard-public-readonly]
         [--dev] [--no-event-log] [--public-origin URL [--public-port N]]
                                          run the router on the configured loopback port,
@@ -159,6 +162,7 @@ function clientSnippets(origin: string, token: string, accounts: Partial<Record<
       `  # then run with AAR_TOKEN=${token}`,
     );
   }
+  if (accounts.antigravity) lines.push("Antigravity:", `  Gateway origin: ${origin}`, "  See docs/antigravity.md for client setup.");
   return lines.join("\n");
 }
 
@@ -174,6 +178,10 @@ async function main(argv: string[]): Promise<void> {
       "credential-store": { type: "string" },
       claude: { type: "string" },
       codex: { type: "string" },
+      antigravity: { type: "string" },
+      gateway: { type: "string" },
+      "token-file": { type: "string" },
+      port: { type: "string" },
       "claude-pool": { type: "string" },
       "codex-pool": { type: "string" },
       "dashboard-port": { type: "string" },
@@ -216,6 +224,17 @@ async function main(argv: string[]): Promise<void> {
   };
 
   switch (command) {
+    case "antigravity": {
+      if (sub !== "bridge" || !values.gateway || !values.home || !values["token-file"]) fail("antigravity bridge requires --gateway, --home and --token-file");
+      const { startAntigravityBridge } = await import("./antigravity-client.ts");
+      const home = resolve(values.home);
+      const bridge = await startAntigravityBridge({ gateway: values.gateway, home, tokenFile: resolve(values["token-file"]), port: values.port === undefined ? 0 : Number(values.port) });
+      process.stdout.write(`CLOUD_CODE_URL=${bridge.endpoint}\nGEMINI_HOME=${home}\n`);
+      const close = () => { void bridge.close().catch(() => { process.exitCode = 1; }); };
+      process.once("SIGINT", close);
+      process.once("SIGTERM", close);
+      return;
+    }
     case "doctor": {
       try {
         if (sub !== undefined) throw new Error();
@@ -267,7 +286,8 @@ async function main(argv: string[]): Promise<void> {
               ? `expires ${result.credential.expiresAt ? new Date(result.credential.expiresAt).toISOString() : "unknown"}`
                 + (result.credential.loginExpiresAt ? `; login expires ${new Date(result.credential.loginExpiresAt).toISOString()}` : "")
               : result.reason;
-          process.stdout.write(`${account.id}\t${account.provider}\t${result.status}\t${detail}\thelper=${account.helper?.kind ?? (account.provider === "claude" ? "claude-cli" : "none")}\n`);
+          const helper = account.helper?.kind ?? (account.provider === "claude" ? "claude-cli" : account.provider === "antigravity" ? "agy models" : "none");
+          process.stdout.write(`${account.id}\t${account.provider}\t${result.status}\t${detail}\thelper=${helper}\n`);
         }
         return;
       }
@@ -319,7 +339,7 @@ async function main(argv: string[]): Promise<void> {
           accounts[provider] = id;
         }
         const pools: Partial<Record<Provider, string>> = {};
-        const poolNames = PROVIDERS.filter((provider) => values[`${provider}-pool`] !== undefined);
+        const poolNames = (["claude", "codex"] as const).filter((provider) => values[`${provider}-pool`] !== undefined);
         const known = poolNames.length ? ((await administer("overview", {})) as { pools: { id: string; name: string; provider: Provider }[] }).pools : [];
         for (const provider of poolNames) {
           const wanted = values[`${provider}-pool`]!;
@@ -328,7 +348,7 @@ async function main(argv: string[]): Promise<void> {
           if (matches.length !== 1) fail(matches.length ? `ambiguous ${provider} pool ${wanted}` : `no ${provider} pool ${wanted}`);
           pools[provider] = matches[0]!.id;
         }
-        if (!Object.keys({ ...accounts, ...pools }).length) fail("grant at least one of --claude, --codex, --claude-pool or --codex-pool");
+        if (!Object.keys({ ...accounts, ...pools }).length) fail("grant at least one account or pool");
         const token = generateGatewayToken();
         const record: GatewayClientRecord = {
           id: randomUUID(),

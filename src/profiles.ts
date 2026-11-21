@@ -17,6 +17,7 @@ export function physicalHome(home: string): string {
   try { return realpathSync(home); } catch { return resolve(home); }
 }
 export function discoverProfiles(provider: Provider, userHome = homedir(), env = process.env) {
+  if (provider === "antigravity") return [];
   const candidates = [
     { home: join(userHome, provider === "codex" ? ".codex" : ".claude"), source: "Normal CLI profile" },
     { home: env[provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"], source: "Environment profile" },

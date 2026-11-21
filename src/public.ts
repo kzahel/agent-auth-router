@@ -8,6 +8,7 @@
 import http, { type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
+import { isProvider } from "./types.ts";
 
 export const CONTROL_PREFIX = "/control";
 
@@ -47,7 +48,7 @@ export function clientAddress(req: IncomingMessage): string | null {
 }
 
 function surface(path: string): "inference" | "control" | "dashboard" {
-  if (/^\/(claude|codex)(\/|$|\?)/.test(path)) return "inference";
+  if (isProvider(path.split(/[/?]/, 2)[1])) return "inference";
   if (path === CONTROL_PREFIX || path.startsWith(`${CONTROL_PREFIX}/`) || path.startsWith(`${CONTROL_PREFIX}?`)) return "control";
   return "dashboard";
 }

@@ -486,6 +486,7 @@ export async function readAccountQuotas(account: AccountConfig, workDir: string,
     observedAt: new Date().toISOString(), status: "unavailable", windows: [], error,
     ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}) });
   if (account.enabled === false) return unavailable("account disabled");
+  if (account.provider === "antigravity") return unavailable("Antigravity quota discovery is unavailable through router control");
   let cliModels: CliModel[] | undefined;
   const read = (snapshot: QuotaSnapshot): QuotaRead => cliModels ? { ...snapshot, cliModels } : snapshot;
   try {

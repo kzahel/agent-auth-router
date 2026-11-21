@@ -8,6 +8,7 @@ export function providerExecutable(
   home = homedir(),
   path = process.env.PATH ?? "",
 ): string {
+  const executable = provider === "antigravity" ? "agy" : provider;
   const directories = path.split(delimiter).filter(Boolean);
   if (process.platform !== "win32") {
     directories.push(
@@ -27,11 +28,11 @@ export function providerExecutable(
     } catch {}
   }
   for (const directory of directories) {
-    const file = join(directory, provider);
+    const file = join(directory, executable);
     try {
       accessSync(file, constants.X_OK);
       return file;
     } catch {}
   }
-  return provider; // spawn emits a bounded unavailable result when absent.
+  return executable; // spawn emits a bounded unavailable result when absent.
 }

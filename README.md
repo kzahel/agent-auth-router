@@ -134,7 +134,7 @@ https://aar.example.com` behind a TLS reverse proxy forwarding to
 `127.0.0.1:8420`. Inference, `/control/` and the dashboard then share that
 origin, and other machines pair by showing a code that you approve with
 `aar pairing approve CODE` or in the dashboard's Connections tab. Yep Anywhere
-does not use this yet. See [the hosted router](docs/remote.md).
+supports hosted pairing for Claude and Codex. See [the hosted router](docs/remote.md).
 
 For UI work, `npm run dev` rebuilds the UI in `ui/` whenever its source changes
 and runs `aar serve --dev`, which reloads signed-in browsers after each rebuild.
@@ -178,6 +178,7 @@ service with its state on a volume. See [Running the router in Docker](docs/dock
 - [Event log for later analysis](docs/events.md)
 - [Architecture and security boundaries](docs/architecture.md)
 - [Credential lifecycle](docs/auth-lifecycle.md)
+- [Experimental Antigravity subscription routing](docs/antigravity.md)
 - [Prototype history and observations](docs/prototype.md)
 - [Source repositories and evidence](docs/sources.md)
 - [Running the router in Docker](docs/docker.md)

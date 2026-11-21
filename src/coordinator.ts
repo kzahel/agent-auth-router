@@ -182,7 +182,8 @@ export class CredentialCoordinator {
 
   private isDue(credential: UpstreamCredential): boolean {
     if (credential.expiresAt === undefined) return false;
-    const renewBeforeMs = (this.account.renewBeforeSeconds ?? DEFAULT_RENEW_BEFORE_SECONDS) * 1000;
+    const defaultRenewBefore = this.account.provider === "antigravity" ? 0 : DEFAULT_RENEW_BEFORE_SECONDS;
+    const renewBeforeMs = (this.account.renewBeforeSeconds ?? defaultRenewBefore) * 1000;
     return credential.expiresAt - this.now() <= renewBeforeMs;
   }
 

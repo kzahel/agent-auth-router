@@ -69,6 +69,7 @@ function matches(logic: Match, id: string): boolean {
 }
 
 export function findModel(provider: Provider, modelId: string, providers: PriceProvider[] = PRICE_PROVIDERS): PriceModel | undefined {
+  if (provider === "antigravity") return undefined;
   const section = providers.find(p => p.id === (provider === "claude" ? "anthropic" : "openai"));
   return section?.models.find(m => matches(m.match, modelId));
 }

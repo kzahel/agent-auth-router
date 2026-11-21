@@ -98,7 +98,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   let dashboard: Dashboard | undefined;
   let publicListener: PublicListener | undefined;
   const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, observer: metrics,
-    requestCompression: provider => store.loadSettings().requestCompression[provider] ?? "off",
+    requestCompression: provider => provider === "antigravity" ? "off" : store.loadSettings().requestCompression[provider] ?? "off",
     describeClient: client => control?.registry.describeClient(client) ?? { name: client.name },
     onCyberAccessResponse: (observation) => events?.write("cyber-access", observation),
     sessionAccount: ({ client, provider, poolId, sessionId, model }) => control

@@ -196,7 +196,7 @@ export class ControlRegistry {
   ownerIntegrations() { return this.state.integrations.map(({ id, name, accountIds, poolIds, revision, revoked }) => ({ id, name, accountIds, poolIds, revision, revoked })); }
   private validGrants(poolIds: unknown, accountIds: unknown): { poolIds: string[]; accountIds: string[] } {
     if (!Array.isArray(poolIds) || poolIds.length > 256 || new Set(poolIds).size !== poolIds.length || poolIds.some(id => !this.pools().some(p => p.id === id))) reject(400, "invalid pool grants");
-    if (!Array.isArray(accountIds) || accountIds.length > 256 || new Set(accountIds).size !== accountIds.length || accountIds.some(id => !this.store.loadAccounts().some(a => a.id === id))) reject(400, "invalid account grants");
+    if (!Array.isArray(accountIds) || accountIds.length > 256 || new Set(accountIds).size !== accountIds.length || accountIds.some(id => !this.store.loadAccounts().some(a => a.id === id && a.provider !== "antigravity"))) reject(400, "invalid account grants");
     return { poolIds: poolIds as string[], accountIds: accountIds as string[] };
   }
   grant(body: Record<string, unknown>): object {
@@ -620,6 +620,7 @@ export class ControlRegistry {
 
 export async function readCatalog(coordinator: CredentialCoordinator, origin?: string): Promise<CatalogModel[]> {
   const provider = coordinator.account.provider, adapter = ADAPTERS[provider];
+  if (provider === "antigravity") reject(501, "Antigravity catalog discovery is unavailable through router control");
   const credential = await coordinator.credential();
   const url = new URL(provider === "claude" ? "/v1/models" : "/backend-api/codex/models?client_version=0.169.0", parseUpstreamOrigin(origin ?? adapter.defaultOrigin));
   const value = await new Promise<unknown>((resolve, rejectPromise) => {

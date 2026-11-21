@@ -1,4 +1,4 @@
-export const PROVIDERS = ["claude", "codex"] as const;
+export const PROVIDERS = ["claude", "codex", "antigravity"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 export function isProvider(value: unknown): value is Provider {
@@ -63,7 +63,7 @@ export interface AccountConfig {
   /** Optional owner-editable label; never an identity or profile path. */
   nickname?: string;
   provider: Provider;
-  /** Dedicated CODEX_HOME or CLAUDE_CONFIG_DIR. */
+  /** Dedicated CODEX_HOME, CLAUDE_CONFIG_DIR, or OS home for Antigravity. */
   home: string;
   /** Explicit, version-specific Keychain opt-in; absent selects file storage. */
   credentialStore?: "file" | "claude-keychain" | "claude-keychain-default";

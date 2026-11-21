@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { AccountConfig, Provider } from "./types.ts";
 
 export interface ProcessResult {
@@ -140,7 +140,13 @@ export function helperEnv(provider: Provider, home: string, source: NodeJS.Proce
     if (value !== undefined) env[key] = value;
   }
   if (provider === "codex") env.CODEX_HOME = home;
-  else env.CLAUDE_CONFIG_DIR = home;
+  else if (provider === "claude") env.CLAUDE_CONFIG_DIR = home;
+  else {
+    env.HOME = home;
+    env.GEMINI_HOME = join(home, ".gemini");
+    env.SSH_CONNECTION = source.SSH_CONNECTION || "127.0.0.1 0 127.0.0.1 0";
+    env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
+  }
   return env;
 }
 

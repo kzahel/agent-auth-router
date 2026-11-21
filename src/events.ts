@@ -107,6 +107,7 @@ const NEEDLE = Buffer.from('"user_id"');
  * (docs/prototype.md). Only the id leaves this function, never the body.
  */
 export function clientSessionId(provider: Provider, headers: Record<string, string | string[] | undefined>, body: Buffer): string | undefined {
+  if (provider === "antigravity") return undefined;
   const header = provider === "codex" ? headers.session_id : headers["x-claude-code-session-id"];
   if (typeof header === "string" && SESSION_ID.test(header)) return header;
   if (provider === "codex") return undefined;

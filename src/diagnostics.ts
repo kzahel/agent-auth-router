@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { credentialReaderFor, LOGIN_EXPIRY_WARNING_MS } from "./credentials.ts";
 import type { AccountStatus, SignInState } from "./coordinator.ts";
-import { directProviderProblem } from "./helpers.ts";
+import { accountHelper, directProviderProblem } from "./helpers.ts";
 import { providerExecutable } from "./platform.ts";
 import { helperEnv, startBounded } from "./process.ts";
 import { QUOTA_FRESH_MS, type Observation } from "./pools.ts";
 import type { StateStore } from "./state.ts";
-import { PROVIDERS, type AccountConfig, type Provider } from "./types.ts";
+import type { AccountConfig, Provider } from "./types.ts";
 
 export interface DiagnosticOptions { accountId?: string; checkLogin?: boolean; refreshUsage?: boolean }
 export type DiagnosticAction = "accounts" | "pools" | "integrations" | "install-cli" | "start-router";
@@ -48,8 +48,8 @@ export function diagnosticOptions(body: Record<string, unknown>): DiagnosticOpti
 }
 
 /** --version gets an isolated, empty profile location without creating it. */
-export async function diagnosticProviders(): Promise<ProviderVersion[]> {
-  return Promise.all(PROVIDERS.map(async provider => {
+export async function diagnosticProviders(providers: readonly Provider[] = ["claude", "codex"]): Promise<ProviderVersion[]> {
+  return Promise.all(providers.map(async provider => {
     const probe = startBounded({ command: providerExecutable(provider), args: ["--version"],
       env: helperEnv(provider, join(tmpdir(), `aar-version-${process.pid}-${provider}`)), cwd: tmpdir(),
       timeoutMs: 3000, maxStderrBytes: 0, killGraceMs: 100 });
@@ -85,7 +85,7 @@ const LOGIN_MESSAGES: Record<SignInState, string> = {
 };
 
 export async function diagnose(store: StateStore, options: DiagnosticOptions = {}, runtime?: DiagnosticRuntime,
-  providers: () => Promise<ProviderVersion[]> = diagnosticProviders): Promise<DiagnosticReport> {
+  providers: () => Promise<ProviderVersion[]> = () => diagnosticProviders(store.loadAccounts().some(a => a.provider === "antigravity") ? ["claude", "codex", "antigravity"] : ["claude", "codex"])): Promise<DiagnosticReport> {
   diagnosticOptions(options as Record<string, unknown>);
   const at = new Date().toISOString(), findings: DiagnosticFinding[] = [];
   const deadline = Date.now() + 12_000;
@@ -167,7 +167,7 @@ export async function diagnose(store: StateStore, options: DiagnosticOptions = {
       add("profile-present", "ok", subject, "Enrolled profile directory exists.");
       // Settings are configuration, not credentials. Bound them before using
       // the existing endpoint guard; never report its raw error text.
-      const path = join(account.home, account.provider === "codex" ? "config.toml" : "settings.json");
+      const path = join(account.home, account.provider === "codex" ? "config.toml" : account.provider === "antigravity" ? ".gemini/antigravity-cli/settings.json" : "settings.json");
       try {
         const st = lstatSync(path);
         if (!st.isFile() || st.isSymbolicLink() || st.size > 256 * 1024) throw new Error();
@@ -200,7 +200,7 @@ export async function diagnose(store: StateStore, options: DiagnosticOptions = {
           const read = await bounded(() => credentialReaderFor(account.provider, account.home, account.credentialStore)());
           state = read.status === "missing" ? "signed_out" : read.status === "signed_out" ? "login_required" : read.status !== "ok" ? "unusable"
             : read.credential.expiresAt === undefined || read.credential.expiresAt > Date.now() ? "ready"
-            : read.credential.refreshable && (account.helper?.kind ?? (account.provider === "claude" ? "claude-cli" : "none")) !== "none" ? "idle" : "login_required";
+            : read.credential.refreshable && accountHelper(account) ? "idle" : "login_required";
         }
         add(`login-${state}`, ["login_required", "signed_out", "unusable", "renewal_failed"].includes(state) ? "error" : state === "ready" ? "ok" : "warning", subject, LOGIN_MESSAGES[state], "accounts");
       } catch { add("login-unreadable", "error", subject, "Credential status could not be read; no raw error output is included.", "accounts"); }

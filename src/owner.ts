@@ -51,6 +51,7 @@ export function loginCommand(account: AccountConfig): string {
   if (account.provider === "codex") {
     return `env -u OPENAI_BASE_URL -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME=${home} codex login`;
   }
+  if (account.provider === "antigravity") return `env -i PATH="$PATH" HOME=${home} SSH_CONNECTION='127.0.0.1 0 127.0.0.1 0' AGY_CLI_DISABLE_AUTO_UPDATE=1 agy acp --login`;
   if (account.credentialStore === "claude-keychain-default") return `env -i PATH="$PATH" HOME=${quote(dirname(account.home))} USER=${quote(userInfo().username)} claude auth login --claudeai`;
   return `env -i PATH="$PATH" HOME="$HOME" USER=${quote(userInfo().username)} CLAUDE_CONFIG_DIR=${home} claude auth login --claudeai`;
 }
@@ -335,7 +336,7 @@ export class OwnerService {
       const current = this.store.loadSettings();
       if (body.provider !== undefined || body.value !== undefined) {
         const provider = body.provider, value = body.value;
-        if (!isProvider(provider)) throw new ControlError(400, "invalid provider");
+        if (provider !== "claude" && provider !== "codex") throw new ControlError(400, "invalid provider");
         if (typeof value !== "string" || !(COMPRESSION_CHOICES[provider] as readonly string[]).includes(value)) throw new ControlError(400, `compression for ${provider} must be one of ${COMPRESSION_CHOICES[provider].join(", ")}`);
         this.store.saveSettings({ ...current, requestCompression: { ...current.requestCompression, [provider]: value as RequestCompression } });
       }
@@ -464,8 +465,7 @@ export class OwnerService {
       )
         account.helper = { kind: "codex-app-server" };
       else if (body.helper === "claude-cli") account.helper = { kind: "claude-cli" };
-      // Claude defaults to the CLI helper; record an explicit opt-out.
-      else if (body.helper === "none" && body.provider === "claude") account.helper = { kind: "none" };
+      else if (body.helper === "none" && body.provider !== "codex") account.helper = { kind: "none" };
       if (accounts.some(a => physicalHome(a.home) === physicalHome(account.home))) throw new ControlError(409, "profile is already enrolled");
       try {
         validateAccounts([...accounts, account]);
@@ -602,6 +602,7 @@ export class OwnerService {
     }
     if (operation === "accounts/login") {
       const account = this.account(body);
+      if (account.provider === "antigravity") throw new ControlError(409, "Use the official Antigravity terminal sign-in command");
       if (account.enabled === false) throw new ControlError(409, "account disabled");
       if (
         this.logins.get(account.id)?.status === "running" ||

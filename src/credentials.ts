@@ -34,6 +34,7 @@ export function credentialReaderFor(provider: Provider, home: string, store?: Ac
     if (provider !== "claude") return async () => ({ status: "unsupported", reason: "Keychain store requires Claude" });
     return () => readClaudeKeychain(home, { defaultProfile: store === "claude-keychain-default" });
   }
+  if (provider === "antigravity") return () => readAntigravityFile(home);
   return provider === "codex" ? () => readCodexFile(home) : () => readClaudeFile(home);
 }
 
@@ -69,6 +70,20 @@ function revisionOf(accessToken: string): string {
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+async function readAntigravityFile(home: string): Promise<ReadResult> {
+  const result = await readJson(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"));
+  if (result.status !== "json") return result;
+  const stored = record(result.value);
+  if (stored?.auth_method !== "consumer") return { status: "unsupported", reason: "Antigravity requires a file-backed personal Google login" };
+  const token = record(stored.token);
+  const accessToken = token?.access_token;
+  const expiresAt = typeof token?.expiry === "string" ? Date.parse(token.expiry) : NaN;
+  if (typeof accessToken !== "string" || !/^[!-~]+$/.test(accessToken) || accessToken.startsWith("aar_") || !Number.isFinite(expiresAt)) {
+    return { status: "malformed", reason: "Antigravity credential lacks an access token or expiry" };
+  }
+  return { status: "ok", credential: { accessToken, expiresAt, accountId: undefined, revision: revisionOf(accessToken), refreshable: typeof token?.refresh_token === "string" && !!token.refresh_token } };
 }
 
 /** Reads `exp` from a JWT payload for scheduling only; no signature check. */

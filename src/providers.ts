@@ -69,7 +69,26 @@ const codex: ProviderAdapter = {
   },
 };
 
-export const ADAPTERS: Record<Provider, ProviderAdapter> = { claude, codex };
+const antigravity: ProviderAdapter = {
+  provider: "antigravity",
+  defaultOrigin: "https://daily-cloudcode-pa.googleapis.com",
+  routes: [
+    "loadCodeAssist",
+    "fetchAdminControls",
+    "fetchAvailableModels",
+    "fetchUserInfo",
+    "listExperiments",
+    "retrieveUserQuotaSummary",
+    "streamGenerateContent",
+  ].map((rpc) => {
+    const path = `/v1internal:${rpc}`;
+    return { method: "POST", path, upstreamPath: path };
+  }),
+  forwardHeader: (name) => ["content-type", "content-encoding", "accept", "user-agent", "x-goog-api-client"].includes(name),
+  upstreamHeaders: (credential) => ({ authorization: `Bearer ${credential.accessToken}` }),
+};
+
+export const ADAPTERS: Record<Provider, ProviderAdapter> = { claude, codex, antigravity };
 
 /** Response headers never relayed to clients. */
 const RESPONSE_HEADER_DENYLIST = new Set([

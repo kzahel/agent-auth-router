@@ -94,6 +94,7 @@ export async function terminalLogin(store: StateStore, id: string, browser?: str
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("Sign-in requires an interactive terminal");
   const account = store.loadAccounts().find(a => a.id === id);
   if (!account) throw new Error("Account not found");
+  if (account.provider === "antigravity") throw new Error("Use aar account login-command for Antigravity");
   const lease = await ownerRequest(store, "accounts/terminal-begin", { id, pid: process.pid });
   const body = { id, token: lease.token };
   let child: ChildProcess | undefined, cancelled = false, success = false, choosing = true;
