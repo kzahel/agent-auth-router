@@ -51,6 +51,7 @@ export function PoolEditor({ pool, overview, onClose }: { pool: Pool | undefined
         <select name="provider" disabled={revision > 0} value={provider} onChange={(event) => { setProvider(event.target.value as Provider); setMembers(new Set()); }}>
           <option value="codex">Codex</option>
           <option value="claude">Claude</option>
+          <option value="antigravity">Antigravity</option>
         </select>
       </label>
       <label>Default policy

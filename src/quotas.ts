@@ -5,11 +5,14 @@ import https from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CliModel } from "./contract.ts";
+import { callCloudCodeWithCoordinator, normalizeAntigravityQuotas, postCloudCode } from "./antigravity-cloudcode.ts";
+import { CredentialUnavailable, type CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { directProviderProblem, probeClaudeCli } from "./helpers.ts";
 import { log, sanitize } from "./log.ts";
 import { providerExecutable } from "./platform.ts";
 import { helperEnv, startBounded } from "./process.ts";
+import { ADAPTERS } from "./providers.ts";
 import type { AccountConfig, Provider } from "./types.ts";
 
 export interface QuotaWindow {
@@ -101,6 +104,7 @@ export function normalizeResponseHeaderQuotas(provider: Provider, headers: Respo
     }
     return windows;
   }
+  if (provider !== "codex") return windows;
   for (const kind of ["primary", "secondary"] as const) {
     const used = finite(header(headers, `x-codex-${kind}-used-percent`));
     if (used === undefined) continue;
@@ -128,6 +132,10 @@ export interface QuotaReadOptions {
   /** The CLI whose `--version` names the limit-reset read's User-Agent; default `claude` on PATH. */
   claudeVersionCommand?: string;
   claudeVersionArgs?: string[];
+  /** Origin for Antigravity quota reads; tests point it at a local mock upstream. */
+  antigravityOrigin?: string;
+  /** Coordinator for Antigravity accounts so expired tokens renew via the official CLI. */
+  coordinator?: CredentialCoordinator;
 }
 
 const MAX_BYTES = 256 * 1024;
@@ -486,7 +494,30 @@ export async function readAccountQuotas(account: AccountConfig, workDir: string,
     observedAt: new Date().toISOString(), status: "unavailable", windows: [], error,
     ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}) });
   if (account.enabled === false) return unavailable("account disabled");
-  if (account.provider === "antigravity") return unavailable("Antigravity quota discovery is unavailable through router control");
+  if (account.provider === "antigravity") {
+    try {
+      const origin = options.antigravityOrigin ?? ADAPTERS.antigravity.defaultOrigin;
+      let response;
+      if (options.coordinator) {
+        response = await callCloudCodeWithCoordinator(options.coordinator, "retrieveUserQuotaSummary", origin, {
+          timeoutMs: options.timeoutMs ?? 15_000,
+        });
+      } else {
+        const credential = await credentialReaderFor("antigravity", account.home, account.credentialStore)();
+        if (credential.status !== "ok") return unavailable("credential unavailable; check official CLI login");
+        response = await postCloudCode(origin, "retrieveUserQuotaSummary", credential.credential.accessToken, {
+          timeoutMs: options.timeoutMs ?? 15_000,
+        });
+      }
+      if (!response.ok) return unavailable(response.error);
+      const windows = normalizeAntigravityQuotas(response.value);
+      if (!windows.length) return unavailable("provider returned no recognized quota windows");
+      return { ...base, observedAt: new Date().toISOString(), status: "ok", windows };
+    } catch (error) {
+      if (error instanceof CredentialUnavailable) return unavailable(error.message);
+      return unavailable("quota read failed");
+    }
+  }
   let cliModels: CliModel[] | undefined;
   const read = (snapshot: QuotaSnapshot): QuotaRead => cliModels ? { ...snapshot, cliModels } : snapshot;
   try {

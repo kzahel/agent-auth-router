@@ -60,5 +60,16 @@ the AAR client token, because `agy` also attempts a direct Google UserInfo
 request. AAR sends the enrolled account's access token only to its configured
 Cloud Code upstream. The bridge accepts only the allowlisted setup and
 streaming RPCs. AAR records route, account, timing, status and byte counts.
-This setup uses manual client grants. Antigravity pools, YA Settings pairing,
-and AAR-native quota and token accounting are outside this experiment.
+This setup uses a dedicated file-backed personal Google login per enrolled
+account on the router and supports both:
+
+- **Paired integrations & pools (`antigravity-control-v1`):** Antigravity
+  accounts can be added to AAR pools, granted to paired integrations like Yep
+  Anywhere, queried for catalogs (`v1internal:fetchAvailableModels`) and quota
+  windows (`v1internal:retrieveUserQuotaSummary`, scoped to `gemini`,
+  `gemini-argon`, `gemini-carbon`, and `3p`), and bound per session without
+  server-wide environment variables. Yep Anywhere runs a per-session loopback
+  bridge tied to each routed `agy acp` child process.
+- **Standalone manual clients (`aar client add` + `aar antigravity bridge`):**
+  The manual client token and long-lived bridge workflow below remains supported
+  for standalone CLI hosts.

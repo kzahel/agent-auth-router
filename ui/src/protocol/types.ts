@@ -2,7 +2,7 @@
 // core's operations (src/owner.ts, src/control.ts, src/metrics.ts,
 // src/history.ts); only fields the UI uses are listed.
 
-export type Provider = "claude" | "codex";
+export type Provider = "claude" | "codex" | "antigravity";
 export interface DiagnosticReport {
   version: 1;
   at: string;
@@ -226,4 +226,4 @@ export interface LoginStatus {
   canOpenLogin?: boolean;
 }
 
-export type RequestCompression = Record<Provider, string>;
+export type RequestCompression = Record<"claude" | "codex", string>;

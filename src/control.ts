@@ -16,11 +16,12 @@ import { hashGatewayToken } from "./gateway-auth.ts";
 import { clientAddress } from "./public.ts";
 import { accountHelper } from "./helpers.ts";
 import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
+import { readAntigravityCatalog } from "./antigravity-cloudcode.ts";
 import { fetchAccountQuotas, readAccountQuotas, remainingCapacityUnits, type QuotaReadOptions, type QuotaSnapshot } from "./quotas.ts";
 import { PoolEvidence, burnWithCeiling, eligibility, withCeiling, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, policyVersion, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
 import { CredentialUnavailable, LOGIN_IN_PROGRESS, type CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
-import type { GatewayClientRecord, Provider } from "./types.ts";
+import { isProvider, type GatewayClientRecord, type Provider } from "./types.ts";
 
 interface Integration { id: string; name: string; tokenHash: string; accountIds: string[]; poolIds: string[]; revision: number; revoked: boolean }
 interface Binding {
@@ -196,7 +197,7 @@ export class ControlRegistry {
   ownerIntegrations() { return this.state.integrations.map(({ id, name, accountIds, poolIds, revision, revoked }) => ({ id, name, accountIds, poolIds, revision, revoked })); }
   private validGrants(poolIds: unknown, accountIds: unknown): { poolIds: string[]; accountIds: string[] } {
     if (!Array.isArray(poolIds) || poolIds.length > 256 || new Set(poolIds).size !== poolIds.length || poolIds.some(id => !this.pools().some(p => p.id === id))) reject(400, "invalid pool grants");
-    if (!Array.isArray(accountIds) || accountIds.length > 256 || new Set(accountIds).size !== accountIds.length || accountIds.some(id => !this.store.loadAccounts().some(a => a.id === id && a.provider !== "antigravity"))) reject(400, "invalid account grants");
+    if (!Array.isArray(accountIds) || accountIds.length > 256 || new Set(accountIds).size !== accountIds.length || accountIds.some(id => !this.store.loadAccounts().some(a => a.id === id))) reject(400, "invalid account grants");
     return { poolIds: poolIds as string[], accountIds: accountIds as string[] };
   }
   grant(body: Record<string, unknown>): object {
@@ -216,7 +217,7 @@ export class ControlRegistry {
     const existing = (this.state.pools ?? []).find(p => p.id === id);
     if (existing?.deleted) reject(409, "pool identity unavailable");
     if (body.revision !== (existing?.revision ?? 0)) reject(409, "pool changed; reload before editing");
-    if (body.provider !== "codex" && body.provider !== "claude") reject(400, "invalid pool provider");
+    if (!isProvider(body.provider)) reject(400, "invalid pool provider");
     if (existing && body.provider !== existing.provider) reject(409, "pool provider cannot change");
     if (!isPoolPolicy(body.policy)) reject(400, "invalid pool policy");
     const accountIds = body.accountIds;
@@ -620,7 +621,13 @@ export class ControlRegistry {
 
 export async function readCatalog(coordinator: CredentialCoordinator, origin?: string): Promise<CatalogModel[]> {
   const provider = coordinator.account.provider, adapter = ADAPTERS[provider];
-  if (provider === "antigravity") reject(501, "Antigravity catalog discovery is unavailable through router control");
+  if (provider === "antigravity") {
+    try { return await readAntigravityCatalog(coordinator, origin); }
+    catch (error) {
+      if (error instanceof CredentialUnavailable) throw error;
+      reject(502, "account catalog unavailable");
+    }
+  }
   const credential = await coordinator.credential();
   const url = new URL(provider === "claude" ? "/v1/models" : "/backend-api/codex/models?client_version=0.169.0", parseUpstreamOrigin(origin ?? adapter.defaultOrigin));
   const value = await new Promise<unknown>((resolve, rejectPromise) => {
@@ -684,8 +691,17 @@ export async function startControl(store: StateStore, origin: string, coordinato
     return job;
   };
   // The owner's limit-reset setting is read per quota read, so a change applies to the next one.
-  const readOptions = (): QuotaReadOptions => ({ ...quotaOptions, limitResets: store.loadSettings().limitResets === true });
-  const evidence = new PoolEvidence(id => catalog(id, true), id => readAccountQuotas(store.loadAccounts().find(a => a.id === id)!, store.workDir, readOptions()));
+  const readOptions = (id?: string): QuotaReadOptions => {
+    const antigravityOrigin = store.loadConfig().upstreams?.antigravity;
+    const coordinator = id ? coordinators.get(id) : undefined;
+    return {
+      ...quotaOptions,
+      limitResets: store.loadSettings().limitResets === true,
+      ...(antigravityOrigin ? { antigravityOrigin } : {}),
+      ...(coordinator ? { coordinator } : {}),
+    };
+  };
+  const evidence = new PoolEvidence(id => catalog(id, true), id => readAccountQuotas(store.loadAccounts().find(a => a.id === id)!, store.workDir, readOptions(id)));
   evidence.onQuota = (id, observation, observed) => {
     metrics.quota(id, observation.quota?.windows ?? []);
     events?.write("quota", { accountId: id, provider: observation.quota?.provider ?? null, source: observed.source, requestId: observed.requestId ?? null, windows: observed.windows });
@@ -693,7 +709,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
   let active = 0, publicActive = 0;
   let stopping = false;
   let closing: Promise<void> | undefined;
-  const capabilities = ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1", "service-tiers-v1", "gateway-token-header-v1"];
+  const capabilities = ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1", "service-tiers-v1", "gateway-token-header-v1", "antigravity-control-v1"];
   /**
    * One handler for both transports. The owner-only socket also carries owner
    * administration and trusted pairing; the public listener (behind a TLS
@@ -736,7 +752,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
       if (path === "/v1/pools/save") return reject(403, "pools are managed by the local router owner");
       if (path === "/v1/pools/remove") return reject(403, "pools are managed by the local router owner");
       if (path === "/v1/selection") {
-        if (body.provider !== "claude" && body.provider !== "codex") reject(400, "invalid provider");
+        if (!isProvider(body.provider)) reject(400, "invalid provider");
         const ids = registry.accounts(integration).filter(a => a.provider === body.provider && a.enabled).map(a => a.id);
         if (ids.length > 256) reject(409, "too many accounts for discovery");
         const controller = new AbortController();
@@ -778,7 +794,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
           return reply(200, { models, ...(cliModels ? { cliModels, cliModelsAt } : {}) } satisfies AccountCatalog);
         }
         let job = quotaJobs.get(account.id);
-        if (!job) { job = fetchAccountQuotas(account, store.workDir, readOptions()).finally(() => quotaJobs.delete(account.id)); quotaJobs.set(account.id, job); }
+        if (!job) { job = fetchAccountQuotas(account, store.workDir, readOptions(account.id)).finally(() => quotaJobs.delete(account.id)); quotaJobs.set(account.id, job); }
         const snapshot = await job; registry.account(registry.authenticate(req.headers.authorization), account.id); return reply(200, snapshot);
       }
       if (path === "/v1/bindings/prepare") {

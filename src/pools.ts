@@ -79,19 +79,47 @@ const cliModelsFresh = (o: Observation, now: number): boolean =>
   !!o.cliModelsAt && now - Date.parse(o.cliModelsAt) < CLI_MODELS_FRESH_MS && now >= Date.parse(o.cliModelsAt);
 
 /** Unknown scopes are never guessed to grant model access. */
-export function windowScope(provider: Provider, bucket: string): "all" | "opus" | "sonnet" | "unknown" {
+export type WindowScope = "all" | "opus" | "sonnet" | "gemini" | "gemini-argon" | "gemini-carbon" | "3p" | "unknown";
+export function windowScope(provider: Provider, bucket: string): WindowScope {
   if (provider === "codex") return /^codex:(primary|secondary)$/.test(bucket) ? "all" : "unknown";
+  if (provider === "antigravity") {
+    if (/^gemini-(?:5h|weekly)$/.test(bucket)) return "gemini";
+    if (/^gemini-argon(?:-wtu)?-(?:5h|weekly)$/.test(bucket)) return "gemini-argon";
+    if (/^gemini-carbon(?:-wtu)?-(?:5h|weekly)$/.test(bucket)) return "gemini-carbon";
+    if (/^3p-(?:5h|weekly)$/.test(bucket)) return "3p";
+    return "unknown";
+  }
   if (["five_hour", "seven_day", "seven_day_oauth_apps"].includes(bucket)) return "all";
   if (bucket === "seven_day_opus") return "opus";
   if (bucket === "seven_day_sonnet") return "sonnet";
   return "unknown";
 }
-function applies(provider: Provider, window: QuotaWindow, model: string): boolean {
+function antigravityModelScope(model: string, windows: readonly QuotaWindow[]): WindowScope {
+  const lower = model.toLowerCase();
+  if (lower.startsWith("gemini-pro-orchestrator-")) return "unknown";
+  if (lower.startsWith("gemini-")) {
+    if (lower.includes("argon")) {
+      return windows.some(w => windowScope("antigravity", w.bucket) === "gemini-argon") ? "gemini-argon" : "gemini";
+    }
+    if (lower.includes("carbon")) {
+      return windows.some(w => windowScope("antigravity", w.bucket) === "gemini-carbon") ? "gemini-carbon" : "gemini";
+    }
+    return "gemini";
+  }
+  if (/^(?:claude|gpt)-/.test(lower)) return "3p";
+  return "unknown";
+}
+function applies(provider: Provider, window: QuotaWindow, model: string, allWindows: readonly QuotaWindow[]): boolean {
   const scope = windowScope(provider, window.bucket);
+  if (provider === "antigravity") {
+    const target = antigravityModelScope(model, allWindows);
+    return target === "unknown" ? true : scope === target || scope === "unknown";
+  }
   return scope === "all" || scope === "unknown" || !/^claude-(opus|sonnet|haiku)-/.test(model) || model.startsWith(`claude-${scope}-`);
 }
 export function applicableWindows(provider: Provider, observation: Observation, model: string): QuotaWindow[] {
-  return observation.quota?.windows.filter(w => applies(provider, w, model)) ?? [];
+  const all = observation.quota?.windows ?? [];
+  return all.filter(w => applies(provider, w, model, all));
 }
 const ceilingPercent = (ceiling: UsageCeiling | undefined, w: QuotaWindow) =>
   w.windowMinutes === null ? undefined : w.windowMinutes < WEEKLY_MINUTES ? ceiling?.shortPercent : ceiling?.weeklyPercent;
@@ -214,7 +242,7 @@ export function eligibility(provider: Provider, enabled: boolean, model: string 
   if (!automatic) return "eligible";
   if (!quota || observation.error || !windows.length || windows.some((w) => w.remainingPercent === null)) return "quota-unknown";
   if (now - Date.parse(quota.observedAt) >= QUOTA_FRESH_MS || now < Date.parse(quota.observedAt)) return "quota-stale";
-  if (windows.some((w) => windowScope(provider, w.bucket) === "unknown" || (provider === "claude" && ["opus", "sonnet"].includes(windowScope(provider, w.bucket)) && !/^claude-(opus|sonnet|haiku)-/.test(model)))) return "scope-unknown";
+  if (windows.some((w) => windowScope(provider, w.bucket) === "unknown" || (provider === "claude" && ["opus", "sonnet"].includes(windowScope(provider, w.bucket)) && !/^claude-(opus|sonnet|haiku)-/.test(model))) || (provider === "antigravity" && antigravityModelScope(model, quota.windows) === "unknown")) return "scope-unknown";
   // A window with no recorded use and no reset time has not started yet; its
   // full headroom is observed, not inferred from a passed reset.
   if (permission !== true && windows.some((w) => w.resetsAt ? Date.parse(w.resetsAt) <= now : w.usedPercent !== 0)) return "reset-unverified";

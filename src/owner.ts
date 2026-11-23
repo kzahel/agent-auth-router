@@ -222,7 +222,7 @@ export class OwnerService {
     }
     if (operation === "providers") {
       const providers = await Promise.all(
-        (["claude", "codex"] as const).map(async (provider) => {
+        (["claude", "codex", "antigravity"] as const).map(async (provider) => {
           const probe = startBounded({
             command: providerExecutable(provider),
             args: ["--version"],

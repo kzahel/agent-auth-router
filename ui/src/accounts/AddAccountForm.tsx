@@ -69,6 +69,7 @@ export function AddAccountForm() {
           <select name="provider" disabled={adding} value={fields.provider} onChange={(event) => setup({ provider: event.target.value as Provider })}>
             <option value="codex">Codex</option>
             <option value="claude">Claude</option>
+            <option value="antigravity">Antigravity</option>
           </select>
         </label>
         <label>Profile folder

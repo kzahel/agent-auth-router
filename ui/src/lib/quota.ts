@@ -4,9 +4,16 @@ import type { QuotaWindow } from "../protocol/types.ts";
 // reprobe readings this old, so older ones are drawn as last known.
 export const QUOTA_STALE_MS = 15 * 60_000;
 
-/** five_hour → 5h, seven_day_opus → 7d opus, codex:primary over 300 minutes → 5h. */
+/** five_hour → 5h, seven_day_opus → 7d opus, codex:primary over 300 minutes → 5h, gemini-weekly → gemini 7d. */
 export function quotaLabel(w: Pick<QuotaWindow, "bucket"> & { windowMinutes?: number | null }): string {
-  const name = w.bucket.replace(/^codex:/, "").replace(/^five_hour/, "5h").replace(/^seven_day/, "7d").replaceAll("_", " ");
+  const name = w.bucket
+    .replace(/^codex:/, "")
+    .replace(/^five_hour/, "5h")
+    .replace(/^seven_day/, "7d")
+    .replace(/-wtu-/, "-")
+    .replace(/-weekly$/, " 7d")
+    .replace(/-5h$/, " 5h")
+    .replaceAll("_", " ");
   const m = w.windowMinutes;
   if (!/^(primary|secondary)$/.test(name) || !m) return name;
   return m % 1440 === 0 ? `${m / 1440}d` : m % 60 === 0 ? `${m / 60}h` : `${m}m`;
