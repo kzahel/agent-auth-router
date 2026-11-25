@@ -3,14 +3,25 @@
 This suite lives in AAR and runs its current sources against the exact YA commit
 in [pin.json](pin.json). The YA checkout is unmodified. Both projects run in
 separate Node processes, using real YA HTTP routes, metadata persistence,
-supervisor, native Claude/Codex adapters and AAR's control and inference servers.
+supervisor, native Claude, Codex and Antigravity adapters and AAR's control and
+inference servers.
 
 The two external boundaries are synthetic: [fake-cli.mjs](fake-cli.mjs) speaks
-the Claude SDK and Codex app-server protocols, and a loopback upstream streams
-deterministic responses. One wrapper around the native adapter's `startSession`
-injects a failed launch after allocation. These tests do not run the official
-CLIs, paid inference, OAuth login or renewal. They prove integration behavior at
-the pinned revision, not compatibility with future CLIs or upstream APIs.
+the Claude SDK and Codex app-server protocols, [fake-agy.mjs](fake-agy.mjs)
+speaks `agy acp`, and a loopback upstream streams deterministic responses. One
+wrapper around the native adapter's `startSession` injects a failed launch after
+allocation. These tests do not run the official CLIs, paid inference, OAuth
+login or renewal. They prove integration behavior at the pinned revision, not
+compatibility with future CLIs or upstream APIs.
+
+The binding transport cases put a relay between YA and the real control socket
+for router conditions current sources cannot produce. It loses one reply after
+the router has acted, rewrites one reply's `transport`, moves the described
+route to `/<provider>/described` behind a forwarder that serves no other path,
+or removes `binding-transport-v1` and the `transport` field. Those two removals
+are the whole wire difference from a router before the capability, but one
+current router runs throughout: no older AAR build and no AAR upgrade is
+exercised.
 
 ## Run
 
@@ -79,13 +90,38 @@ Each provider exercises:
 - Pending disconnect surviving a YA restart, blocking launches and re-pairing,
   explicit retry after AAR recovers, and refusal to adopt an old session into a
   new pairing.
+- Binding transport ([control](../../docs/control.md#binding-transport)): with
+  the capability hidden, YA assembles the usual route and the session runs.
+  Once the router's replies describe the transport, on a route YA could not
+  have assembled, the same session resumes on its pin and its turn completes
+  through that route; Codex is given the described model catalog URL. A new
+  session is refused with nothing started and its binding cancelled when the
+  description names a transport kind YA predates (no commit is attempted, and
+  the message asks for a YA update) or when a committed reply names a route
+  outside the provider's own (its token can no longer infer). A resume whose
+  commit reply is lost starts nothing, and the retry runs on the same pin and
+  token. That commit repeats one already applied; a new session's first commit
+  is not covered.
+- Antigravity: a routed session starts the `agy` peer against YA's loopback
+  bridge, and its turn completes through AAR's `/antigravity` route with only
+  the enrolled login sent upstream. The binding describes no transport.
+  Nothing shaped like the binding token is in the peer's arguments,
+  environment or profile login. After disconnect the router rejects the
+  binding token and the live session's next request is refused before
+  upstream.
 - Provider credential substitution only at AAR, private YA storage permissions,
   no credentials in logs, transcripts, public responses or metadata, and unchanged AAR credential
   fixtures with no auth files copied into YA's native homes.
 
 The network tripwire also has focused tests for Node's socket argument forms.
 CI runs the suite on both Linux and macOS. UI behavior, official CLI compatibility,
-credential renewal and advanced balancing remain outside this suite.
+credential renewal and advanced balancing remain outside this suite. So do the
+hosted HTTPS origin, and Antigravity pools, resume and transcript reading.
+
+Only the pinned YA runs. A YA from before the binding transport last ran
+against a router that describes it in
+[CI for `5a5039a`](https://github.com/kzahel/agent-auth-router/actions/runs/45596402671),
+when the pin was still `0b66e24`.
 
 ## Update the YA pin
 

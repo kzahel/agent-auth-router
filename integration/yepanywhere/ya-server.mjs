@@ -17,10 +17,13 @@ const { DiscoverySqliteService } = await load("storage/discovery-sqlite.ts");
 const providerName = process.env.AAR_TEST_PROVIDER;
 const { ClaudeProvider } = await load("sdk/providers/claude.ts");
 const { CodexProvider } = await load("sdk/providers/codex.ts");
+const { AntigravityProvider } = await load("sdk/providers/antigravity.ts");
 const provider =
   providerName === "claude"
     ? new ClaudeProvider()
-    : new CodexProvider({
+    : providerName === "antigravity"
+      ? new AntigravityProvider()
+      : new CodexProvider({
         codexPath: process.env.AAR_FAKE_CLI,
         codexHome: process.env.CODEX_HOME,
       });

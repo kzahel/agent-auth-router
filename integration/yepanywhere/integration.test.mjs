@@ -4,6 +4,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -56,14 +57,17 @@ const rows = (path) =>
         .map(JSON.parse)
     : [];
 const hash = (value) => createHash("sha256").update(value).digest("hex");
-/** YA keeps session metadata in its discovery database, keyed by YA session id. */
+/**
+ * YA keeps session metadata in its discovery database, keyed by YA session
+ * id: queried fields in columns and the rest as JSON in `extra`.
+ */
 function sessionMetadata(data) {
   const path = join(data, "discovery.sqlite");
   if (!existsSync(path)) return { sessions: {} };
   const database = new DatabaseSync(path, { readOnly: true });
   try {
-    return { sessions: Object.fromEntries(database.prepare("SELECT session_id, metadata FROM session_metadata").all()
-      .map((row) => [row.session_id, JSON.parse(row.metadata)])) };
+    return { sessions: Object.fromEntries(database.prepare("SELECT * FROM session_metadata").all()
+      .map(({ session_id, extra, ...columns }) => [session_id, { ...columns, ...JSON.parse(extra) }])) };
   } finally {
     database.close();
   }
@@ -97,6 +101,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
   const apiBodies = [];
   const upstreamRequests = [];
   const credentials = [];
+  const relayed = [];
   let abandoned = 0;
   let quotaUsed = 25;
   const accountQuota = new Map();
@@ -113,6 +118,15 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
     if (request.url === "/api/oauth/usage") {
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({ five_hour: { utilization: accountQuota.get(request.headers.authorization) ?? quotaUsed, resets_at: new Date(Date.now() + 3600000).toISOString() }, seven_day: { utilization: 40, resets_at: new Date(Date.now() + 86400000).toISOString() } }));
+      return;
+    }
+    if (request.url.startsWith("/v1internal:")) {
+      // Cloud Code, as Antigravity calls it. Only the catalog has content.
+      const streamed = request.url.startsWith("/v1internal:streamGenerateContent");
+      response.setHeader("content-type", streamed ? "text/event-stream" : "application/json");
+      response.end(streamed
+        ? `data: ${JSON.stringify({ text: `ROUTER:${JSON.parse(body).input}` })}\n\n`
+        : JSON.stringify(request.url === "/v1internal:fetchAvailableModels" ? { models: { "synthetic-model": { displayName: "Synthetic" } } } : {}));
       return;
     }
     if (request.url.includes("models")) {
@@ -177,6 +191,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
       const surfaces = [
         ...output,
         ...apiBodies,
+        ...relayed,
         JSON.stringify(sessionMetadata(data)),
         ...publicFiles
           .filter(existsSync)
@@ -201,11 +216,14 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
     const secret = `synthetic-${provider}-${id}-access`;
     const path = join(
       accountHome,
-      provider === "claude" ? ".credentials.json" : "auth.json",
+      { claude: ".credentials.json", codex: "auth.json", antigravity: ".gemini/antigravity-cli/antigravity-oauth-token" }[provider],
     );
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     writePrivateJson(
       path,
-      provider === "claude"
+      provider === "antigravity"
+        ? { auth_method: "consumer", token: { access_token: secret, refresh_token: "synthetic-refresh", expiry: new Date(Date.now() + 86_400_000).toISOString() } }
+        : provider === "claude"
         ? {
             claudeAiOauth: {
               accessToken: secret,
@@ -227,7 +245,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
   store.saveAccounts(enrollSecondLive ? accounts.slice(0, 1) : accounts);
   const config = {
     listen: { host: "127.0.0.1", port: 0 },
-    upstreams: { claude: upstreamOrigin, codex: upstreamOrigin },
+    upstreams: { claude: upstreamOrigin, codex: upstreamOrigin, antigravity: upstreamOrigin },
   };
   writePrivateJson(store.configPath, config);
   const env = {
@@ -247,6 +265,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
     AAR_TEST_PROVIDER: provider,
     AAR_FAKE_CLI: cli,
     CLAUDE_CODE_EXECUTABLE: cli,
+    ANTIGRAVITY_ACP_PATH: join(import.meta.dirname, "fake-agy.mjs"),
     CLAUDE_CONFIG_DIR: join(home, "claude"),
     CLAUDE_SESSIONS_DIR: join(home, "claude/projects"),
     CODEX_HOME: join(home, "codex"),
@@ -327,6 +346,117 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
     await ya?.stop();
     ya = await actor("ya-server.mjs", true);
   }
+  /**
+   * Stands between YA and the real router's control socket, for conditions
+   * the router cannot be asked to produce: a lost reply, a reply describing
+   * something this YA cannot use, and the replies of a router from before
+   * `binding-transport-v1`. `fault.apply` rewrites the next successful reply
+   * on `fault.path`; returning nothing loses that reply after the router has
+   * acted on the request.
+   *
+   * With `route` set, binding replies describe `/<provider><route>` and the
+   * inference origin becomes a forwarder that serves only those paths. A
+   * client that assembles the router's usual paths gets 404 there.
+   */
+  async function controlRelay() {
+    const directory = join(root, "relay");
+    mkdirSync(directory, { mode: 0o700 });
+    const relay = {
+      socket: join(directory, "control.sock"),
+      legacy: false,
+      route: undefined,
+      fault: undefined,
+      requests: [],
+      replies: [],
+    };
+    const routed = (path) => path.replace(`/${provider}`, `/${provider}${relay.route}`);
+    const forwarder = http.createServer((request, response) => {
+      const prefix = `/${provider}${relay.route}`;
+      if (!relay.route || !`${request.url}/`.startsWith(`${prefix}/`)) {
+        response.writeHead(404).end();
+        return;
+      }
+      const target = new URL(`/${provider}${request.url.slice(prefix.length)}`, router.origin);
+      const forwarded = http.request(target, { method: request.method, headers: { ...request.headers, host: target.host } }, (reply) => {
+        response.writeHead(reply.statusCode, reply.headers);
+        reply.on("error", () => response.destroy());
+        reply.pipe(response);
+      });
+      forwarded.on("error", () => response.destroy());
+      response.on("close", () => forwarded.destroy());
+      request.pipe(forwarded);
+    });
+    await new Promise((resolve) => forwarder.listen(0, "127.0.0.1", resolve));
+    relay.origin = `http://127.0.0.1:${forwarder.address().port}`;
+    async function exchange(request, response) {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const sent = Buffer.concat(chunks);
+      relay.requests.push({ path: request.url, id: sent.length ? JSON.parse(sent.toString()).id : undefined });
+      const reply = await new Promise((resolve, reject) => {
+        const forwarded = http.request(
+          {
+            socketPath: router.socket,
+            path: request.url,
+            method: request.method,
+            headers: request.headers,
+          },
+          resolve,
+        );
+        forwarded.on("error", reject);
+        forwarded.end(sent);
+      });
+      const parts = [];
+      for await (const part of reply) parts.push(part);
+      let body = Buffer.concat(parts);
+      relayed.push(body.toString());
+      if (reply.statusCode === 200) {
+        let value = JSON.parse(body.toString());
+        if (relay.legacy) {
+          if (request.url === "/v1/info")
+            value.capabilities = value.capabilities.filter(
+              (capability) => capability !== "binding-transport-v1",
+            );
+          delete value.transport;
+        } else if (relay.route) {
+          if (request.url === "/v1/info") value.inferenceOrigin = relay.origin;
+          if (value.transport)
+            value.transport = {
+              ...value.transport,
+              basePath: routed(value.transport.basePath),
+              ...(value.transport.modelCatalogPath ? { modelCatalogPath: routed(value.transport.modelCatalogPath) } : {}),
+            };
+        }
+        if (relay.fault?.path === request.url) {
+          const { apply } = relay.fault;
+          relay.fault = undefined;
+          value = apply(value);
+        }
+        if (value === undefined) return request.socket.destroy();
+        relay.replies.push({ path: request.url, value });
+        body = Buffer.from(JSON.stringify(value));
+      }
+      response.writeHead(reply.statusCode, {
+        "content-type": "application/json",
+      });
+      response.end(body);
+    }
+    // Either side may go away mid-exchange, as when the fixture stops.
+    const server = http.createServer((request, response) => {
+      exchange(request, response).catch(() => request.socket.destroy());
+    });
+    await new Promise((resolve) => server.listen(relay.socket, resolve));
+    chmodSync(relay.socket, 0o600);
+    actors.push({
+      stop: async () => {
+        for (const listener of [server, forwarder]) {
+          listener.closeAllConnections();
+          await new Promise((resolve) => listener.close(resolve));
+        }
+      },
+    });
+    return relay;
+  }
   async function api(path, body, allowedStatus = 200) {
     const response = await fetch(`${ya.origin}/api${path}`, {
       method: body === undefined ? "GET" : "POST",
@@ -392,6 +522,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
     abandoned: () => abandoned,
     restartRouter,
     restartYA,
+    controlRelay,
     api,
     start,
     sessionMetadata: () => sessionMetadata(data),
@@ -984,6 +1115,148 @@ for (const provider of ["claude", "codex"]) {
     assert.equal(Object.values(f.privateState().allocations)[0].token, allocation.token);
   });
 }
+
+// Binding transport: docs/control.md. The relay supplies the router conditions
+// current sources cannot: an older router's replies, a route other than the
+// usual one, unusable descriptions and a lost reply.
+for (const provider of ["codex", "claude"]) {
+  test(`${provider}: YA launches from the transport the router describes, and refuses one it cannot use`, { timeout: 120_000 }, async (t) => {
+    const f = await fixture(t, provider);
+    const relay = await f.controlRelay();
+    const launch = (message) => f.start({ provider, model: "synthetic-model", routerAccountId: "selected", message });
+    const spawns = () => f.native().filter((row) => row.event === "spawn");
+    const inferences = () => f.upstreamRequests.filter((r) => r.body.includes('"input"')).length;
+    const binding = (id) => f.controlState().bindings.find((b) => b.id === id);
+    const reply = (path) => relay.replies.findLast((r) => r.path === path)?.value;
+    const infer = async (token) => {
+      const response = await fetch(`${f.router().origin}/${provider}${provider === "claude" ? "/v1/messages" : "/responses"}`,
+        { method: "POST", headers: { authorization: `Bearer ${token}`, connection: "close" }, body: JSON.stringify({ input: "probe" }) });
+      await response.text(); // A stream left open would hold the router's shutdown.
+      return response.status;
+    };
+    let sessionId;
+    const detail = () => `/projects/${Buffer.from(f.project).toString("base64url")}/sessions/${sessionId}`;
+    const turnEnds = async (message) => {
+      await eventually(() => f.upstreamRequests.some((r) => r.body.includes(message)), `${message} reaches upstream`);
+      const idle = await eventually(async () =>
+        (await f.api("/processes")).value.processes.find((p) => p.sessionId === sessionId && p.state === "idle"), `${message} completes`);
+      await f.api(`/processes/${idle.id}/abort`, {});
+    };
+
+    // The replies of a router from before the capability: YA assembles the usual route itself.
+    relay.legacy = true;
+    await f.connect({ socketPath: relay.socket });
+    const first = await launch("before-description");
+    assert.ok(first.started, JSON.stringify(first.value));
+    sessionId = first.value.sessionId;
+    await turnEnds("before-description");
+    const allocation = Object.values(f.privateState().allocations)[0];
+    assert.ok(!reply("/v1/info").capabilities.includes("binding-transport-v1") && !("transport" in reply("/v1/bindings/commit")));
+    assert.deepEqual(
+      [spawns()[0].baseUrl, spawns()[0].modelCatalogUrl],
+      [`${f.router().origin}/${provider}`, provider === "codex" ? `${f.router().origin}/codex/models` : undefined],
+    );
+
+    // The router now describes the transport, on a route YA could not have
+    // assembled. The session resumes on its pin and its turn completes there.
+    relay.legacy = false;
+    relay.route = "/described";
+    await f.api(`${detail()}/resume`, { provider, message: "after-description" });
+    await turnEnds("after-description");
+    assert.ok(reply("/v1/info").capabilities.includes("binding-transport-v1"));
+    assert.deepEqual(reply("/v1/bindings/commit").transport, provider === "claude"
+      ? { kind: "http-gateway-v1", basePath: "/claude/described", authMethods: ["bearer", "aar-gateway-header"], modelCatalogPath: "/claude/described/v1/models" }
+      : { kind: "http-gateway-v1", basePath: "/codex/described", authMethods: ["bearer"], modelCatalogPath: "/codex/described/models" },
+      "The router's own description, moved onto the relay's route");
+    assert.deepEqual(
+      [spawns()[1].baseUrl, spawns()[1].modelCatalogUrl, spawns()[1].tokenHash],
+      // Codex is told where to discover models; YA gives Claude no catalog URL.
+      [`${relay.origin}/${provider}/described`, provider === "codex" ? `${relay.origin}/codex/described/models` : undefined, hash(allocation.token)],
+    );
+
+    // Unusable descriptions end a new session before any provider starts.
+    const refused = async (message, fault, expected) => {
+      const before = { launches: f.launches().length, inferences: inferences(), ids: Object.keys(f.privateState().allocations) };
+      relay.requests.length = relay.replies.length = 0;
+      relay.fault = fault;
+      const { started, value } = await launch(message);
+      assert.equal(started, false);
+      assert.deepEqual([value.creation.state, value.creation.delivery, value.creation.failure], ["failed", "not-admitted", "router-refused"]);
+      assert.match(value.creation.failureDetail, expected);
+      assert.deepEqual([f.launches().length, inferences()], [before.launches, before.inferences], "Nothing starts or is sent");
+      const fresh = Object.values(f.privateState().allocations).filter((a) => !before.ids.includes(a.id));
+      assert.equal(fresh.length, 1);
+      assert.equal(binding(fresh[0].id).state, "cancelled", "The router holds no usable reservation for the refused session");
+      return fresh[0];
+    };
+    const newer = await refused("newer-router", { path: "/v1/bindings/prepare", apply: (v) => ({ ...v, transport: { ...v.transport, kind: "local-http-v1" } }) },
+      /cannot use\. Update Yep Anywhere, then retry\.$/);
+    assert.deepEqual(relay.requests.filter((r) => r.id === newer.id).map((r) => r.path), ["/v1/bindings/prepare", "/v1/bindings/cancel"],
+      "A transport YA predates is refused without a commit");
+    // Only the provider segment is wrong: the catalog still lies below the base.
+    const misrouted = await refused("misrouted", { path: "/v1/bindings/commit", apply: (v) => ({ ...v, transport: {
+      ...v.transport, basePath: "/dashboard", modelCatalogPath: "/dashboard/models" } }) },
+      /^The router returned an invalid binding or inference transport/);
+    assert.equal(await infer(misrouted.token), 401, "The token committed before the refusal cannot infer");
+    assert.equal(await infer(allocation.token), 200, "A committed token can");
+
+    // The router applies a commit to this already committed pin and its reply
+    // never arrives. Nothing starts, and the retry runs on the same pin.
+    relay.fault = { path: "/v1/bindings/commit", apply: () => undefined };
+    const lost = await f.api(`${detail()}/resume`, { provider, message: "lost-reply" }, null);
+    assert.equal(lost.status, 409);
+    assert.match(lost.value.error, /^Router unavailable\. .* This session will keep its pinned account\.$/);
+    assert.equal(relay.fault, undefined, "The commit reached the router");
+    assert.equal(spawns().length, 2, "A launch without its commit reply starts no provider");
+    assert.equal(f.privateState().allocations[allocation.id].cancelled, undefined);
+    await f.api(`${detail()}/resume`, { provider, message: "after-lost-reply" });
+    await turnEnds("after-lost-reply");
+    assert.equal(spawns()[2].tokenHash, hash(allocation.token));
+    assert.deepEqual([binding(allocation.id).state, binding(allocation.id).tokenHash], ["committed", hash(allocation.token)]);
+    assert.equal(f.sessionMetadata().sessions[sessionId].routerBinding.id, allocation.id);
+    assert.equal((await f.api("/agent-auth-router/recovery")).value.pendingCancellations, 0);
+  });
+}
+
+// Antigravity bindings describe no transport: `agy` cannot authenticate to the
+// router, so YA starts it against a loopback bridge that holds the binding token.
+test("antigravity: YA's loopback bridge carries agy through a routed binding until disconnect", { timeout: 120_000 }, async (t) => {
+  const f = await fixture(t, "antigravity");
+  const relay = await f.controlRelay();
+  await f.connect({ socketPath: relay.socket });
+  const created = await f.start({ provider: "antigravity", model: "synthetic-model", routerAccountId: "selected", message: "through-the-bridge" });
+  assert.ok(created.started, JSON.stringify(created.value));
+  const turns = () => f.native().filter((row) => row.event === "turn");
+  await eventually(() => turns().length === 1, "agy's first turn ends");
+  assert.deepEqual([turns()[0].status, turns()[0].text], [200, "ROUTER:through-the-bridge"], "The reply comes back through the bridge");
+  const sent = f.upstreamRequests.filter((r) => r.body.includes("through-the-bridge"));
+  assert.deepEqual(sent.map((r) => [r.url, r.authorization]), [["/v1internal:streamGenerateContent?alt=sse", "Bearer synthetic-antigravity-selected-access"]],
+    "Only AAR substitutes the enrolled login");
+  const committed = relay.replies.findLast((r) => r.path === "/v1/bindings/commit").value;
+  assert.deepEqual([committed.provider, committed.state, "transport" in committed], ["antigravity", "committed", false]);
+  const allocation = Object.values(f.privateState().allocations)[0];
+  assert.match(allocation.token, /^aar_[A-Za-z0-9_-]{43}$/);
+  assert.equal(f.controlState().bindings[0].tokenHash, hash(allocation.token));
+  const spawn = f.native().find((row) => row.event === "spawn");
+  const bridge = new URL(spawn.endpoint);
+  assert.ok(bridge.hostname === "127.0.0.1" && bridge.origin !== f.router().origin, "agy is pointed at YA's bridge, not the router");
+  assert.ok(spawn.heldTokenHashes.length > 0 && !spawn.heldTokenHashes.includes(hash(allocation.token)),
+    "agy's arguments, environment and profile hold the bridge's marker, never the binding token");
+  const direct = async () => {
+    const response = await fetch(`${f.router().origin}/antigravity/v1internal:streamGenerateContent?alt=sse`,
+      { method: "POST", headers: { authorization: `Bearer ${allocation.token}`, "content-type": "application/json", connection: "close" }, body: JSON.stringify({ input: "direct" }) });
+    await response.text();
+    return response.status;
+  };
+  assert.equal(await direct(), 200, "The binding token is what the router accepts");
+
+  await f.api("/agent-auth-router/disconnect", {});
+  assert.equal(await direct(), 401, "Disconnect revokes the binding token at the router");
+  await f.api(`/sessions/${created.value.sessionId}/messages`, { message: "after-disconnect" });
+  await eventually(() => turns().length === 2, "the same agy answers the second prompt");
+  assert.deepEqual([turns()[1].pid, turns()[1].status], [spawn.pid, 401], "The live session is refused through the bridge");
+  assert.ok(!f.upstreamRequests.some((r) => r.body.includes("after-disconnect")), "A revoked binding sends nothing upstream");
+});
 
 test("claude: a lapsed AAR login is a named refusal that keeps the pin until sign-in", { timeout: 120_000 }, async (t) => {
   const f = await fixture(t, "claude");

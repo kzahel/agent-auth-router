@@ -106,7 +106,10 @@ that names none keeps receiving `http-gateway-v1`.
 
 The control and hosted tests act as the integration: they reach inference and
 the model catalog only through the returned paths, with both auth methods.
-No Yep Anywhere release consumes this field yet.
+Yep Anywhere launches from this field as of its commit `f4c106fb1`, which no
+release carries yet. The [cross-repository suite](../integration/yepanywhere/README.md)
+runs that commit against these sources over the local control socket. It does
+not cover the hosted origin.
 
 ## Yep Anywhere manual integration
 
@@ -114,6 +117,8 @@ The repeatable [cross-repository integration suite](../integration/yepanywhere/R
 runs real AAR and pinned YA sources with synthetic native processes and upstreams
 on Linux and macOS. It covers manual bindings, continuation, restart, interruption,
 failed-launch cancellation, revocation and refusal to fall back to direct auth.
+It also covers launching from the described binding transport, refusing an
+unusable one, and one routed Antigravity session.
 
 With AAR running, connect from YA's **Settings → Providers → Agent Auth Router**.
 Choose an enrolled account and its model in **New Session → advanced options**.

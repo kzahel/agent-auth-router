@@ -82,6 +82,7 @@ audit({
   effort: provider === "claude" ? arg("--effort") : config.model_reasoning_effort,
   tokenHash: createHash("sha256").update(token).digest("hex"),
   baseUrl,
+  modelCatalogUrl: config["model_providers.aar.model_catalog_url"],
 });
 const emit = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 // Claude Code honors a chosen id (--session-id), as YA requests for new sessions.
