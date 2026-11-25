@@ -84,7 +84,10 @@ is `BindingTransport` in `src/contract.ts`. A committed Codex binding returns:
 ```
 
 Paths are rooted at the `inferenceOrigin` from `/v1/info`, so the same
-description serves the loopback listener and a hosted origin. Claude also
+description serves the loopback listener and a hosted origin. Their first
+segment is always the binding's provider. A hosted origin sends only those
+provider paths to inference, with `/control` reaching control and every other
+path the dashboard, so an integration can refuse any other path. Claude also
 offers `aar-gateway-header`, the `x-aar-gateway-token` header for a client
 whose `Authorization` stays its own sign-in. The description holds no
 credential. The client presents the binding token whose hash it registered at

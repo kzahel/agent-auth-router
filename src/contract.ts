@@ -40,8 +40,9 @@ export interface AccountCatalog {
 /**
  * How a native client reaches inference for one binding (capability
  * `binding-transport-v1`), on `prepare`, `commit` and `inspect` responses.
- * Paths are rooted at the inference origin from `/v1/info`. It carries no
- * credential: the client presents the binding token it registered at prepare.
+ * Paths are rooted at the inference origin from `/v1/info` and begin with
+ * the binding's provider, the only paths a hosted origin sends to inference.
+ * It carries no credential: the client presents the binding token it registered at prepare.
  * `aar-gateway-header` is `x-aar-gateway-token`, for a client whose
  * `Authorization` must stay its own provider sign-in. A later kind is offered
  * only to a client that asks for it, so `kind` here never changes meaning.
