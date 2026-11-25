@@ -41,15 +41,18 @@ export function AccountsTab({ presentation, focus }: { presentation: TerminalPre
         {accounts.map(a => (
           <AccountCard key={a.id} account={a} login={overview?.logins.find(l => l.id === a.id)} presentation={presentation}
             onEditNickname={() => setNickname(current => ({ account: a, opened: (current?.opened ?? 0) + 1 }))}
-            onRemove={async () => setRemoval(await api<RemovalPreview>("accounts/removal-preview", { id: a.id }))} />
+            onRemove={async () => {
+              const preview = await api<RemovalPreview>("accounts/removal-preview", { id: a.id });
+              setRemoval(current => current ?? preview);
+            }} />
         ))}
         {!accounts.length && <p className={ui.hint}>Add your first account below.</p>}
       </div>
       {nickname && <NicknameEditor key={nickname.opened} account={nickname.account} onClose={() => setNickname(undefined)} />}
       <AddAccountForm />
-      <RemoveAccountDialog preview={removal} onClose={() => setRemoval(undefined)}
+      {removal && <RemoveAccountDialog preview={removal} onClose={() => setRemoval(undefined)}
         // Do not leave an editor targeting an enrollment which no longer exists.
-        onRemoved={(id) => setNickname(current => current?.account.id === id ? undefined : current)} />
+        onRemoved={(id) => setNickname(current => current?.account.id === id ? undefined : current)} />}
     </>
   );
 }

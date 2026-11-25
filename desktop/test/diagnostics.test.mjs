@@ -37,17 +37,22 @@ setTimeout(()=>console.log('1.2.3'), 250);
   const filter = page.getByRole("searchbox", { name: "Filter diagnostics" });
   await filter.evaluate(field => {
     window.samples = [];
-    field.addEventListener("input", () => {
-      const at = performance.now(), value = field.value;
-      requestAnimationFrame(() => window.samples.push({ elapsed: performance.now() - at, retained: field.value.startsWith(value) }));
+    // Measure when the browser can acknowledge the edit. Headless Chromium
+    // can defer animation frames while continuing to process input events.
+    const { port1, port2 } = new MessageChannel();
+    port1.onmessage = ({ data: { at, value } }) => {
+      window.samples.push({ elapsed: performance.now() - at, retained: field.value.startsWith(value) });
+    };
+    field.addEventListener("input", event => {
+      port2.postMessage({ at: event.timeStamp, value: field.value });
     });
   });
   const query = "credential store was not read";
   await filter.pressSequentially(query, { delay: 20 });
   await page.getByText("Credential store was not read.", { exact: false }).waitFor();
   assert.equal(await filter.inputValue(), query);
+  await page.waitForFunction(length => window.samples.length === length, query.length, { polling: 20 });
   const samples = await page.evaluate(() => window.samples);
-  assert.equal(samples.length, query.length);
   assert.ok(samples.every(s => s.retained && s.elapsed < 100), JSON.stringify(samples));
   await filter.clear();
   await page.getByRole("combobox", { name: "Diagnostic account" }).selectOption("work");

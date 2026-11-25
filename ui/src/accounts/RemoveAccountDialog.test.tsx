@@ -14,7 +14,7 @@ function Harness({ initial }: { initial: RemovalPreview }) {
   return (
     <>
       <button type="button" onClick={() => setShown({ ...initial })}>Open</button>
-      <RemoveAccountDialog preview={shown} onClose={() => setShown(undefined)} onRemoved={() => {}} />
+      {shown && <RemoveAccountDialog preview={shown} onClose={() => setShown(undefined)} onRemoved={() => {}} />}
     </>
   );
 }
