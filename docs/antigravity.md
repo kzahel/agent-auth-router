@@ -25,6 +25,17 @@ before checking the token, and the session went on. This run did not exercise
 renewal of an expired login, a pool, a hosted origin or the standalone
 bridge.
 
+Later the same day a resume of that session failed. Its launch logged `agy`
+language server version 1.5.17. Yep Anywhere's proxy rejected the first call
+with 401 before forwarding it, and nothing reached this router. In a
+separate probe, `agy models` 1.5.17 was pointed at a loopback listener from
+a new profile holding only a stand-in token file: none of its 11 requests
+carried the stand-in, and they carried five distinct values beginning with
+`ya29.`. Where those came from is not known. The standalone bridge supplies
+the same kind of stand-in and has not been tried with 1.5.17. Yep Anywhere
+tracks this as the gap `agy-1-5-17-ignores-routed-profile-login`. The
+statements above about 1.5.14 are not verified for 1.5.17.
+
 ## Turning it on
 
 Antigravity routing is off until the router owner checks **Enable
@@ -53,9 +64,9 @@ While it is off:
   earlier runs to its end.
 - **The router's own reads** stop: it sends no catalog or quota request to
   Cloud Code for an Antigravity account and runs no renewal for it, and the
-  account shows the same text in the dashboard. Work under way when the owner
-  turns it off is not retried or renewed. Sign-in with the official CLI is
-  unaffected.
+  account shows the same text in the dashboard. It skips retries and
+  renewals while routing is off, for work already under way as well. Sign-in
+  with the official CLI is unaffected.
 
 Accounts, pools, grants and bindings are kept. Turning it on grants nothing
 new, and a session pinned earlier runs again on the same binding and token.
