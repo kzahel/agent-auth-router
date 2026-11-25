@@ -417,7 +417,11 @@ fn open_project(window: tauri::WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 fn open_antigravity_terms(window: tauri::WebviewWindow) -> Result<(), String> {
-    open_page(&window, ANTIGRAVITY_TERMS_URL, "Could not open the terms page")
+    open_page(
+        &window,
+        ANTIGRAVITY_TERMS_URL,
+        "Could not open the terms page",
+    )
 }
 
 #[tauri::command]
