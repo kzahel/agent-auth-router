@@ -27,7 +27,7 @@ export const UI_OPERATIONS: ReadonlySet<string> = new Set([
   "accounts/refresh", "accounts/login", "accounts/login-status", "accounts/login-command", "accounts/open-login", "accounts/cancel-login",
   "pools/save", "pools/remove", "grants/save", "integrations/revoke", "stop", "crashes/acknowledge",
   "metrics/snapshot", "metrics/history", "requests/recent", "sessions/recent", "history/cost", "history/settings", "history/set-retention", "settings/request-compression",
-  "settings/limit-resets",
+  "settings/limit-resets", "settings/experimental-providers",
 ]);
 
 /** The desktop shell may also force a stop when the app quits. */

@@ -19,9 +19,9 @@ import { ADAPTERS, bindingTransport, parseUpstreamOrigin } from "./providers.ts"
 import { readAntigravityCatalog } from "./antigravity-cloudcode.ts";
 import { fetchAccountQuotas, readAccountQuotas, remainingCapacityUnits, type QuotaReadOptions, type QuotaSnapshot } from "./quotas.ts";
 import { PoolEvidence, burnWithCeiling, eligibility, withCeiling, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, policyVersion, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
-import { CredentialUnavailable, LOGIN_IN_PROGRESS, type CredentialCoordinator } from "./coordinator.ts";
+import { CredentialUnavailable, LOGIN_IN_PROGRESS, ProviderTurnedOff, type CredentialCoordinator } from "./coordinator.ts";
 import type { StateStore } from "./state.ts";
-import { isProvider, type GatewayClientRecord, type Provider } from "./types.ts";
+import { EXPERIMENTAL_PROVIDERS, isProvider, providerDisabledMessage, type GatewayClientRecord, type Provider } from "./types.ts";
 
 interface Integration { id: string; name: string; tokenHash: string; accountIds: string[]; poolIds: string[]; revision: number; revoked: boolean }
 interface Binding {
@@ -43,6 +43,10 @@ export class ControlError extends Error {
   constructor(status: number, message: string, details?: Record<string, unknown>) { super(message); this.status = status; this.details = details; }
 }
 const reject = (status: number, message: string): never => { throw new ControlError(status, message); };
+/** The refusal for an experimental provider its owner has not turned on. Pins and grants are untouched. */
+export function providerDisabled(provider: Provider): ControlError {
+  return new ControlError(409, providerDisabledMessage(provider), { code: "provider_disabled", provider });
+}
 type ControlSite = { kind: "local" } | { kind: "public"; origin: string };
 
 /** At most `limit` attempts per key within a sliding window; memory stays bounded. */
@@ -72,6 +76,7 @@ const CREDENTIAL_MESSAGES: Record<string, string> = {
 
 /** A credential failure as a specific, retry-free refusal naming what to fix. */
 export function credentialRefusal(coordinator: CredentialCoordinator, error: CredentialUnavailable): ControlError {
+  if (error instanceof ProviderTurnedOff) return providerDisabled(error.provider);
   const status = coordinator.status();
   const signingIn = error.message === LOGIN_IN_PROGRESS;
   return new ControlError(409, signingIn ? "Account sign-in is in progress; retry when it finishes" : CREDENTIAL_MESSAGES[error.state] ?? CREDENTIAL_MESSAGES.unavailable!, {
@@ -191,9 +196,13 @@ export class ControlRegistry {
   }
   private visibleIds(integration: Integration): Set<string> {
     const i = this.current(integration);
-    return new Set([...i.accountIds, ...this.pools(i).flatMap(p => p.accountIds)]);
+    return new Set([...i.accountIds, ...this.grantedPools(i).flatMap(p => p.accountIds)]);
   }
-  pools(integration?: Integration): Pool[] { return (this.state.pools ?? []).filter(p => !p.deleted && (!integration || this.current(integration).poolIds.includes(p.id))); }
+  /** Experimental providers the owner has left off; integrations are offered nothing of theirs. */
+  disabledProviders(): Provider[] { return EXPERIMENTAL_PROVIDERS.filter(p => !this.store.providerEnabled(p)); }
+  /** Every pool the owner sees; for an integration, the granted ones whose provider is on. */
+  pools(integration?: Integration): Pool[] { return integration ? this.grantedPools(integration).filter(p => this.store.providerEnabled(p.provider)) : (this.state.pools ?? []).filter(p => !p.deleted); }
+  private grantedPools(integration: Integration): Pool[] { const granted = this.current(integration).poolIds; return (this.state.pools ?? []).filter(p => !p.deleted && granted.includes(p.id)); }
   ownerIntegrations() { return this.state.integrations.map(({ id, name, accountIds, poolIds, revision, revoked }) => ({ id, name, accountIds, poolIds, revision, revoked })); }
   private validGrants(poolIds: unknown, accountIds: unknown): { poolIds: string[]; accountIds: string[] } {
     if (!Array.isArray(poolIds) || poolIds.length > 256 || new Set(poolIds).size !== poolIds.length || poolIds.some(id => !this.pools().some(p => p.id === id))) reject(400, "invalid pool grants");
@@ -209,7 +218,9 @@ export class ControlRegistry {
     return { updated: true };
   }
   pool(integration: Integration, id: string): Pool {
-    return this.pools(integration).find(p => p.id === id) ?? reject(404, "pool not found");
+    const pool = this.grantedPools(integration).find(p => p.id === id) ?? reject(404, "pool not found");
+    if (!this.store.providerEnabled(pool.provider)) throw providerDisabled(pool.provider);
+    return pool;
   }
   savePool(body: Record<string, unknown>): object {
     const id = field(body, "id", UUID), name = field(body, "name");
@@ -251,10 +262,12 @@ export class ControlRegistry {
     return { id: p.id, name: p.name, provider: p.provider, accountIds: p.accountIds, policy: p.policy, revision: p.revision,
       bindings: p.accountIds.map(accountId => ({ accountId, count: this.state.bindings.filter(b => (!integration || b.integrationId === integration.id) && b.poolId === p.id && b.accountId === accountId && b.state === "committed").length })) };
   }
-  overview(integration: Integration | undefined, evidence: PoolEvidence, body: Record<string, unknown> = {}): object {
+  /** `about` narrows the reply's `disabledProviders` to the one provider a selection asked for. */
+  overview(integration: Integration | undefined, evidence: PoolEvidence, body: Record<string, unknown> = {}, about?: Provider): object {
     const now = Date.now(), model = body.model === undefined ? undefined : field(body, "model");
+    const disabled = this.disabledProviders().filter(p => !about || p === about);
     const showResets = this.store.loadSettings().limitResets === true;
-    const accounts = this.accounts(integration).map(a => { const o = evidence.get(a.id); return { ...a, ...o,
+    const accounts = this.accounts(integration, true).map(a => { const o = evidence.get(a.id); return { ...a, ...o,
       // Resets read before the owner turned the setting off are not shown.
       ...(o.quota?.limitResets && !showResets ? { quota: withoutResets(o.quota) } : {}),
       freshness: !o.quota ? "unknown" : o.error || now - Date.parse(o.quota.observedAt) >= QUOTA_FRESH_MS ? "stale" : "fresh",
@@ -270,6 +283,7 @@ export class ControlRegistry {
       ...(model ? { evidence: selectionEvidence(pool.provider, observation, model, this.reservations(pool.id, accountId, now), now, burn) } : {}) }; });
     return { supportedPolicies: POOL_POLICIES, policies: POLICY_LIST, admissionRefresh: true, canManagePools: !integration, observedAt: new Date(now).toISOString(), quotaFreshSeconds: QUOTA_FRESH_MS / 1000,
       pools: this.pools(integration).map(p => this.poolMetadata(p, integration)), accounts,
+      ...(integration && disabled.length ? { disabledProviders: disabled } : {}),
       ...(pool ? { selection: { poolId: pool.id, policy, model: model ?? null, decisions } } : {}) };
   }
   /** An account's evidence under its owner's usage ceiling, as selection sees it. */
@@ -552,10 +566,17 @@ export class ControlRegistry {
   }
   account(integration: Integration, id: string) {
     if (!this.visibleIds(integration).has(id)) return reject(403, "account not granted");
-    return this.store.loadAccounts().find((a) => a.id === id && a.enabled !== false) ?? reject(409, "account unavailable");
+    const account = this.store.loadAccounts().find((a) => a.id === id && a.enabled !== false) ?? reject(409, "account unavailable");
+    if (!this.store.providerEnabled(account.provider)) throw providerDisabled(account.provider);
+    return account;
   }
-  accounts(integration?: Integration) {
-    return this.store.loadAccounts().filter((a) => (!integration || this.visibleIds(integration).has(a.id))).map((a) => ({ id: a.id, ...(integration && a.nickname ? { displayName: a.nickname } : {}), ...(!integration ? { home: a.home, nickname: a.nickname ?? null, credentialStore: a.credentialStore ?? "file", usageCeiling: a.usageCeiling ?? null } : {}), provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: accountHelper(a) ? "unverified" : "manual", loginExpiresAt: this.loginExpiry(a.id) ?? null }));
+  /**
+   * The accounts an integration is granted. `offered` leaves out those of a
+   * provider that is off, for discovery; the plain listing keeps them, so a
+   * launch on an existing pin reaches the refusal that names the cause.
+   */
+  accounts(integration?: Integration, offered = false) {
+    return this.store.loadAccounts().filter((a) => (!integration || (this.visibleIds(integration).has(a.id) && (!offered || this.store.providerEnabled(a.provider))))).map((a) => ({ id: a.id, ...(integration && a.nickname ? { displayName: a.nickname } : {}), ...(!integration ? { home: a.home, nickname: a.nickname ?? null, credentialStore: a.credentialStore ?? "file", usageCeiling: a.usageCeiling ?? null } : {}), provider: a.provider, enabled: a.enabled !== false, directAccountAccess: !integration || this.current(integration).accountIds.includes(a.id), retired: a.retired === true, bindingCount: this.state.bindings.filter(b => b.accountId === a.id && b.state === "committed" && (!integration || b.integrationId === integration.id)).length, revision: a.revision ?? 0, renewal: accountHelper(a) ? "unverified" : "manual", loginExpiresAt: this.loginExpiry(a.id) ?? null }));
   }
   prepare(integration: Integration, body: Record<string, unknown>): object {
     const id = field(body, "id", UUID), accountId = field(body, "accountId"), model = field(body, "model"), tokenHash = field(body, "tokenHash", HASH);
@@ -679,6 +700,9 @@ export async function startControl(store: StateStore, origin: string, coordinato
   };
   const catalogs = new Map<string, { models: CatalogModel[]; until: number }>();
   const catalog = (id: string, fresh = false) => {
+    // While its provider is off the router sends nothing upstream for an account, the owner's reads included.
+    const provider = coordinators.get(id)?.account.provider;
+    if (provider && !store.providerEnabled(provider)) return Promise.reject(providerDisabled(provider));
     const cached = catalogs.get(id);
     if (!fresh && cached && cached.until > Date.now()) return Promise.resolve(cached.models);
     let job = catalogJobs.get(id);
@@ -687,7 +711,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
       const coordinator = coordinators.get(id) ?? reject(409, "account unavailable; enroll through owner administration");
       job = (async () => { const release = await catalogSlot(); try { return await readCatalog(coordinator, store.loadConfig().upstreams?.[coordinator.account.provider]); }
         catch (error) { throw error instanceof CredentialUnavailable ? credentialRefusal(coordinator, error) : error; }
-        finally { release(); } })().then((models) => { if (generation !== generations.get(id)) reject(409, "account changed during catalog read"); catalogs.set(id, { models, until: Date.now() + 60_000 }); return models; }).finally(() => catalogJobs.delete(id));
+        finally { release(); } })().then((models) => { if (!store.providerEnabled(coordinator.account.provider)) throw providerDisabled(coordinator.account.provider); if (generation !== generations.get(id)) reject(409, "account changed during catalog read"); catalogs.set(id, { models, until: Date.now() + 60_000 }); return models; }).finally(() => catalogJobs.delete(id));
       catalogJobs.set(id, job);
     }
     return job;
@@ -696,11 +720,14 @@ export async function startControl(store: StateStore, origin: string, coordinato
   const readOptions = (id?: string): QuotaReadOptions => {
     const antigravityOrigin = store.loadConfig().upstreams?.antigravity;
     const coordinator = id ? coordinators.get(id) : undefined;
+    // Decided from the account itself: a read without a coordinator uses the stored login directly.
+    const provider = coordinator?.account.provider ?? (id ? store.loadAccounts().find(a => a.id === id)?.provider : undefined);
     return {
       ...quotaOptions,
       limitResets: store.loadSettings().limitResets === true,
       ...(antigravityOrigin ? { antigravityOrigin } : {}),
       ...(coordinator ? { coordinator } : {}),
+      ...(provider ? { providerDisabled: () => store.providerEnabled(provider) ? undefined : providerDisabledMessage(provider) } : {}),
     };
   };
   const evidence = new PoolEvidence(id => catalog(id, true), id => readAccountQuotas(store.loadAccounts().find(a => a.id === id)!, store.workDir, readOptions(id)));
@@ -755,7 +782,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
       if (path === "/v1/pools/remove") return reject(403, "pools are managed by the local router owner");
       if (path === "/v1/selection") {
         if (!isProvider(body.provider)) reject(400, "invalid provider");
-        const ids = registry.accounts(integration).filter(a => a.provider === body.provider && a.enabled).map(a => a.id);
+        const ids = registry.accounts(integration, true).filter(a => a.provider === body.provider && a.enabled).map(a => a.id);
         if (ids.length > 256) reject(409, "too many accounts for discovery");
         const controller = new AbortController();
         const cancel = () => controller.abort(new ControlError(409, "discovery cancelled"));
@@ -765,13 +792,15 @@ export async function startControl(store: StateStore, origin: string, coordinato
           await evidence.discover(ids, controller.signal, id => {
             try { registry.account(registry.authenticate(req.headers.authorization), id); return true; } catch { return false; }
           }, body.provider as Provider);
-          return reply(200, registry.overview(registry.authenticate(req.headers.authorization), evidence));
+          return reply(200, registry.overview(registry.authenticate(req.headers.authorization), evidence, {}, body.provider as Provider));
         } finally { clearTimeout(timer); controller.abort(); res.removeListener("close", cancel); }
       }
       if (path === "/v1/overview") return reply(200, registry.overview(integration, evidence, body));
       if (path === "/v1/overview/refresh") {
         const account = registry.account(integration, field(body, "accountId"));
         await evidence.refresh(account.id);
+        // Revocation, and an owner turning the provider off, win over a refresh that was under way.
+        registry.account(registry.authenticate(req.headers.authorization), account.id);
         return reply(200, registry.overview(registry.authenticate(req.headers.authorization), evidence, body));
       }
       if (path === "/v1/pools/prepare") {

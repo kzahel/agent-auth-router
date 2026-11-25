@@ -3,14 +3,14 @@ import http, { type IncomingMessage, type OutgoingHttpHeaders, type ServerRespon
 import https from "node:https";
 import { pipeline } from "node:stream";
 import { authorize } from "./gateway-auth.ts";
-import { CredentialUnavailable, type CredentialCoordinator } from "./coordinator.ts";
+import { CredentialUnavailable, ProviderTurnedOff, type CredentialCoordinator } from "./coordinator.ts";
 import { clientSessionId } from "./events.ts";
 import { errorText, log } from "./log.ts";
 import type { RequestHandle, RequestStart } from "./metrics.ts";
 import { compressForUpstream, contentEncoding, decodeForInspection, type RequestCompression } from "./compression.ts";
 import { tapsUsage, UsageTap } from "./usage.ts";
 import { ADAPTERS, parseUpstreamOrigin, relayableResponseHeaders, type ProviderAdapter, type Route } from "./providers.ts";
-import { DEFAULT_LIMITS, isProvider, type GatewayClientRecord, type Limits, type Provider, type RouterConfig, type UpstreamCredential } from "./types.ts";
+import { DEFAULT_LIMITS, isProvider, providerDisabledMessage, type GatewayClientRecord, type Limits, type Provider, type RouterConfig, type UpstreamCredential } from "./types.ts";
 
 export interface RouterDeps {
   config: RouterConfig;
@@ -26,6 +26,8 @@ export interface RouterDeps {
   describeClient?: (client: GatewayClientRecord) => { name: string; poolId?: string | undefined; bindingId?: string | undefined };
   /** Request compression the router applies upstream per provider; "off" passes bodies through. */
   requestCompression?: (provider: Provider) => RequestCompression;
+  /** False while an experimental provider is off; its route then refuses authenticated requests. Absent means on. */
+  providerEnabled?: (provider: Provider) => boolean;
   /** The pool member for a pool-backed client's request; rejects with a `status`. */
   sessionAccount?: (input: { client: GatewayClientRecord; provider: Provider; poolId: string; sessionId: string | undefined; model: () => string | undefined }) => Promise<string>;
 }
@@ -79,6 +81,8 @@ export function createRouter(deps: RouterDeps): RouterServer {
       const httpError =
         error instanceof HttpError
           ? error
+          : error instanceof ProviderTurnedOff
+            ? new HttpError(403, error.message)
           : error instanceof CredentialUnavailable
             ? new HttpError(
                 503,
@@ -144,6 +148,10 @@ export function createRouter(deps: RouterDeps): RouterServer {
     const decision = authorize(deps.clients(), req.headers, provider);
     if (!decision.ok) throw new HttpError(decision.status, decision.message);
     meta.client = decision.client.name;
+    // Checked again before each step that would use the account, so the owner's
+    // change stops a request still being read. A stream already relayed drains.
+    const assertEnabled = () => { if (deps.providerEnabled?.(provider) === false) throw new HttpError(403, providerDisabledMessage(provider)); };
+    assertEnabled();
     let body: Buffer | undefined;
     // A client-compressed body is forwarded as sent; metadata comes from a bounded decoded copy.
     const clientEncoding = contentEncoding(req.headers);
@@ -160,9 +168,10 @@ export function createRouter(deps: RouterDeps): RouterServer {
       body = await readRequest();
       const read = inspected!;
       meta.poolId = poolId;
+      assertEnabled();
       if (!deps.sessionAccount) throw new HttpError(503, "gateway pools are unavailable");
       accountId = await deps.sessionAccount({ client: decision.client, provider, poolId, sessionId: clientSessionId(provider, req.headers, read), model: () => requestModel(read) })
-        .catch((error: unknown) => { throw new HttpError(statusOf(error) === 403 ? 403 : 503, error instanceof Error ? error.message : "pool selection failed"); });
+        .catch((error: unknown) => { assertEnabled(); throw new HttpError(statusOf(error) === 403 ? 403 : 503, error instanceof Error ? error.message : "pool selection failed"); });
     }
     meta.account = accountId;
     const coordinator = deps.coordinators.get(accountId);
@@ -188,13 +197,16 @@ export function createRouter(deps: RouterDeps): RouterServer {
     }
     const observed = tracking.handle;
 
+    assertEnabled();
     let credential = await coordinator.credential();
+    assertEnabled();
     let attempt = await forward(adapter, route, origins.get(provider)!, credential, req, outgoing, res, meta, observed, cyberAccess);
     if (attempt.kind === "unauthorized") {
       // Rejected before generation: one coordinated recovery, one retry.
       const recovered = clientGone() ? undefined : await coordinator.recoverFromUnauthorized(credential);
       if (recovered && clientGone()) return;
       if (recovered) {
+        assertEnabled();
         meta.retried = 1;
         credential = recovered;
         attempt = await forward(adapter, route, origins.get(provider)!, credential, req, outgoing, res, meta, observed, cyberAccess);

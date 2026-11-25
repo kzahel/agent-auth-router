@@ -121,9 +121,33 @@ Yep Anywhere launches Claude and Codex from this field as of its commit
 `f4c106fb1`, and Antigravity as of `9793c4832`, where its loopback listener
 dropped its own list of Cloud Code calls. No released AAR build advertises
 `binding-transport-v1` yet. The
-[cross-repository suite](../integration/yepanywhere/README.md) runs
-`9793c4832` against these sources over the local control socket. It does not
+[cross-repository suite](../integration/yepanywhere/README.md) runs the YA
+commit in its [pin](../integration/yepanywhere/pin.json) against these sources
+over the local control socket. It does not
 cover the hosted origin.
+
+## Experimental providers
+
+An adapter in `EXPERIMENTAL_PROVIDERS` (today Antigravity) is off until the
+router owner [turns it on](antigravity.md#turning-it-on). The capability
+`antigravity-control-v1` says the router implements the provider, not that it
+is on. While a provider is off:
+
+- `/v1/selection` and `/v1/overview` list none of its accounts or pools and
+  name it in `disabledProviders`. A selection reply names it only when it is
+  the provider asked for.
+- `/v1/bindings/prepare`, `/v1/pools/prepare`, `/v1/bindings/commit`,
+  `/v1/bindings/inspect`, `/v1/catalog`, `/v1/quotas` and
+  `/v1/overview/refresh` answer 409 with `code: "provider_disabled"` and
+  `provider` when they name one of its accounts, pools or bindings.
+- `GET /v1/accounts` still lists its granted accounts, and
+  `/v1/bindings/cancel` still works.
+- Inference on its route answers 403 to an authenticated client.
+
+An integration should report that the router owner turned the provider off
+and keep the session's pin: the same binding works again once it is back on.
+Yep Anywhere reports it that way as of its commit `b01a2335a`; an older
+build quotes the refusal's text inside its generic rejection.
 
 ## Yep Anywhere manual integration
 

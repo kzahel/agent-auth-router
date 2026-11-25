@@ -6,7 +6,7 @@
 import { errorText, log, sanitize } from "./log.ts";
 import { loginEndedReason, type CredentialReader, type ReadResult } from "./credentials.ts";
 import type { HelperContext, HelperOutcome, RenewalHelper } from "./helpers.ts";
-import type { AccountConfig, UpstreamCredential } from "./types.ts";
+import { providerDisabledMessage, type AccountConfig, type Provider, type UpstreamCredential } from "./types.ts";
 
 export type AccountState = "not_enrolled" | "ready" | "renewing" | "unavailable" | "login_required";
 
@@ -43,8 +43,22 @@ export class CredentialUnavailable extends Error {
   }
 }
 
+/**
+ * The account's experimental provider is off. The router then sends nothing
+ * upstream for it and runs no renewal, so this is thrown before either.
+ */
+export class ProviderTurnedOff extends CredentialUnavailable {
+  readonly provider: Provider;
+  constructor(provider: Provider) {
+    super("unavailable", providerDisabledMessage(provider));
+    this.provider = provider;
+  }
+}
+
 export interface CoordinatorOptions {
   account: AccountConfig;
+  /** Read at each use, so the owner's setting applies to work already under way. Absent means on. */
+  enabled?: () => boolean;
   read: CredentialReader;
   helper: RenewalHelper | undefined;
   helperContext: Omit<HelperContext, "account">;
@@ -60,6 +74,7 @@ export class CredentialCoordinator {
   private readonly read: CredentialReader;
   private readonly helper: RenewalHelper | undefined;
   private readonly helperContext: Omit<HelperContext, "account">;
+  private readonly enabled: () => boolean;
   private readonly now: () => number;
   private readonly backoffInitialMs: number;
   private readonly backoffMaxMs: number;
@@ -85,6 +100,7 @@ export class CredentialCoordinator {
     this.read = options.read;
     this.helper = options.helper;
     this.helperContext = options.helperContext;
+    this.enabled = options.enabled ?? (() => true);
     this.now = options.now ?? Date.now;
     this.backoffInitialMs = options.backoffInitialMs ?? 30_000;
     this.backoffMaxMs = options.backoffMaxMs ?? 10 * 60_000;
@@ -111,6 +127,7 @@ export class CredentialCoordinator {
    * window. Rereads the store on every call rather than caching tokens.
    */
   async credential(): Promise<UpstreamCredential> {
+    this.assertEnabled();
     if (this.externalLogin) throw new CredentialUnavailable("login_required", LOGIN_IN_PROGRESS, undefined);
     if (this.inflight) return this.inflight;
     const current = await this.readUsable();
@@ -127,7 +144,7 @@ export class CredentialCoordinator {
    * Returns undefined when no different credential could be obtained.
    */
   async recoverFromUnauthorized(rejected: UpstreamCredential): Promise<UpstreamCredential | undefined> {
-    if (this.externalLogin) return undefined;
+    if (this.externalLogin || !this.enabled()) return undefined;
     try {
       const current = this.inflight ? await this.inflight : await this.readUsable();
       if (current.revision !== rejected.revision) return current;
@@ -136,6 +153,11 @@ export class CredentialCoordinator {
     } catch {
       return undefined;
     }
+  }
+
+  /** Throws while the account's provider is off. Callers check again just before each upstream send. */
+  assertEnabled(): void {
+    if (!this.enabled()) throw new ProviderTurnedOff(this.account.provider);
   }
 
   /**
@@ -174,6 +196,8 @@ export class CredentialCoordinator {
 
   /** Records an upstream rejection that survived recovery. */
   markRejected(detail: string, rejected?: UpstreamCredential): void {
+    // No recovery was tried for a rejection that arrives after the provider was turned off, so it proves nothing about the login.
+    if (!this.enabled()) return;
     this.failedRevision = rejected?.revision;
     this.state = "login_required";
     this.lastError = sanitize(detail);
@@ -251,11 +275,18 @@ export class CredentialCoordinator {
       return fallback("login_required", "credential expired and no renewal helper is configured");
     }
 
+    // The reads above took time; the owner may have turned the provider off meanwhile.
+    this.assertEnabled();
+    const stateBefore = this.state;
     this.state = "renewing";
     this.helperRuns++;
     const started = this.now();
     log("helper.start", { account: this.account.id, provider: this.account.provider, forced: force });
-    let verified = await this.runAndVerify(previous);
+    let verified = await this.runAndVerify(previous).catch((error: unknown) => {
+      // Turned off before the helper was spawned: no attempt was made, so none is counted or backed off.
+      if (error instanceof ProviderTurnedOff) { this.state = stateBefore; this.helperRuns--; }
+      throw error;
+    });
     // Past the login's lifetime a failed renewal is a lapsed login, whatever the CLI reported.
     if (!verified.ok && this.loginLapsed(previous)) {
       const loginEnded = loginEndedReason(previous.loginExpiresAt, this.now());
@@ -298,8 +329,9 @@ export class CredentialCoordinator {
   ): Promise<{ ok: true; credential: UpstreamCredential } | { ok: false; state: AccountState; detail: string; unchanged?: boolean; loginEnded?: string }> {
     let outcome: HelperOutcome;
     try {
-      outcome = await this.helper!({ ...this.helperContext, account: this.account });
+      outcome = await this.helper!({ ...this.helperContext, account: this.account, beforeSpawn: () => this.assertEnabled() });
     } catch (error) {
+      if (error instanceof ProviderTurnedOff) throw error;
       outcome = { outcome: "failed", detail: errorText(error) };
     }
     if (outcome.outcome === "login_required") return { ok: false, state: "login_required", detail: outcome.detail };

@@ -51,7 +51,7 @@ export async function fakeApp(handlers: Record<string, Handler> = {}, options: {
     onMessage: (handler) => { deliver = handler; },
     onClose: () => {},
     shell: options.native
-      ? { native: true, terminalLogin: async () => ({}), startup: async () => false, openProject: async () => ({}), checkUpdate: async () => ({}), installUpdate: async () => ({}), onLifecycleError: async () => ({}), ...options.native }
+      ? { native: true, terminalLogin: async () => ({}), startup: async () => false, openProject: async () => ({}), openAntigravityTerms: async () => ({}), checkUpdate: async () => ({}), installUpdate: async () => ({}), onLifecycleError: async () => ({}), ...options.native }
       : { native: false, logout: async () => ({}) },
   };
   const client = new AppClient(port);

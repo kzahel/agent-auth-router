@@ -35,6 +35,7 @@ export interface DesktopShell {
   terminalLogin(id: string, presentation: string): Promise<unknown>;
   startup(enabled: boolean | null): Promise<boolean>;
   openProject(): Promise<unknown>;
+  openAntigravityTerms(): Promise<unknown>;
   checkUpdate(): Promise<{ version?: string }>;
   installUpdate(version: string): Promise<unknown>;
   onLifecycleError(handler: (payload: unknown) => void): Promise<unknown>;
@@ -81,6 +82,7 @@ export async function tauriPort(): Promise<Port> {
       terminalLogin: (id, presentation) => invoke("terminal_login", { id, presentation }),
       startup: (enabled) => invoke<boolean>("startup", { enabled }),
       openProject: () => invoke("open_project"),
+      openAntigravityTerms: () => invoke("open_antigravity_terms"),
       checkUpdate: () => invoke<{ version?: string }>("check_update"),
       installUpdate: (version) => invoke("install_update", { version }),
       onLifecycleError: (handler) => tauri.event.listen("router-lifecycle-error", ({ payload }) => handler(payload)),

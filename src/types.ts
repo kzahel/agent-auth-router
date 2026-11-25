@@ -5,6 +5,21 @@ export function isProvider(value: unknown): value is Provider {
   return typeof value === "string" && (PROVIDERS as readonly string[]).includes(value);
 }
 
+/** Adapters the router leaves off until its owner turns them on in Settings. */
+export const EXPERIMENTAL_PROVIDERS = ["antigravity"] as const satisfies readonly Provider[];
+export type ExperimentalProvider = (typeof EXPERIMENTAL_PROVIDERS)[number];
+export function isExperimentalProvider(value: unknown): value is ExperimentalProvider {
+  return typeof value === "string" && (EXPERIMENTAL_PROVIDERS as readonly string[]).includes(value);
+}
+const PROVIDER_NAMES: Record<Provider, string> = { claude: "Claude", codex: "Codex", antigravity: "Antigravity" };
+/**
+ * What a client is told while an experimental provider is off. Integrations
+ * quote refusals to people and accept only letters and light punctuation.
+ */
+export function providerDisabledMessage(provider: Provider): string {
+  return `${PROVIDER_NAMES[provider]} routing is turned off; the router owner can turn it on in AAR Settings`;
+}
+
 /**
  * The parts of a provider credential the router needs to forward a request.
  * Refresh tokens are deliberately absent: readers never return them.

@@ -25,6 +25,42 @@ before checking the token, and the session went on. This run did not exercise
 renewal of an expired login, a pool, a hosted origin or the standalone
 bridge.
 
+## Turning it on
+
+Antigravity routing is off until the router owner checks **Enable
+experimental Antigravity routing** in Settings. The warning beside the box
+reads: "This integration can break when Antigravity changes. Google may
+restrict account access for unsupported third-party use." It links to
+[Google's Antigravity terms](https://antigravity.google/terms). The setting is
+stored in `settings.json` and changed with the `settings/experimental-providers`
+owner operation, so only the owner can change it:
+
+```sh
+echo '{"provider":"antigravity","enabled":true}' | aar owner settings/experimental-providers
+```
+
+While it is off:
+
+- **Paired integrations** are offered no Antigravity account or pool.
+  `/v1/selection` and `/v1/overview` list none and carry `disabledProviders:
+  ["antigravity"]`. `GET /v1/accounts` still lists the granted accounts.
+- **Bindings** cannot be prepared, committed or inspected, and catalog and
+  quota reads are refused. Each answers 409 with `code: "provider_disabled"`
+  and "Antigravity routing is turned off; the router owner can turn it on in
+  AAR Settings". Cancel still works.
+- **Inference** on `/antigravity` answers 403 with the same text to an
+  authenticated client, standalone bridge clients included. A stream accepted
+  earlier runs to its end.
+- **The router's own reads** stop: it sends no catalog or quota request to
+  Cloud Code for an Antigravity account and runs no renewal for it, and the
+  account shows the same text in the dashboard. Work under way when the owner
+  turns it off is not retried or renewed. Sign-in with the official CLI is
+  unaffected.
+
+Accounts, pools, grants and bindings are kept. Turning it on grants nothing
+new, and a session pinned earlier runs again on the same binding and token.
+Turning it off does not sign the account out of Google.
+
 ## On the router host
 
 Use the AAR CLI to add an account and run the sign-in command it prints:

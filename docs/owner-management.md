@@ -26,7 +26,8 @@ operations include `overview`, `providers`, `diagnostics`,
 `accounts/refresh`, `accounts/renew`, `pools/save`, `pools/remove`,
 `grants/save`, `integrations/revoke`, `clients/add`, `clients/revoke`, `stop`,
 `shutdown` and `restart` (`aar serve` only), plus `accounts/login-command`, `metrics/snapshot`, `metrics/history`,
-`requests/recent` and the CLI-only `dashboard/code`, `dashboard/sessions` and
+`requests/recent`, the settings operations (`settings/request-compression`,
+`settings/limit-resets`, `settings/experimental-providers`) and the CLI-only `dashboard/code`, `dashboard/sessions` and
 `dashboard/revoke`. UIs reach a policy-limited subset through the
 [app protocol](dashboard.md#app-protocol) on the separate private `app.sock`.
 `accounts/login-status` returns a sign-in state (`ready`, `idle`, `renewing`,

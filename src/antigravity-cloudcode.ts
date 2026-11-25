@@ -106,10 +106,12 @@ export async function callCloudCodeWithCoordinator(
 ): Promise<CloudCodeResult> {
   const targetOrigin = origin ?? ADAPTERS.antigravity.defaultOrigin;
   let credential = await coordinator.credential();
+  coordinator.assertEnabled();
   let result = await postCloudCode(targetOrigin, rpc, credential.accessToken, options);
   if (!result.ok && result.status === 401) {
     const recovered = await coordinator.recoverFromUnauthorized(credential);
     if (recovered) {
+      coordinator.assertEnabled();
       credential = recovered;
       result = await postCloudCode(targetOrigin, rpc, credential.accessToken, options);
     }
@@ -222,6 +224,8 @@ export async function readAntigravityCatalog(coordinator: CredentialCoordinator,
     maxBytes: CATALOG_MAX_BYTES,
   });
   if (!response.ok) {
+    // A failure that arrives after the provider was turned off is reported as that, not as a login to repair.
+    coordinator.assertEnabled();
     if (response.status === 401) throw new CredentialUnavailable("login_required", "upstream rejected the account credential");
     throw new Error(response.error);
   }

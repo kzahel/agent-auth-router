@@ -15,14 +15,14 @@ import { COMPRESSION_CHOICES, type RequestCompression } from "./compression.ts";
 import { MAX_RETENTION_DAYS } from "./history.ts";
 import { PRICES_SOURCE } from "./prices-data.ts";
 import { COUNTERS, isMetric, isRange, isScope, RANGES, type Metrics } from "./metrics.ts";
-import { ControlError, type ControlRegistry } from "./control.ts";
+import { ControlError, providerDisabled, type ControlRegistry } from "./control.ts";
 import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { accountHelper } from "./helpers.ts";
 import type { PoolEvidence } from "./pools.ts";
 import { accountEnv, helperEnv, startBounded, type BoundedProcess } from "./process.ts";
 import { ensurePrivateDir, isUsageCeiling, type StateStore, validateAccounts } from "./state.ts";
-import { isProvider, type AccountConfig, type GatewayClientRecord } from "./types.ts";
+import { EXPERIMENTAL_PROVIDERS, isExperimentalProvider, isProvider, type AccountConfig, type GatewayClientRecord } from "./types.ts";
 
 export function ownerToken(store: StateStore, create = false): string {
   const path = join(store.dir, "owner.key");
@@ -199,6 +199,7 @@ export class OwnerService {
       read: credentialReaderFor(account.provider, account.home, account.credentialStore),
       helper: accountHelper(account),
       helperContext: { workDir: this.store.workDir, routerOrigin: this.origin },
+      enabled: () => this.store.providerEnabled(account.provider),
     });
   }
   async operation(operation: string, body: Record<string, unknown>): Promise<object> {
@@ -352,6 +353,23 @@ export class OwnerService {
         this.store.saveSettings(body.enabled ? { ...rest, limitResets: true } : rest);
       }
       return { enabled: this.store.loadSettings().limitResets === true };
+    }
+    if (operation === "settings/experimental-providers") {
+      // Off by default. Turning a provider on or off changes no account, pool, grant or pin; see docs/antigravity.md.
+      if (body.provider !== undefined || body.enabled !== undefined) {
+        const provider = body.provider;
+        if (!isExperimentalProvider(provider)) throw new ControlError(400, "invalid experimental provider");
+        if (typeof body.enabled !== "boolean") throw new ControlError(400, "enabled must be true or false");
+        const { experimentalProviders = {}, ...rest } = this.store.loadSettings();
+        if ((experimentalProviders[provider] === true) !== body.enabled) {
+          const { [provider]: _previous, ...others } = experimentalProviders;
+          const next = body.enabled ? { ...others, [provider]: true as const } : others;
+          this.store.saveSettings(Object.keys(next).length ? { ...rest, experimentalProviders: next } : rest);
+          // Forget what was read or refused under the other setting.
+          for (const account of this.store.loadAccounts()) if (account.provider === provider) this.invalidate(account.id);
+        }
+      }
+      return { providers: Object.fromEntries(EXPERIMENTAL_PROVIDERS.map(p => [p, this.store.providerEnabled(p)])) };
     }
     // retentionDays null keeps history forever.
     const retention = () => ({ stored: this.metrics().historyStored(), retentionDays: this.metrics().retentionDays(), maxRetentionDays: MAX_RETENTION_DAYS });
@@ -550,6 +568,8 @@ export class OwnerService {
         coordinator = this.coordinators.get(account.id);
       if (account.enabled === false || !coordinator)
         throw new ControlError(409, "account unavailable");
+      // Renewal runs the official CLI against the provider; sign-in stays available.
+      if (!this.store.providerEnabled(account.provider)) throw providerDisabled(account.provider);
       const before = await credentialReaderFor(
         account.provider,
         account.home,
@@ -557,6 +577,8 @@ export class OwnerService {
       )();
       if (before.status !== "ok") throw new ControlError(409, "Sign in before attempting renewal");
       const renewed = await coordinator.recoverFromUnauthorized(before.credential);
+      // Turned off while this ran: the renewal was stopped, which is not the same as the CLI declining to renew.
+      if (!this.store.providerEnabled(account.provider)) throw providerDisabled(account.provider);
       this.invalidate(account.id);
       return {
         id: account.id,

@@ -136,6 +136,12 @@ export interface QuotaReadOptions {
   antigravityOrigin?: string;
   /** Coordinator for Antigravity accounts so expired tokens renew via the official CLI. */
   coordinator?: CredentialCoordinator;
+  /**
+   * Returns the refusal text while the account's experimental provider is
+   * off. Asked again just before a send and after a failed one, so the
+   * owner's change applies to a read under way.
+   */
+  providerDisabled?: () => string | undefined;
 }
 
 const MAX_BYTES = 256 * 1024;
@@ -494,6 +500,9 @@ export async function readAccountQuotas(account: AccountConfig, workDir: string,
     observedAt: new Date().toISOString(), status: "unavailable", windows: [], error,
     ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}) });
   if (account.enabled === false) return unavailable("account disabled");
+  const turnedOff = () => options.providerDisabled?.();
+  const off = turnedOff();
+  if (off) return unavailable(off);
   if (account.provider === "antigravity") {
     try {
       const origin = options.antigravityOrigin ?? ADAPTERS.antigravity.defaultOrigin;
@@ -505,11 +514,13 @@ export async function readAccountQuotas(account: AccountConfig, workDir: string,
       } else {
         const credential = await credentialReaderFor("antigravity", account.home, account.credentialStore)();
         if (credential.status !== "ok") return unavailable("credential unavailable; check official CLI login");
+        const offNow = turnedOff();
+        if (offNow) return unavailable(offNow);
         response = await postCloudCode(origin, "retrieveUserQuotaSummary", credential.credential.accessToken, {
           timeoutMs: options.timeoutMs ?? 15_000,
         });
       }
-      if (!response.ok) return unavailable(response.error);
+      if (!response.ok) return unavailable(turnedOff() ?? response.error);
       const windows = normalizeAntigravityQuotas(response.value);
       if (!windows.length) return unavailable("provider returned no recognized quota windows");
       return { ...base, observedAt: new Date().toISOString(), status: "ok", windows };

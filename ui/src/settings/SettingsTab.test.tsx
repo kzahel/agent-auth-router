@@ -67,6 +67,32 @@ describe("SettingsTab", () => {
     await waitFor(() => expect(box).toHaveProperty("checked", true));
   });
 
+  it("shows the Antigravity warning and terms link before the owner opts in, and puts a refused change back", async () => {
+    let enabled = false, refuse = false;
+    const operation = "settings/experimental-providers";
+    const app = await fakeApp({
+      [operation]: (body) => {
+        if (refuse && body.enabled !== undefined) throw new Error("synthetic refusal");
+        if (typeof body.enabled === "boolean") enabled = body.enabled;
+        return { providers: { antigravity: enabled } };
+      },
+    });
+    app.render(<SettingsTab visible {...settings} />);
+    const box = screen.getByRole<HTMLInputElement>("checkbox", { name: "Enable experimental Antigravity routing" });
+    expect(box).toHaveProperty("disabled", true);
+    await waitFor(() => expect(box).toHaveProperty("disabled", false));
+    expect(box).toHaveProperty("checked", false);
+    expect(screen.getByText(/can break when Antigravity changes\. Google may restrict account access for unsupported third-party use/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Google's Antigravity terms" })).toHaveProperty("href", "https://antigravity.google/terms");
+    await userEvent.click(box);
+    await waitFor(() => expect(box).toHaveProperty("checked", true));
+    expect(app.called(operation).at(-1)).toEqual({ operation, body: { provider: "antigravity", enabled: true } });
+    refuse = true;
+    await userEvent.click(box);
+    expect(await screen.findByText("synthetic refusal")).toBeTruthy();
+    await waitFor(() => expect([box.checked, box.disabled]).toEqual([true, false]));
+  });
+
   it("shows desktop controls only in the desktop app, and Log out only in a browser", async () => {
     const web = await fakeApp();
     const { unmount } = web.render(<SettingsTab visible {...settings} />);

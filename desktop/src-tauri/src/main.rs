@@ -395,25 +395,29 @@ async fn terminal_login(
     .await
     .map_err(|_| "Router task failed")?
 }
-/// The project page opens in the default browser; the WebView never navigates away.
+/// Pages the UI links to open in the default browser; the WebView never navigates away.
+/// Each is a fixed address, so the page cannot ask the shell to open another.
 const PROJECT_URL: &str = "https://github.com/kzahel/agent-auth-router";
+const ANTIGRAVITY_TERMS_URL: &str = "https://antigravity.google/terms";
 
-#[tauri::command]
-fn open_project(window: tauri::WebviewWindow) -> Result<(), String> {
+fn open_page(window: &tauri::WebviewWindow, url: &str, failure: &str) -> Result<(), String> {
     if window.label() != "main" {
         return Err("Owner window required".into());
     }
-    Command::new("/usr/bin/open")
-        .arg(PROJECT_URL)
-        .status()
-        .map_err(|_| "Could not open the project page".to_string())
-        .and_then(|status| {
-            if status.success() {
-                Ok(())
-            } else {
-                Err("Could not open the project page".into())
-            }
-        })
+    match Command::new("/usr/bin/open").arg(url).status() {
+        Ok(status) if status.success() => Ok(()),
+        _ => Err(failure.into()),
+    }
+}
+
+#[tauri::command]
+fn open_project(window: tauri::WebviewWindow) -> Result<(), String> {
+    open_page(&window, PROJECT_URL, "Could not open the project page")
+}
+
+#[tauri::command]
+fn open_antigravity_terms(window: tauri::WebviewWindow) -> Result<(), String> {
+    open_page(&window, ANTIGRAVITY_TERMS_URL, "Could not open the terms page")
 }
 
 #[tauri::command]
@@ -617,6 +621,7 @@ fn main() {
             terminal_login,
             startup,
             open_project,
+            open_antigravity_terms,
             check_update,
             install_update,
             terminal::terminal,
@@ -632,6 +637,7 @@ fn main() {
         terminal_login,
         startup,
         open_project,
+        open_antigravity_terms,
         check_update,
         install_update,
         terminal::terminal

@@ -1223,12 +1223,19 @@ for (const provider of ["codex", "claude"]) {
 // `agy` must not hold the binding token, so YA starts it against a loopback
 // proxy that does. The proxy has no list of Cloud Code calls: it forwards
 // below the route the router describes, and the router refuses the rest.
-test("antigravity: YA's loopback proxy carries agy through the described route until disconnect", { timeout: 120_000 }, async (t) => {
+test("antigravity: off until the owner opts in, then YA's loopback proxy carries agy through the described route until disconnect", { timeout: 120_000 }, async (t) => {
   const f = await fixture(t, "antigravity");
   const relay = await f.controlRelay();
   // Served by a forwarder that answers 404 anywhere else, the usual /antigravity included.
   relay.route = "/described";
   await f.connect({ socketPath: relay.socket });
+  const routing = (enabled) => f.owner("settings/experimental-providers", { provider: "antigravity", enabled });
+  const turnedOff = "Antigravity routing is turned off in AAR. The router owner can turn it on in AAR Settings; then retry. Routed sessions keep their pins.";
+  const early = await f.start({ provider: "antigravity", model: "synthetic-model", routerAccountId: "selected", message: "before-opt-in" });
+  const refusedStart = (start) => [start.started, start.value.creation?.delivery, start.value.creation?.failure, start.value.creation?.failureDetail];
+  assert.deepEqual(refusedStart(early), [false, "not-admitted", "router-refused", turnedOff], "The experimental provider is off until the router owner turns it on, and YA says so");
+  assert.equal(f.native().length, 0, "A refused launch starts no agy");
+  await routing(true);
   const created = await f.start({ provider: "antigravity", model: "synthetic-model", routerAccountId: "selected", message: "through-the-bridge" });
   assert.ok(created.started, JSON.stringify(created.value));
   const turns = () => f.native().filter((row) => row.event === "turn");
@@ -1240,9 +1247,10 @@ test("antigravity: YA's loopback proxy carries agy through the described route u
   const committed = relay.replies.findLast((r) => r.path === "/v1/bindings/commit").value;
   assert.deepEqual([committed.provider, committed.state, committed.transport],
     ["antigravity", "committed", { kind: "http-gateway-v1", basePath: "/antigravity/described", authMethods: ["bearer"] }]);
-  const allocation = Object.values(f.privateState().allocations)[0];
+  // The refused launch before it left a cancelled allocation behind.
+  const allocation = Object.values(f.privateState().allocations).find((a) => !a.cancelled);
   assert.match(allocation.token, /^aar_[A-Za-z0-9_-]{43}$/);
-  assert.equal(f.controlState().bindings[0].tokenHash, hash(allocation.token));
+  assert.equal(f.controlState().bindings.find((b) => b.id === allocation.id).tokenHash, hash(allocation.token));
   const spawn = f.native().find((row) => row.event === "spawn");
   const bridge = new URL(spawn.endpoint);
   assert.ok(bridge.hostname === "127.0.0.1" && ![f.router().origin, relay.origin].includes(bridge.origin), "agy is pointed at YA's proxy, not the router");
@@ -1262,11 +1270,32 @@ test("antigravity: YA's loopback proxy carries agy through the described route u
   };
   assert.equal(await direct(), 200, "The binding token is what the router accepts");
 
+  const say = async (message, count, reason) => {
+    await f.api(`/sessions/${created.value.sessionId}/messages`, { message });
+    await eventually(() => turns().length === count, reason);
+    assert.equal(turns()[count - 1].pid, spawn.pid, "The same agy answers");
+    return turns()[count - 1];
+  };
+  const spawns = () => f.native().filter((row) => row.event === "spawn").length;
+
+  await routing(false);
+  const [launched, sentWhileOn] = [spawns(), f.upstreamRequests.length];
+  assert.equal(await direct(), 403, "Turning the provider off refuses the binding token at the router");
+  const refusedTurn = await say("while-turned-off", 3, "the live agy answers while the provider is off");
+  assert.deepEqual([refusedTurn.status, JSON.parse(refusedTurn.refusal).error.message], [403, "Antigravity routing is turned off; the router owner can turn it on in AAR Settings"],
+    "The live session is told why through the proxy");
+  const late = await f.start({ provider: "antigravity", model: "synthetic-model", routerAccountId: "selected", message: "after-opt-out" });
+  assert.deepEqual(refusedStart(late), [false, "not-admitted", "router-refused", turnedOff], "A new session is refused the same way");
+  assert.deepEqual([spawns(), f.upstreamRequests.length], [launched, sentWhileOn], "While it is off nothing starts and nothing goes upstream");
+  assert.deepEqual([f.privateState().allocations[allocation.id].cancelled, f.controlState().bindings.find((b) => b.id === allocation.id).state], [undefined, "committed"], "The pin is kept");
+
+  await routing(true);
+  assert.equal((await say("turned-back-on", 4, "the live agy answers once the provider is back on")).status, 200, "Turning it back on uses the existing pin");
+
   await f.api("/agent-auth-router/disconnect", {});
   assert.equal(await direct(), 401, "Disconnect revokes the binding token at the router");
-  await f.api(`/sessions/${created.value.sessionId}/messages`, { message: "after-disconnect" });
-  await eventually(() => turns().length === 3, "the same agy answers after disconnect");
-  assert.deepEqual([turns()[2].pid, turns()[2].status], [spawn.pid, 401], "The live session is refused through the proxy");
+  const revokedTurn = await say("after-disconnect", 5, "the same agy answers after disconnect");
+  assert.equal(revokedTurn.status, 401, "The live session is refused through the proxy");
   assert.ok(!f.upstreamRequests.some((r) => r.body.includes("after-disconnect")), "A revoked binding sends nothing upstream");
 });
 

@@ -15,12 +15,13 @@ import { errorText, log } from "./log.ts";
 import type { OwnerLifecycle } from "./owner.ts";
 import { createRouter, type RouterServer } from "./server.ts";
 import { LiveClients, type StateStore } from "./state.ts";
-import type { AccountConfig } from "./types.ts";
+import type { AccountConfig, Provider } from "./types.ts";
 
 export function buildCoordinators(
   accounts: readonly AccountConfig[],
   workDir: string,
   routerOrigin: string | undefined,
+  providerEnabled: (provider: Provider) => boolean = () => true,
 ): Map<string, CredentialCoordinator> {
   const coordinators = new Map<string, CredentialCoordinator>();
   for (const account of accounts) {
@@ -31,6 +32,7 @@ export function buildCoordinators(
         read: credentialReaderFor(account.provider, account.home, account.credentialStore),
         helper: accountHelper(account),
         helperContext: routerOrigin ? { workDir, routerOrigin } : { workDir },
+        enabled: () => providerEnabled(account.provider),
       }),
     );
   }
@@ -68,7 +70,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   if (events) metrics.onEvent(({ entry }) => { if (entry.outcome !== "active") { const { id: _id, ...rest } = entry; events.write("request", rest); } });
   const config = store.loadConfig();
   const origin = `http://${config.listen.host.includes(":") ? `[${config.listen.host}]` : config.listen.host}:${config.listen.port}`;
-  const coordinators = buildCoordinators(store.loadAccounts(), store.workDir, origin);
+  const coordinators = buildCoordinators(store.loadAccounts(), store.workDir, origin, provider => store.providerEnabled(provider));
   const clients = new LiveClients(store);
   let closing: Promise<void> | undefined;
   let cancelling: Promise<void> | undefined;
@@ -99,6 +101,7 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
   let publicListener: PublicListener | undefined;
   const router = createRouter({ config, clients: () => [...clients.current(), ...(control?.registry.clients() ?? [])], coordinators, observer: metrics,
     requestCompression: provider => provider === "antigravity" ? "off" : store.loadSettings().requestCompression[provider] ?? "off",
+    providerEnabled: provider => store.providerEnabled(provider),
     describeClient: client => control?.registry.describeClient(client) ?? { name: client.name },
     onCyberAccessResponse: (observation) => events?.write("cyber-access", observation),
     sessionAccount: ({ client, provider, poolId, sessionId, model }) => control
@@ -107,6 +110,8 @@ export async function startRouter(store: StateStore, quotaOptions: QuotaReadOpti
     onProviderResponse: (accountId, status, retryAfter, headers, requestId) => {
     if (!control) return;
     const provider = coordinators.get(accountId)?.account.provider;
+    // A reply to a request sent before the provider was turned off starts no cooldown for when it is back on.
+    if (provider && !store.providerEnabled(provider)) return;
     control.evidence.reject(accountId, status, retryAfter);
     if ([401, 403, 429].includes(status)) events?.write("rejection", { accountId, provider: provider ?? null, status, retryAfter: retryAfter ?? null, requestId: requestId ?? null });
     // Every successful proxied turn is quota evidence; rejections keep their cooldown path.

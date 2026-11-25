@@ -21,6 +21,8 @@ export interface HelperContext {
   /** The router's own listener origin, which a helper must never target. */
   routerOrigin?: string;
   env?: NodeJS.ProcessEnv;
+  /** Called at the spawn itself, after any checks that take time. Throws when the helper may no longer run. */
+  beforeSpawn?: () => void;
 }
 
 export type RenewalHelper = (context: HelperContext) => Promise<HelperOutcome>;
@@ -98,6 +100,7 @@ async function runCommand(config: Extract<HelperConfig, { kind: "command" }>, co
   const problem = await directProviderProblem(context);
   if (problem) return { outcome: "failed", detail: problem };
   const antigravity = context.account.provider === "antigravity";
+  context.beforeSpawn?.();
   const proc = startBounded({
     command: config.command,
     args: config.args,

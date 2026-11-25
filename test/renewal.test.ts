@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
-import { CredentialCoordinator, CredentialUnavailable } from "../src/coordinator.ts";
+import { CredentialCoordinator, CredentialUnavailable, ProviderTurnedOff } from "../src/coordinator.ts";
 import { credentialReaderFor } from "../src/credentials.ts";
 import { accountHelper, CLAUDE_CLI_ARGS, directProviderProblem, helperFor, probeClaudeCli, type HelperOutcome, type RenewalHelper } from "../src/helpers.ts";
 import { helperEnv } from "../src/process.ts";
@@ -494,4 +494,21 @@ describe("sign-in state", () => {
     writeClaudeCredentials(account.home, "replacement", Date.now() + 3600_000);
     assert.equal((await coordinator.signIn()).state, "ready");
   });
+});
+
+test("a provider turned off while renewal prepares stops the helper at its spawn, with no attempt recorded", async () => {
+  const account: AccountConfig = { id: "agy", provider: "claude", home: tempDir() };
+  writeClaudeCredentials(account.home, "expired", Date.now() - 1000);
+  let enabled = true, spawned = false;
+  // As a command helper does: time passes between the coordinator's own check and the spawn.
+  const helper: RenewalHelper = async (context) => {
+    enabled = false;
+    context.beforeSpawn?.();
+    spawned = true;
+    return { outcome: "completed" };
+  };
+  const coordinator = new CredentialCoordinator({ account, read: credentialReaderFor(account.provider, account.home), helper, helperContext: { workDir: tempDir("aar-cwd-") }, enabled: () => enabled });
+  await assert.rejects(coordinator.credential(), ProviderTurnedOff);
+  const { helperRuns, retryAfter, state } = coordinator.status();
+  assert.deepEqual([spawned, helperRuns, retryAfter, state === "renewing"], [false, 0, undefined, false]);
 });

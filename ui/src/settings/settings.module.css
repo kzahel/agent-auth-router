@@ -10,3 +10,4 @@
 .row input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
 .row > span { margin: 0; }
 .group .updateStatus { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.group .warning { color: var(--warning); font-size: 12px; }

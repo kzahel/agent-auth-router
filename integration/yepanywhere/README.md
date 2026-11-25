@@ -102,12 +102,18 @@ Each provider exercises:
   commit reply is lost starts nothing, and the retry runs on the same pin and
   token. That commit repeats one already applied; a new session's first commit
   is not covered.
-- Antigravity: a routed session starts the `agy` peer against YA's loopback
+- Antigravity: routing is off until the owner turns it on, and a session
+  started before that is refused before any `agy` starts, with YA naming the
+  cause. Once it is on, a routed session starts the `agy` peer against YA's loopback
   proxy, and its turn completes through a described route that YA could not
   have assembled, with only the enrolled login sent upstream. The binding
   token is in none of the peer's arguments, environment or profile login,
   which hold YA's local stand-in. A call outside AAR's registered routes
   passes the proxy and is refused by the router with nothing sent upstream.
+  When the owner turns routing off, the live session's next request and a
+  new session are refused with the cause, nothing starts or goes upstream,
+  and the pin is kept; turned back on, the same `agy` answers on the same
+  binding.
   After disconnect the router rejects the binding token and the live
   session's next request is refused before upstream.
 - Provider credential substitution only at AAR, private YA storage permissions,
@@ -118,14 +124,18 @@ The network tripwire also has focused tests for Node's socket argument forms.
 CI runs the suite on both Linux and macOS. UI behavior, official CLI compatibility,
 credential renewal and advanced balancing remain outside this suite. So do the
 hosted HTTPS origin, and Antigravity pools, resume and transcript reading.
+A cold resume while Antigravity routing is off is checked only by YA's own
+tests, because the synthetic peer leaves no store YA can resume from.
 
 Only the pinned YA runs. A YA from before the binding transport last ran
 against a router that describes it in
 [CI for `5a5039a`](https://github.com/kzahel/agent-auth-router/actions/runs/45596402671),
-when the pin was still `0b66e24`. The pin before this one, `f4c106fb1`,
+when the pin was still `0b66e24`. An earlier pin, `f4c106fb1`,
 ignores the description on Antigravity bindings and keeps its own list of
 Cloud Code calls; it passed against the router that describes that route
-when `1f56bb1` was made, in a local run.
+when `1f56bb1` was made, in a local run. The pin before this one,
+`9793c4832`, predates the Antigravity opt-in and was not run against a
+router that has it.
 
 ## Update the YA pin
 

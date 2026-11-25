@@ -25,6 +25,7 @@ export function SettingsTab({ visible, presentation, onPresentation, onNavigate 
       <HistorySettings visible={visible} />
       <CompressionSettings visible={visible} />
       <LimitResetSettings visible={visible} />
+      <ExperimentalSettings visible={visible} />
       <Diagnostics onNavigate={onNavigate} />
       {native && <AppSettings presentation={presentation} onPresentation={onPresentation} />}
       {web && (
@@ -141,6 +142,51 @@ function LimitResetSettings({ visible }: { visible: boolean }) {
       </label>
       <p className={ui.hint}>Reads how many free usage-limit resets each account has and when they expire, with each usage check. Codex reports them in its usage read. Claude needs a separate read of an undocumented endpoint, which may stop working. The router never uses a reset.</p>
       <p id="limit-resets-status" className={`${ui.hint} ${styles.note}`} role="status">{status}</p>
+    </div>
+  );
+}
+
+// Off by default. The warning stays in view while the box is clear, so the owner reads it before opting in.
+function ExperimentalSettings({ visible }: { visible: boolean }) {
+  const { api, native, router } = useApp();
+  const [enabled, setEnabled] = useState(false);
+  // The box cannot be clicked before the stored value is known, or while a change is being saved.
+  const [pending, setPending] = useState(true);
+  const [status, setStatus] = useState("");
+  const load = useCallback(async (report = true) => {
+    try {
+      setEnabled((await api<{ providers: { antigravity: boolean } }>("settings/experimental-providers")).providers.antigravity);
+      setPending(false);
+      if (report) setStatus("");
+    } catch (failure) { setStatus(errorText(failure)); }
+  }, [api]);
+  useEffect(() => { if (visible) void load(); }, [visible, load]);
+  return (
+    <div className={styles.group}>
+      <h3>Experimental providers</h3>
+      <label className={styles.row}>Enable experimental Antigravity routing
+        <input id="experimental-antigravity" type="checkbox" checked={enabled} disabled={pending} aria-describedby="experimental-antigravity-warning" onChange={async (event) => {
+          const desired = event.target.checked;
+          setEnabled(desired);
+          setPending(true);
+          try {
+            setEnabled((await api<{ providers: { antigravity: boolean } }>("settings/experimental-providers", { provider: "antigravity", enabled: desired })).providers.antigravity);
+            setPending(false);
+            setStatus(desired ? "Antigravity accounts and pools are offered to the apps they are granted to." : "Antigravity routing is off. Accounts, pools, grants and session pins are kept.");
+            await router.reload();
+          } catch (failure) { setStatus(errorText(failure)); void load(false); }
+        }} />
+      </label>
+      <p id="experimental-antigravity-warning" className={styles.warning}>
+        This integration can break when Antigravity changes. Google may restrict account access for unsupported third-party use. See{" "}
+        {/* The desktop WebView would navigate itself; the shell opens the browser instead. */}
+        <a href="https://antigravity.google/terms" target="_blank" rel="noopener noreferrer"
+          onClick={native ? (event) => { event.preventDefault(); native.openAntigravityTerms().catch((failure: unknown) => router.setError(failure)); } : undefined}>
+          Google's Antigravity terms
+        </a>.
+      </p>
+      <p className={ui.hint}>While this is off, the router offers no Antigravity account or pool to connected apps, refuses requests from existing sessions, and reads nothing from Google for those accounts. Turning it on grants nothing new.</p>
+      <p id="experimental-status" className={`${ui.hint} ${styles.note}`} role="status">{status}</p>
     </div>
   );
 }

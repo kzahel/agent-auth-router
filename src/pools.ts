@@ -256,7 +256,7 @@ export class PoolEvidence {
    * the windows this read reported; the observation carries merged state. */
   onQuota?: (id: string, observation: Observation, observed: QuotaObserved) => void;
   private readonly generations = new Map<string, number>();
-  invalidate(id: string): void { this.generations.set(id, (this.generations.get(id) ?? 0) + 1); this.values.delete(id); this.retryAt.delete(id); this.cliRetryAt.delete(id); this.samples.delete(id); }
+  invalidate(id: string): void { this.generations.set(id, (this.generations.get(id) ?? 0) + 1); this.values.delete(id); this.retryAt.delete(id); this.cliRetryAt.delete(id); this.discoveryRetryAt.delete(id); this.samples.delete(id); }
   /** Recent short-window use per account and bucket, memory-only and bounded by BURN_LOOKBACK_MS. */
   private readonly samples = new Map<string, Map<string, BurnSample[]>>();
   private sample(id: string, windows: QuotaWindow[], at: number): void {
@@ -389,7 +389,7 @@ export class PoolEvidence {
       const generation = this.generations.get(id);
       job = this.catalog(id).then(models => {
         if (generation === this.generations.get(id)) this.setCatalog(id, models);
-      }).catch(() => { this.discoveryRetryAt.set(id, Date.now() + 5_000); })
+      }).catch(() => { /* A read begun before an invalidation says nothing about the next one. */ if (generation === this.generations.get(id)) this.discoveryRetryAt.set(id, Date.now() + 5_000); })
         .finally(() => this.discoveries.delete(id));
       this.discoveries.set(id, job);
     }
@@ -427,8 +427,11 @@ export class PoolEvidence {
       const cliModels = quota.status === "fulfilled" ? quota.value.cliModels : undefined;
       // The reader's error is fixed text plus an already-scrubbed excerpt.
       const reason = quota.status === "fulfilled" ? quota.value.error : undefined;
-      const loginEnded = catalog.status === "rejected" && (catalog.reason as { details?: { code?: unknown } } | undefined)?.details?.code === "login_required";
+      const refusal = catalog.status === "rejected" ? catalog.reason as { message?: unknown; details?: { code?: unknown } } | undefined : undefined;
+      const loginEnded = refusal?.details?.code === "login_required";
       const error = loginEnded ? "Login expired or was cleared; sign in again"
+        // The owner left this provider off, so neither read was sent; say so, not that the account failed.
+        : refusal?.details?.code === "provider_disabled" && typeof refusal.message === "string" ? refusal.message
         : catalog.status === "rejected" ? "Account catalog unavailable"
         : !snapshot ? (reason ? `${QUOTA_REFRESH_UNAVAILABLE}: ${reason}` : QUOTA_REFRESH_UNAVAILABLE) : null;
       const result: Observation = {

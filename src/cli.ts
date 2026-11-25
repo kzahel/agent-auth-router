@@ -25,7 +25,7 @@ const DEFAULT_PUBLIC_PORT = 8420;
 import { fetchAccountQuotas } from "./quotas.ts";
 import { startRouter } from "./runtime.ts";
 import { defaultStateDir, StateStore } from "./state.ts";
-import { isProvider, PROVIDERS, type GatewayClientRecord, type Provider } from "./types.ts";
+import { isProvider, providerDisabledMessage, PROVIDERS, type GatewayClientRecord, type Provider } from "./types.ts";
 
 const USAGE = `usage: aar [--state DIR] <command>
 
@@ -276,6 +276,7 @@ async function main(argv: string[]): Promise<void> {
         await administer("accounts/add", { id: arg, provider: values.provider, home, ...(credentialStore ? { credentialStore } : {}), ...(values.helper ? { helper: values.helper } : {}) });
         const account = store.loadAccounts().find(a => a.id === arg)!;
         process.stdout.write(`added ${account.provider} account ${account.id}\nprofile home: ${home}\n\nSign in with the official CLI:\n  ${loginCommand(account)}\n`);
+        if (!store.providerEnabled(account.provider)) process.stdout.write(`\n${providerDisabledMessage(account.provider)}.\n`);
         return;
       }
       if (sub === "list") {
@@ -300,7 +301,9 @@ async function main(argv: string[]): Promise<void> {
         const selected = arg ? [accounts.find((account) => account.id === arg) ?? fail(`unknown account ${arg}`)] : accounts;
         store.init();
         const snapshots = [];
-        for (const account of selected) snapshots.push(await fetchAccountQuotas(account, store.workDir, { limitResets: store.loadSettings().limitResets === true }));
+        for (const account of selected) snapshots.push(await fetchAccountQuotas(account, store.workDir, { limitResets: store.loadSettings().limitResets === true,
+          // Reread from disk at each check: the router's owner may change it while accounts are read.
+          providerDisabled: () => store.providerEnabled(account.provider, true) ? undefined : providerDisabledMessage(account.provider) }));
         process.stdout.write(JSON.stringify(snapshots, null, 2) + "\n");
         if (snapshots.some((snapshot) => snapshot.status !== "ok")) process.exitCode = 2;
         return;
