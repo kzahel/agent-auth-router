@@ -1,11 +1,16 @@
 # Agent Auth Router
 
-A local gateway that lets Claude Code, Codex and
-[Yep Anywhere](https://github.com/kzahel/yepanywhere) share a pool of Claude
-and ChatGPT subscription accounts. Clients authenticate to the router with
-revocable gateway tokens; the router picks an account with remaining quota and
-authenticates upstream with that account's current credential. The official
-CLIs keep ownership of sign-in, credential storage and refresh.
+Agent Auth Router makes metered Claude and ChatGPT subscriptions easier to use
+across machines. Claude Code, Codex and
+[Yep Anywhere](https://github.com/kzahel/yepanywhere) can share account pools.
+AAR shows usage and reset windows, picks an account according to the pool's
+routing policy, and keeps each session pinned to its selected account.
+
+Clients access AAR with revocable gateway tokens. The selected subscription
+login supplies the upstream credential, and the official CLI owns sign-in,
+credential storage and refresh. Provider API-key accounts and pay-as-you-go
+API routing are outside the current scope. The dashboard shows what equivalent
+usage would cost at published API prices. See [API-rate estimates](docs/pricing.md).
 
 **Platforms:** the desktop app is macOS only for now (13.5 or newer, Apple
 Silicon and Intel). It is a Tauri app, and Windows and Linux builds are
@@ -178,7 +183,7 @@ service with its state on a volume. See [Running the router in Docker](docs/dock
 - [Event log for later analysis](docs/events.md)
 - [Architecture and security boundaries](docs/architecture.md)
 - [Credential lifecycle](docs/auth-lifecycle.md)
-- [Experimental Antigravity subscription routing](docs/antigravity.md)
+- [Antigravity experiment](docs/antigravity.md), outside current product scope
 - [Prototype history and observations](docs/prototype.md)
 - [Source repositories and evidence](docs/sources.md)
 - [Running the router in Docker](docs/docker.md)

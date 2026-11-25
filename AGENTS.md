@@ -1,15 +1,25 @@
 # Repository instructions
 
-This repository contains an early headless Node/TypeScript prototype, synthetic
-tests and limited authorized live observations. Read README.md,
-docs/prototype.md and the relevant docs before changing its direction. Keep
-implemented behavior, proposals, source observations and verified product
-behavior distinct; successful proxy requests do not prove credential renewal.
+## Product scope
 
-The cross-repository integration plan is Yep Anywhere tactical 143,
-`docs/tactical/143-agent-auth-router-integration.md` in the Yep Anywhere
-repository. Read it before implementing control/pairing, account pools,
-balancing or YA integration. Those features are planned, not implemented here.
+AAR makes metered Claude and ChatGPT subscription accounts easier to use
+across machines. Its core features are quota and reset visibility, account
+pools, session pinning and access grants. Keep upstream enrollment and routing
+focused on subscription logins. Provider API-key accounts, pay-as-you-go API
+routing and further Antigravity integration are outside the current scope.
+AAR-issued gateway tokens authorize clients to use the router.
+
+## Development
+
+Read [README.md](README.md), [docs/prototype.md](docs/prototype.md) and the
+relevant topic docs before changing direction. Keep implemented behavior,
+proposals, source observations and verified product behavior distinct.
+Successful proxy requests do not prove credential renewal.
+
+For control, pairing, account pools, balancing or YA integration, read
+[docs/control.md](docs/control.md), [docs/pools.md](docs/pools.md) and the
+cross-repository design in Yep Anywhere's
+`docs/tactical/143-agent-auth-router-integration.md`.
 
 - Keep the core headless and independent of any desktop shell.
 - Prefer a small Node.js/TypeScript implementation and narrow dependencies.
