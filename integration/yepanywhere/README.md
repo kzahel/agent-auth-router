@@ -104,11 +104,12 @@ Each provider exercises:
   is not covered.
 - Antigravity: a routed session starts the `agy` peer against YA's loopback
   bridge, and its turn completes through AAR's `/antigravity` route with only
-  the enrolled login sent upstream. The binding describes no transport.
-  Nothing shaped like the binding token is in the peer's arguments,
-  environment or profile login. After disconnect the router rejects the
-  binding token and the live session's next request is refused before
-  upstream.
+  the enrolled login sent upstream. The binding describes the `/antigravity`
+  route, which the pinned YA ignores: it still assembles that path itself.
+  The binding token is in none of the peer's arguments, environment or
+  profile login, which hold YA's local stand-in. After disconnect the router
+  rejects the binding token and the live session's next request is refused
+  before upstream.
 - Provider credential substitution only at AAR, private YA storage permissions,
   no credentials in logs, transcripts, public responses or metadata, and unchanged AAR credential
   fixtures with no auth files copied into YA's native homes.

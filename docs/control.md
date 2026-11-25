@@ -69,7 +69,7 @@ the current behavior.
 ## Binding transport
 
 `binding-transport-v1` advertises an additive `transport` on `prepare`,
-`pools/prepare`, `commit` and `inspect` responses for Claude and Codex
+`pools/prepare`, `commit` and `inspect` responses for every provider's
 bindings. It tells the integration how its native client reaches inference, so
 the integration does not assemble router URLs from the provider name. The type
 is `BindingTransport` in `src/contract.ts`. A committed Codex binding returns:
@@ -95,9 +95,20 @@ prepare, and a prepared binding still cannot infer. A repeated commit or an
 inspect returns the same description, which recovers a lost commit reply.
 Cancelled bindings describe no transport.
 
-Antigravity bindings carry no `transport`. `agy` cannot authenticate to the
-router, so an integration reaches the `/antigravity` route through its own
-loopback bridge ([Antigravity](antigravity.md)).
+An Antigravity binding describes `/antigravity` with `bearer` and no catalog
+path. The description says how a request to the route presents the token,
+not what `agy` can be given: `agy` sends its stored login to Google as well as
+to the endpoint it is pointed at, so an integration keeps the binding token in
+a loopback listener of its own and gives `agy` a local stand-in
+([Antigravity](antigravity.md)). That listener needs no list of Cloud Code
+calls. It must resolve each request target to a path below the described
+route on the inference origin, and may then forward it: the router refuses a
+path outside the provider's registered routes with 404, and another method on
+a registered path with 405, before it checks the token. The router resolves
+dot segments before matching, so a target that climbs out of `/antigravity`
+names another provider's route, where an Antigravity token gets 403. Until
+2026-11-25 these bindings carried no `transport`, and an integration that
+expects none ignores the field.
 
 Integrations without this capability keep building `inferenceOrigin` plus the
 provider name, and those paths are unchanged. A later transport kind will be

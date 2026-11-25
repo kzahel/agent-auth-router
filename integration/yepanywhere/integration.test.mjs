@@ -1218,8 +1218,9 @@ for (const provider of ["codex", "claude"]) {
   });
 }
 
-// Antigravity bindings describe no transport: `agy` cannot authenticate to the
-// router, so YA starts it against a loopback bridge that holds the binding token.
+// `agy` must not hold the binding token, so YA starts it against a loopback
+// bridge that does. The pinned YA predates the router describing this route
+// and ignores the description.
 test("antigravity: YA's loopback bridge carries agy through a routed binding until disconnect", { timeout: 120_000 }, async (t) => {
   const f = await fixture(t, "antigravity");
   const relay = await f.controlRelay();
@@ -1233,7 +1234,8 @@ test("antigravity: YA's loopback bridge carries agy through a routed binding unt
   assert.deepEqual(sent.map((r) => [r.url, r.authorization]), [["/v1internal:streamGenerateContent?alt=sse", "Bearer synthetic-antigravity-selected-access"]],
     "Only AAR substitutes the enrolled login");
   const committed = relay.replies.findLast((r) => r.path === "/v1/bindings/commit").value;
-  assert.deepEqual([committed.provider, committed.state, "transport" in committed], ["antigravity", "committed", false]);
+  assert.deepEqual([committed.provider, committed.state, committed.transport],
+    ["antigravity", "committed", { kind: "http-gateway-v1", basePath: "/antigravity", authMethods: ["bearer"] }]);
   const allocation = Object.values(f.privateState().allocations)[0];
   assert.match(allocation.token, /^aar_[A-Za-z0-9_-]{43}$/);
   assert.equal(f.controlState().bindings[0].tokenHash, hash(allocation.token));

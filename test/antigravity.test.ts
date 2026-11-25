@@ -58,6 +58,13 @@ test("the Antigravity bridge streams through AAR with only the enrolled access t
   const refused = await post(`${bridge.endpoint}/v1internal:writeTrajectoryAcls`, `Bearer ${marker}`);
   assert.equal(refused.status, 404);
   await refused.text();
+  // The router's own route table answers before it reads a token. An integration that forwards unfiltered relies on this.
+  const bare = async (method: string, rpc: string) => {
+    const response = await fetch(`${router.origin}/antigravity/v1internal:${rpc}`, { method });
+    await response.text();
+    return response.status;
+  };
+  assert.deepEqual([await bare("POST", "writeTrajectoryAcls"), await bare("GET", "streamGenerateContent"), await bare("POST", "streamGenerateContent")], [404, 405, 401]);
   assert.equal(upstream.requests.length, 0);
 
   const response = await post(`${bridge.endpoint}${path}`, `Bearer ${marker}`);
@@ -253,11 +260,11 @@ test("Antigravity control: catalog, quotas, pools, selection, bindings and revoc
   const committed = await controlRequest(sock, "/v1/bindings/commit", "POST", ctlToken, { id: bindingId });
   assert.equal(committed.status, 200);
   assert.equal(committed.body.state, "committed");
-  // `agy` cannot authenticate to the router, so no direct transport is described.
-  assert.equal(prepared.body.transport, undefined);
-  assert.equal(committed.body.transport, undefined);
+  // The route is described like any other. Its Cloud Code RPCs are the adapter's, so there is no catalog path.
+  const transport = { kind: "http-gateway-v1", basePath: "/antigravity", authMethods: ["bearer"] };
+  assert.deepEqual([prepared.body.transport, committed.body.transport], [transport, transport]);
 
-  const streamRes = await fetch(`${router.origin}/antigravity/v1internal:streamGenerateContent?alt=sse`, {
+  const streamRes = await fetch(`${router.origin}${transport.basePath}/v1internal:streamGenerateContent?alt=sse`, {
     method: "POST",
     headers: { authorization: `Bearer ${bindingToken}`, "content-type": "application/json" },
     body: "{}",

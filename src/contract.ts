@@ -43,6 +43,9 @@ export interface AccountCatalog {
  * Paths are rooted at the inference origin from `/v1/info` and begin with
  * the binding's provider, the only paths a hosted origin sends to inference.
  * It carries no credential: the client presents the binding token it registered at prepare.
+ * It describes the router's route, not the native program: an integration
+ * keeps the token from a program that would send it elsewhere (`agy`) by
+ * fronting the route with its own loopback listener.
  * `aar-gateway-header` is `x-aar-gateway-token`, for a client whose
  * `Authorization` must stay its own provider sign-in. A later kind is offered
  * only to a client that asks for it, so `kind` here never changes meaning.

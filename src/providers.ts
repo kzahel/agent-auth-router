@@ -92,22 +92,22 @@ const antigravity: ProviderAdapter = {
 export const ADAPTERS: Record<Provider, ProviderAdapter> = { claude, codex, antigravity };
 
 /**
- * Providers whose native client connects to the router itself, and how it may
- * present the binding token. Antigravity has none: `agy` cannot authenticate
- * to the router, so its integrations run their own loopback bridge.
+ * How a request on each provider's route may present the binding token.
+ * Antigravity's route takes a bearer like the others, but `agy` cannot be
+ * handed the token: it also sends its stored login to Google. An integration
+ * fronts that route with a loopback listener that holds the token.
  */
-const TRANSPORT_AUTH: Partial<Record<Provider, BindingTransport["authMethods"]>> = {
+const TRANSPORT_AUTH: Record<Provider, BindingTransport["authMethods"]> = {
   claude: ["bearer", "aar-gateway-header"],
   codex: ["bearer"],
+  antigravity: ["bearer"],
 };
 
 /** The transport a binding for this provider advertises, built from its registered routes. */
-export function bindingTransport(provider: Provider): BindingTransport | undefined {
-  const authMethods = TRANSPORT_AUTH[provider];
-  if (!authMethods) return undefined;
+export function bindingTransport(provider: Provider): BindingTransport {
   const basePath = `/${provider}`;
   const catalog = ADAPTERS[provider].routes.find((route) => route.method === "GET" && route.path.endsWith("/models"));
-  return { kind: "http-gateway-v1", basePath, authMethods: [...authMethods], ...(catalog ? { modelCatalogPath: basePath + catalog.path } : {}) };
+  return { kind: "http-gateway-v1", basePath, authMethods: [...TRANSPORT_AUTH[provider]], ...(catalog ? { modelCatalogPath: basePath + catalog.path } : {}) };
 }
 
 /** Response headers never relayed to clients. */
