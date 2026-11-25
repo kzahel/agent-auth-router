@@ -51,7 +51,7 @@ export function loginCommand(account: AccountConfig): string {
   if (account.provider === "codex") {
     return `env -u OPENAI_BASE_URL -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME=${home} codex login`;
   }
-  if (account.provider === "antigravity") return `env -i PATH="$PATH" HOME=${home} SSH_CONNECTION='127.0.0.1 0 127.0.0.1 0' AGY_CLI_DISABLE_AUTO_UPDATE=1 agy acp --login`;
+  if (account.provider === "antigravity") return `env -i PATH="$PATH" HOME=${home} AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 SSH_CONNECTION='127.0.0.1 0 127.0.0.1 0' AGY_CLI_DISABLE_AUTO_UPDATE=1 agy acp --login`;
   if (account.credentialStore === "claude-keychain-default") return `env -i PATH="$PATH" HOME=${quote(dirname(account.home))} USER=${quote(userInfo().username)} claude auth login --claudeai`;
   return `env -i PATH="$PATH" HOME="$HOME" USER=${quote(userInfo().username)} CLAUDE_CONFIG_DIR=${home} claude auth login --claudeai`;
 }

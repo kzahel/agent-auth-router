@@ -194,6 +194,8 @@ describe("codex app-server helper", () => {
       AAR_TOKEN: "aar_y",
     });
     assert.deepEqual(env, { PATH: "/bin", HOME: "/home/u", CODEX_HOME: "/profiles/x" });
+    // agy 1.5.16 and later on macOS use the user's Keychain login without it.
+    assert.equal(helperEnv("antigravity", "/profiles/a", { PATH: "/bin" }).AGY_CLI_FORCE_FILE_TOKEN_STORAGE, "1");
 
     captureLogs();
     const account = codexAccount("codex-env", "renew");

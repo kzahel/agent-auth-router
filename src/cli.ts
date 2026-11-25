@@ -229,7 +229,8 @@ async function main(argv: string[]): Promise<void> {
       const { startAntigravityBridge } = await import("./antigravity-client.ts");
       const home = resolve(values.home);
       const bridge = await startAntigravityBridge({ gateway: values.gateway, home, tokenFile: resolve(values["token-file"]), port: values.port === undefined ? 0 : Number(values.port) });
-      process.stdout.write(`CLOUD_CODE_URL=${bridge.endpoint}\nGEMINI_HOME=${home}\n`);
+      // The last two make agy read the bridge's marker from the profile's file.
+      process.stdout.write(`CLOUD_CODE_URL=${bridge.endpoint}\nGEMINI_HOME=${home}\nAGY_CLI_FORCE_FILE_TOKEN_STORAGE=1\nSSH_CONNECTION='127.0.0.1 0 127.0.0.1 0'\n`);
       const close = () => { void bridge.close().catch(() => { process.exitCode = 1; }); };
       process.once("SIGINT", close);
       process.once("SIGTERM", close);

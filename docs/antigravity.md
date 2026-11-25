@@ -25,16 +25,31 @@ before checking the token, and the session went on. This run did not exercise
 renewal of an expired login, a pool, a hosted origin or the standalone
 bridge.
 
-Later the same day a resume of that session failed. Its launch logged `agy`
-language server version 1.5.17. Yep Anywhere's proxy rejected the first call
-with 401 before forwarding it, and nothing reached this router. In a
-separate probe, `agy models` 1.5.17 was pointed at a loopback listener from
-a new profile holding only a stand-in token file: none of its 11 requests
-carried the stand-in, and they carried five distinct values beginning with
-`ya29.`. Where those came from is not known. The standalone bridge supplies
-the same kind of stand-in and has not been tried with 1.5.17. Yep Anywhere
-tracks this as the gap `agy-1-5-17-ignores-routed-profile-login`. The
-statements above about 1.5.14 are not verified for 1.5.17.
+Later the same day `agy` updated itself to 1.5.17 and a resume of that
+session failed. Yep Anywhere's proxy rejected the first call with 401 before
+forwarding it, and nothing reached this router.
+
+The cause was where `agy` keeps its login. A stand-in or enrolled login in a
+profile's token file is read only when `agy` uses file-based storage.
+Setting `SSH_CONNECTION` selected that through 1.5.14. The notes for 1.5.16
+in the binary say an SSH session on macOS now uses the login Keychain when
+it is unlocked, and that Keychain login is one per macOS user whatever
+profile directory is named. `agy` 1.5.17 therefore presented the user's own
+Google login and deleted the stand-in file. Setting
+`AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1` restores file storage on 1.5.17; the
+release notes do not mention the variable. Yep Anywhere sets it for routed
+sessions from its commit `03498fa76`, and with it a new routed session and a
+resume of the earlier one answered through this router with `agy` 1.5.17.
+
+This router's own enrolled profile kept working: its helper runs `agy` with
+`HOME` set to the profile, and a renewal with 1.5.17 logged "Using
+file-based token storage because SSH session detected". The helper, the
+printed login command and the bridge's printed environment now set the
+variable as well, so they do not depend on the Keychain being unreachable.
+A renewal after that change logged "Using file-based token storage because
+AGY_CLI_FORCE_FILE_TOKEN_STORAGE is set" and replaced the expired login in
+the profile's file. The login command and the standalone bridge have not
+been tried with 1.5.17.
 
 ## Turning it on
 
@@ -89,8 +104,10 @@ standalone steps below. A standalone host needs a client token instead:
 aar client add devbox --antigravity google
 ```
 
-The printed `agy acp --login` command uses a dedicated home directory and the
-CLI's SSH sign-in path to isolate its token file from the OS keyring. `aar
+The printed `agy acp --login` command uses a dedicated home directory, asks
+for file-based token storage with `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1`, and
+uses the CLI's SSH sign-in path, to keep its token file apart from the OS
+keyring. `aar
 account list` reports whether the store is readable. AAR reads the access token
 on demand and runs `agy models` without a prompt when it expires, then checks
 whether the official CLI persisted a replacement. Use a fresh client grant
@@ -115,8 +132,14 @@ with Antigravity Cloud Code endpoint support passes the profile explicitly to
 ```sh
 export CLOUD_CODE_URL=http://127.0.0.1:8421
 export GEMINI_HOME="$HOME/.aar-antigravity"
+export AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1
 export SSH_CONNECTION='127.0.0.1 0 127.0.0.1 0'
 ```
+
+The last two make `agy` read the bridge's marker from the profile's file,
+and the bridge prints all four. Without `AGY_CLI_FORCE_FILE_TOKEN_STORAGE`,
+`agy` 1.5.16 and later on macOS read the user's own login from the Keychain
+when it is unlocked, and the bridge refuses it.
 
 Select Antigravity normally. The bridge stays running alongside Yep Anywhere.
 Use an `agy` executable on the server's `PATH` or set `ANTIGRAVITY_ACP_PATH`

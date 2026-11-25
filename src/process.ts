@@ -144,6 +144,10 @@ export function helperEnv(provider: Provider, home: string, source: NodeJS.Proce
   else {
     env.HOME = home;
     env.GEMINI_HOME = join(home, ".gemini");
+    // agy must keep this login in the profile's file and away from the OS
+    // credential store, which is one per user. The variable asks for that;
+    // SSH_CONNECTION is for releases that chose it only for an SSH session.
+    env.AGY_CLI_FORCE_FILE_TOKEN_STORAGE = "1";
     env.SSH_CONNECTION = source.SSH_CONNECTION || "127.0.0.1 0 127.0.0.1 0";
     env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
   }
