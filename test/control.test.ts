@@ -46,8 +46,11 @@ test("manual bindings: lost responses, isolation, persistence and terminal revoc
   assert.equal(registry.clients().length, 0, "prepared credentials cannot infer");
   assert.throws(() => registry.prepare(integration, { ...allocation, model: "other" }), /conflicts/);
   assert.throws(() => registry.transition(registry.authenticate(`Bearer ${other}`), allocation.id, "inspect"), /not found/);
-  registry.transition(integration, allocation.id, "commit");
+  const committed = registry.transition(integration, allocation.id, "commit");
   registry = new ControlRegistry(store);
+  // A binding committed before a restart or an upgrade describes its transport on its next lookup.
+  assert.deepEqual(registry.transition(registry.authenticate(`Bearer ${token}`), allocation.id, "inspect"), { ...committed, state: "committed" });
+  assert.equal((committed as any).transport.basePath, "/claude");
   assert.equal(registry.clients()[0]?.tokenSha256, hashGatewayToken(gateway));
   assert.equal(registry.clients()[0]?.accounts.claude, "fixture");
   assert.throws(() => registry.authenticate(`Bearer ${gateway}`), /required/);
@@ -84,12 +87,34 @@ test("private control socket routes catalogs before allocation and revokes infer
   const gateway = generateGatewayToken();
   const allocation = { id: randomUUID(), accountId: "fixture", provider: "claude", model: "synthetic-model", tokenHash: hashGatewayToken(gateway) };
   assert.equal((await request(socket, "/v1/bindings/prepare", token, { ...allocation, model: "absent" })).status, 409);
-  assert.equal((await request(socket, "/v1/bindings/prepare", token, allocation)).status, 200);
-  const infer = (credential: string) => fetch(router.origin + "/claude/v1/messages", { method: "POST", headers: { authorization: `Bearer ${credential}` }, body: "{}" });
+  // From here the client reaches inference only through what the binding describes.
+  assert.ok(info.value.capabilities.includes("binding-transport-v1"));
+  const prepared = await request(socket, "/v1/bindings/prepare", token, allocation);
+  assert.equal(prepared.status, 200);
+  const transport = prepared.value.transport;
+  assert.deepEqual(transport, { kind: "http-gateway-v1", basePath: "/claude", authMethods: ["bearer", "aar-gateway-header"], modelCatalogPath: "/claude/v1/models" });
+  assert.equal(JSON.stringify(prepared.value).includes(gateway), false);
+  const base = info.value.inferenceOrigin + transport.basePath;
+  const infer = (credential: string) => fetch(base + "/v1/messages", { method: "POST", headers: { authorization: `Bearer ${credential}` }, body: "{}" });
   assert.equal((await infer(gateway)).status, 401);
   assert.equal((await infer(token)).status, 401);
-  assert.equal((await request(socket, "/v1/bindings/commit", token, { id: allocation.id })).status, 200);
+  const committed = await request(socket, "/v1/bindings/commit", token, { id: allocation.id });
+  assert.equal(committed.value.state, "committed");
+  // A client that lost the commit reply recovers the same description either way.
+  for (const again of ["commit", "inspect"]) assert.deepEqual((await request(socket, `/v1/bindings/${again}`, token, { id: allocation.id })).value, committed.value);
+  assert.deepEqual(committed.value.transport, transport);
   assert.equal((await infer(gateway)).status, 200);
+  const viaHeader = await fetch(base + "/v1/messages", { method: "POST", headers: { authorization: "Bearer this-computers-own-login", "x-aar-gateway-token": gateway }, body: "{}" });
+  assert.equal(viaHeader.status, 200);
+  assert.equal(upstream.requests.at(-1)?.headers.authorization, "Bearer synthetic-provider-secret");
+  assert.equal((await fetch(info.value.inferenceOrigin + transport.modelCatalogPath, { headers: { authorization: `Bearer ${gateway}` } })).status, 200);
+  assert.equal(upstream.requests.at(-1)?.url, "/v1/models");
+  const abandoned = { ...allocation, id: randomUUID(), tokenHash: hashGatewayToken(generateGatewayToken()) };
+  assert.deepEqual((await request(socket, "/v1/bindings/prepare", token, abandoned)).value.transport, transport);
+  for (const after of ["cancel", "inspect"]) {
+    const cancelled = await request(socket, `/v1/bindings/${after}`, token, { id: abandoned.id });
+    assert.deepEqual([cancelled.status, cancelled.value.state, cancelled.value.transport], [200, "cancelled", undefined]);
+  }
   assert.equal((await request(socket, "/v1/disconnect", token, {})).status, 200);
   assert.equal((await infer(gateway)).status, 401);
   await router.close(); assert.equal(existsSync(socket), false);
@@ -114,6 +139,14 @@ test("the Codex control catalog requests models for a current client", { skip: p
   const catalog = await request(socket, "/v1/catalog", token, { accountId: "fixture" });
   assert.equal(catalog.status, 200);
   assert.deepEqual(catalog.value.models, [{ id: "gpt-6.2-sol", name: "GPT-6.2 Sol" }]);
+  // Codex is told where its model catalog is, and that path serves this binding.
+  const gateway = generateGatewayToken(), binding = randomUUID();
+  await request(socket, "/v1/bindings/prepare", token, { id: binding, accountId: "fixture", provider: "codex", model: "gpt-6.2-sol", tokenHash: hashGatewayToken(gateway) });
+  const { transport } = (await request(socket, "/v1/bindings/commit", token, { id: binding })).value;
+  assert.deepEqual(transport, { kind: "http-gateway-v1", basePath: "/codex", authMethods: ["bearer"], modelCatalogPath: "/codex/models" });
+  const listed = await fetch(router.origin + transport.modelCatalogPath + "?client_version=0.169.0", { headers: { authorization: `Bearer ${gateway}` } });
+  assert.equal(listed.status, 200);
+  assert.equal(upstream.requests.at(-1)?.url, "/backend-api/codex/models?client_version=0.169.0");
 });
 
 test("a lapsed login is a specific refusal naming the account and its deadline", { skip: process.platform === "win32" }, async () => {

@@ -4,6 +4,7 @@
 // compatibility is not yet verified.
 
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
+import type { BindingTransport } from "./contract.ts";
 import type { Provider, UpstreamCredential } from "./types.ts";
 
 export interface Route {
@@ -89,6 +90,25 @@ const antigravity: ProviderAdapter = {
 };
 
 export const ADAPTERS: Record<Provider, ProviderAdapter> = { claude, codex, antigravity };
+
+/**
+ * Providers whose native client connects to the router itself, and how it may
+ * present the binding token. Antigravity has none: `agy` cannot authenticate
+ * to the router, so its integrations run their own loopback bridge.
+ */
+const TRANSPORT_AUTH: Partial<Record<Provider, BindingTransport["authMethods"]>> = {
+  claude: ["bearer", "aar-gateway-header"],
+  codex: ["bearer"],
+};
+
+/** The transport a binding for this provider advertises, built from its registered routes. */
+export function bindingTransport(provider: Provider): BindingTransport | undefined {
+  const authMethods = TRANSPORT_AUTH[provider];
+  if (!authMethods) return undefined;
+  const basePath = `/${provider}`;
+  const catalog = ADAPTERS[provider].routes.find((route) => route.method === "GET" && route.path.endsWith("/models"));
+  return { kind: "http-gateway-v1", basePath, authMethods: [...authMethods], ...(catalog ? { modelCatalogPath: basePath + catalog.path } : {}) };
+}
 
 /** Response headers never relayed to clients. */
 const RESPONSE_HEADER_DENYLIST = new Set([

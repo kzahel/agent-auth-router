@@ -81,7 +81,7 @@ test("public listener: exact host, integration control only, and no owner admini
   const info = await send(port, "/control/v1/info");
   assert.equal(info.status, 200);
   assert.equal(info.value.inferenceOrigin, ORIGIN);
-  assert.ok(info.value.capabilities.includes("remote-pairing-v1"));
+  for (const capability of ["remote-pairing-v1", "binding-transport-v1"]) assert.ok(info.value.capabilities.includes(capability));
   assert.equal(info.value.routerId, (await ownerRequest(store, "overview", {})).routerId);
   // The socket keeps reporting loopback and no remote pairing.
   const local = await new Promise<any>((resolve, reject) => {
@@ -141,10 +141,16 @@ test("device pairing: pending until the owner types the code, then full control 
   const gateway = generateGatewayToken(), binding = randomUUID();
   const prepared = await send(port, "/control/v1/pools/prepare", { headers: bearer(token), body: { id: binding, poolId, accountId: "work", provider: "claude", model: "synthetic-model", tokenHash: hashGatewayToken(gateway) } });
   assert.equal(prepared.status, 200, prepared.text);
-  assert.equal((await send(port, "/control/v1/bindings/commit", { headers: bearer(token), body: { id: binding } })).status, 200);
-  const infer = (credential: string) => send(port, "/claude/v1/messages", { headers: bearer(credential), body: {} });
+  const committed = await send(port, "/control/v1/bindings/commit", { headers: bearer(token), body: { id: binding } });
+  assert.equal(committed.status, 200);
+  // The hosted origin describes the same paths as the local socket, on its own port.
+  assert.deepEqual(committed.value.transport, { kind: "http-gateway-v1", basePath: "/claude", authMethods: ["bearer", "aar-gateway-header"], modelCatalogPath: "/claude/v1/models" });
+  assert.deepEqual(prepared.value.transport, committed.value.transport);
+  const infer = (credential: string) => send(port, committed.value.transport.basePath + "/v1/messages", { headers: bearer(credential), body: {} });
   assert.equal((await infer(gateway)).status, 200);
   assert.equal(upstream.requests.at(-1)?.headers.authorization, "Bearer synthetic-provider-secret");
+  assert.equal((await send(port, committed.value.transport.modelCatalogPath, { headers: { ...bearer("this-computers-own-login"), "x-aar-gateway-token": gateway } })).status, 200);
+  assert.deepEqual([upstream.requests.at(-1)?.url, upstream.requests.at(-1)?.headers.authorization], ["/v1/models", "Bearer synthetic-provider-secret"]);
   assert.equal((await infer(token)).status, 401, "control credentials never infer");
   // Revocation from the owner reaches the public paths.
   await ownerRequest(store, "integrations/revoke", { id });

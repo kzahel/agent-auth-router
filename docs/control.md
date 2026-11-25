@@ -66,6 +66,45 @@ replaces integration-owned pools and restart/re-pair enrollment as the target
 architecture. That correction is not implemented yet; this document describes
 the current behavior.
 
+## Binding transport
+
+`binding-transport-v1` advertises an additive `transport` on `prepare`,
+`pools/prepare`, `commit` and `inspect` responses for Claude and Codex
+bindings. It tells the integration how its native client reaches inference, so
+the integration does not assemble router URLs from the provider name. The type
+is `BindingTransport` in `src/contract.ts`. A committed Codex binding returns:
+
+```json
+{
+  "kind": "http-gateway-v1",
+  "basePath": "/codex",
+  "authMethods": ["bearer"],
+  "modelCatalogPath": "/codex/models"
+}
+```
+
+Paths are rooted at the `inferenceOrigin` from `/v1/info`, so the same
+description serves the loopback listener and a hosted origin. Claude also
+offers `aar-gateway-header`, the `x-aar-gateway-token` header for a client
+whose `Authorization` stays its own sign-in. The description holds no
+credential. The client presents the binding token whose hash it registered at
+prepare, and a prepared binding still cannot infer. A repeated commit or an
+inspect returns the same description, which recovers a lost commit reply.
+Cancelled bindings describe no transport.
+
+Antigravity bindings carry no `transport`. `agy` cannot authenticate to the
+router, so an integration reaches the `/antigravity` route through its own
+loopback bridge ([Antigravity](antigravity.md)).
+
+Integrations without this capability keep building `inferenceOrigin` plus the
+provider name, and those paths are unchanged. A later transport kind will be
+offered only to an integration that names it in its prepare request, so one
+that names none keeps receiving `http-gateway-v1`.
+
+The control and hosted tests act as the integration: they reach inference and
+the model catalog only through the returned paths, with both auth methods.
+No Yep Anywhere release consumes this field yet.
+
 ## Yep Anywhere manual integration
 
 The repeatable [cross-repository integration suite](../integration/yepanywhere/README.md)

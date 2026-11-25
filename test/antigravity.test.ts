@@ -253,6 +253,9 @@ test("Antigravity control: catalog, quotas, pools, selection, bindings and revoc
   const committed = await controlRequest(sock, "/v1/bindings/commit", "POST", ctlToken, { id: bindingId });
   assert.equal(committed.status, 200);
   assert.equal(committed.body.state, "committed");
+  // `agy` cannot authenticate to the router, so no direct transport is described.
+  assert.equal(prepared.body.transport, undefined);
+  assert.equal(committed.body.transport, undefined);
 
   const streamRes = await fetch(`${router.origin}/antigravity/v1internal:streamGenerateContent?alt=sse`, {
     method: "POST",

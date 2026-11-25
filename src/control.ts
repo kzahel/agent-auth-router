@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { hashGatewayToken } from "./gateway-auth.ts";
 import { clientAddress } from "./public.ts";
 import { accountHelper } from "./helpers.ts";
-import { ADAPTERS, parseUpstreamOrigin } from "./providers.ts";
+import { ADAPTERS, bindingTransport, parseUpstreamOrigin } from "./providers.ts";
 import { readAntigravityCatalog } from "./antigravity-cloudcode.ts";
 import { fetchAccountQuotas, readAccountQuotas, remainingCapacityUnits, type QuotaReadOptions, type QuotaSnapshot } from "./quotas.ts";
 import { PoolEvidence, burnWithCeiling, eligibility, withCeiling, windowScope, QUOTA_FRESH_MS, POOL_POLICIES, POLICY_LIST, isPoolPolicy, policyVersion, rankCandidates, selectionEvidence, selectionReason, type SelectionEvidence, type Pool, type PoolPolicy } from "./pools.ts";
@@ -583,7 +583,9 @@ export class ControlRegistry {
     return this.state.bindings.find((b) => b.id === id && b.integrationId === integration.id) ?? reject(404, "binding not found");
   }
   metadata(b: Binding): object {
-    return { id: b.id, accountId: b.accountId, provider: b.provider, model: b.model, state: b.state, policy: b.policy ?? "manual", ...(b.poolId ? { poolId: b.poolId, policyVersion: b.policyVersion ?? 1, ...(b.selectionEvidence ? { selectionEvidence: b.selectionEvidence } : {}), reason: b.reason, observedAt: b.observedAt } : {}), routerId: this.routerId };
+    // A cancelled binding cannot infer, so it describes no transport.
+    const transport = b.state === "cancelled" ? undefined : bindingTransport(b.provider);
+    return { ...(transport ? { transport } : {}), id: b.id, accountId: b.accountId, provider: b.provider, model: b.model, state: b.state, policy: b.policy ?? "manual", ...(b.poolId ? { poolId: b.poolId, policyVersion: b.policyVersion ?? 1, ...(b.selectionEvidence ? { selectionEvidence: b.selectionEvidence } : {}), reason: b.reason, observedAt: b.observedAt } : {}), routerId: this.routerId };
   }
   transition(integration: Integration, id: string, action: "commit" | "cancel" | "inspect", evidence?: PoolEvidence): object {
     if (action === "cancel" && !this.state.bindings.some(b => b.id === id && b.integrationId === integration.id)) {
@@ -709,7 +711,7 @@ export async function startControl(store: StateStore, origin: string, coordinato
   let active = 0, publicActive = 0;
   let stopping = false;
   let closing: Promise<void> | undefined;
-  const capabilities = ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1", "service-tiers-v1", "gateway-token-header-v1", "antigravity-control-v1"];
+  const capabilities = ["manual-bindings", "account-catalogs", "account-quotas", "pools-v1", "router-owned-pools-v1", "most-remaining-v1", "weekly-pace-v1", "admission-refresh-v1", "quota-inference-headers-v1", "catalog-cli-models-v1", "service-tiers-v1", "gateway-token-header-v1", "antigravity-control-v1", "binding-transport-v1"];
   /**
    * One handler for both transports. The owner-only socket also carries owner
    * administration and trusted pairing; the public listener (behind a TLS
