@@ -52,9 +52,13 @@ const configOptions = [
     options: [{ value: "synthetic-model", name: "Synthetic" }],
   },
 ];
+// A prompt of `rpc <path>` calls that path instead, as a later agy might,
+// and answers with the reply body as it came.
 async function prompt(id, text) {
+  const stream = "/v1internal:streamGenerateContent?alt=sse";
+  const path = text.startsWith("rpc ") ? text.slice(4) : stream;
   const response = await fetch(
-    `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
+    `${endpoint}${path}`,
     {
       method: "POST",
       headers: {
@@ -65,9 +69,11 @@ async function prompt(id, text) {
     },
   );
   const body = await response.text();
-  const answer = response.ok
-    ? JSON.parse(body.slice("data: ".length)).text
-    : undefined;
+  const answer = !response.ok
+    ? undefined
+    : path === stream
+      ? JSON.parse(body.slice("data: ".length)).text
+      : body;
   if (response.ok)
     send({
       jsonrpc: "2.0",
@@ -86,6 +92,7 @@ async function prompt(id, text) {
     pid: process.pid,
     status: response.status,
     text: answer,
+    ...(response.ok ? {} : { refusal: body.slice(0, 200) }),
   });
 }
 createInterface({ input: process.stdin }).on("line", (line) => {

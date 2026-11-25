@@ -103,13 +103,13 @@ Each provider exercises:
   token. That commit repeats one already applied; a new session's first commit
   is not covered.
 - Antigravity: a routed session starts the `agy` peer against YA's loopback
-  bridge, and its turn completes through AAR's `/antigravity` route with only
-  the enrolled login sent upstream. The binding describes the `/antigravity`
-  route, which the pinned YA ignores: it still assembles that path itself.
-  The binding token is in none of the peer's arguments, environment or
-  profile login, which hold YA's local stand-in. After disconnect the router
-  rejects the binding token and the live session's next request is refused
-  before upstream.
+  proxy, and its turn completes through a described route that YA could not
+  have assembled, with only the enrolled login sent upstream. The binding
+  token is in none of the peer's arguments, environment or profile login,
+  which hold YA's local stand-in. A call outside AAR's registered routes
+  passes the proxy and is refused by the router with nothing sent upstream.
+  After disconnect the router rejects the binding token and the live
+  session's next request is refused before upstream.
 - Provider credential substitution only at AAR, private YA storage permissions,
   no credentials in logs, transcripts, public responses or metadata, and unchanged AAR credential
   fixtures with no auth files copied into YA's native homes.
@@ -122,7 +122,10 @@ hosted HTTPS origin, and Antigravity pools, resume and transcript reading.
 Only the pinned YA runs. A YA from before the binding transport last ran
 against a router that describes it in
 [CI for `5a5039a`](https://github.com/kzahel/agent-auth-router/actions/runs/45596402671),
-when the pin was still `0b66e24`.
+when the pin was still `0b66e24`. The pin before this one, `f4c106fb1`,
+ignores the description on Antigravity bindings and keeps its own list of
+Cloud Code calls; it passed against the router that describes that route
+when `1f56bb1` was made, in a local run.
 
 ## Update the YA pin
 

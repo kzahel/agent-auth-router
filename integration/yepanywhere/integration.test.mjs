@@ -368,6 +368,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
       fault: undefined,
       requests: [],
       replies: [],
+      forwarded: [],
     };
     const routed = (path) => path.replace(`/${provider}`, `/${provider}${relay.route}`);
     const forwarder = http.createServer((request, response) => {
@@ -377,6 +378,7 @@ async function fixture(t, provider, directGrants = true, enrollSecondLive = fals
         return;
       }
       const target = new URL(`/${provider}${request.url.slice(prefix.length)}`, router.origin);
+      relay.forwarded.push(`${request.method} ${target.pathname}`);
       const forwarded = http.request(target, { method: request.method, headers: { ...request.headers, host: target.host } }, (reply) => {
         response.writeHead(reply.statusCode, reply.headers);
         reply.on("error", () => response.destroy());
@@ -1219,31 +1221,39 @@ for (const provider of ["codex", "claude"]) {
 }
 
 // `agy` must not hold the binding token, so YA starts it against a loopback
-// bridge that does. The pinned YA predates the router describing this route
-// and ignores the description.
-test("antigravity: YA's loopback bridge carries agy through a routed binding until disconnect", { timeout: 120_000 }, async (t) => {
+// proxy that does. The proxy has no list of Cloud Code calls: it forwards
+// below the route the router describes, and the router refuses the rest.
+test("antigravity: YA's loopback proxy carries agy through the described route until disconnect", { timeout: 120_000 }, async (t) => {
   const f = await fixture(t, "antigravity");
   const relay = await f.controlRelay();
+  // Served by a forwarder that answers 404 anywhere else, the usual /antigravity included.
+  relay.route = "/described";
   await f.connect({ socketPath: relay.socket });
   const created = await f.start({ provider: "antigravity", model: "synthetic-model", routerAccountId: "selected", message: "through-the-bridge" });
   assert.ok(created.started, JSON.stringify(created.value));
   const turns = () => f.native().filter((row) => row.event === "turn");
   await eventually(() => turns().length === 1, "agy's first turn ends");
-  assert.deepEqual([turns()[0].status, turns()[0].text], [200, "ROUTER:through-the-bridge"], "The reply comes back through the bridge");
+  assert.deepEqual([turns()[0].status, turns()[0].text], [200, "ROUTER:through-the-bridge"], "The reply comes back through the proxy and the described route");
   const sent = f.upstreamRequests.filter((r) => r.body.includes("through-the-bridge"));
   assert.deepEqual(sent.map((r) => [r.url, r.authorization]), [["/v1internal:streamGenerateContent?alt=sse", "Bearer synthetic-antigravity-selected-access"]],
     "Only AAR substitutes the enrolled login");
   const committed = relay.replies.findLast((r) => r.path === "/v1/bindings/commit").value;
   assert.deepEqual([committed.provider, committed.state, committed.transport],
-    ["antigravity", "committed", { kind: "http-gateway-v1", basePath: "/antigravity", authMethods: ["bearer"] }]);
+    ["antigravity", "committed", { kind: "http-gateway-v1", basePath: "/antigravity/described", authMethods: ["bearer"] }]);
   const allocation = Object.values(f.privateState().allocations)[0];
   assert.match(allocation.token, /^aar_[A-Za-z0-9_-]{43}$/);
   assert.equal(f.controlState().bindings[0].tokenHash, hash(allocation.token));
   const spawn = f.native().find((row) => row.event === "spawn");
   const bridge = new URL(spawn.endpoint);
-  assert.ok(bridge.hostname === "127.0.0.1" && bridge.origin !== f.router().origin, "agy is pointed at YA's bridge, not the router");
+  assert.ok(bridge.hostname === "127.0.0.1" && ![f.router().origin, relay.origin].includes(bridge.origin), "agy is pointed at YA's proxy, not the router");
   assert.ok(spawn.heldTokenHashes.length > 0 && !spawn.heldTokenHashes.includes(hash(allocation.token)),
-    "agy's arguments, environment and profile hold the bridge's marker, never the binding token");
+    "agy's arguments, environment and profile hold the proxy's stand-in, never the binding token");
+  const sentUpstream = f.upstreamRequests.length;
+  await f.api(`/sessions/${created.value.sessionId}/messages`, { message: "rpc /v1internal:notRegistered" });
+  await eventually(() => turns().length === 2, "agy's call outside the registered routes returns");
+  assert.equal(relay.forwarded.at(-1), "POST /antigravity/v1internal:notRegistered", "YA's proxy passes a call it has no list for, on the binding's route");
+  assert.deepEqual([turns()[1].status, JSON.parse(turns()[1].refusal).error.message], [404, "unknown route"], "The router's route table refuses it");
+  assert.equal(f.upstreamRequests.length, sentUpstream, "A refused call sends nothing upstream");
   const direct = async () => {
     const response = await fetch(`${f.router().origin}/antigravity/v1internal:streamGenerateContent?alt=sse`,
       { method: "POST", headers: { authorization: `Bearer ${allocation.token}`, "content-type": "application/json", connection: "close" }, body: JSON.stringify({ input: "direct" }) });
@@ -1255,8 +1265,8 @@ test("antigravity: YA's loopback bridge carries agy through a routed binding unt
   await f.api("/agent-auth-router/disconnect", {});
   assert.equal(await direct(), 401, "Disconnect revokes the binding token at the router");
   await f.api(`/sessions/${created.value.sessionId}/messages`, { message: "after-disconnect" });
-  await eventually(() => turns().length === 2, "the same agy answers the second prompt");
-  assert.deepEqual([turns()[1].pid, turns()[1].status], [spawn.pid, 401], "The live session is refused through the bridge");
+  await eventually(() => turns().length === 3, "the same agy answers after disconnect");
+  assert.deepEqual([turns()[2].pid, turns()[2].status], [spawn.pid, 401], "The live session is refused through the proxy");
   assert.ok(!f.upstreamRequests.some((r) => r.body.includes("after-disconnect")), "A revoked binding sends nothing upstream");
 });
 

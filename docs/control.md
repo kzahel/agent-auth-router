@@ -117,10 +117,12 @@ that names none keeps receiving `http-gateway-v1`.
 
 The control and hosted tests act as the integration: they reach inference and
 the model catalog only through the returned paths, with both auth methods.
-Yep Anywhere launches from this field as of its commit `f4c106fb1`, which no
-release carries yet. The [cross-repository suite](../integration/yepanywhere/README.md)
-runs that commit against these sources over the local control socket. It does
-not cover the hosted origin.
+Yep Anywhere launches Claude and Codex from this field as of its commit
+`f4c106fb1`, and Antigravity as of `9793c4832`, where its loopback listener
+dropped its own list of Cloud Code calls. No release carries either yet. The
+[cross-repository suite](../integration/yepanywhere/README.md) runs
+`9793c4832` against these sources over the local control socket. It does not
+cover the hosted origin.
 
 ## Yep Anywhere manual integration
 

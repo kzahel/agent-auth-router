@@ -69,7 +69,9 @@ account on the router and supports both:
   windows (`v1internal:retrieveUserQuotaSummary`, scoped to `gemini`,
   `gemini-argon`, `gemini-carbon`, and `3p`), and bound per session without
   server-wide environment variables. Yep Anywhere runs a per-session loopback
-  bridge tied to each routed `agy acp` child process.
+  proxy tied to each routed `agy acp` child process. It forwards below the
+  route the binding describes and leaves it to this router to decide which
+  calls that route serves.
 - **Standalone manual clients (`aar client add` + `aar antigravity bridge`):**
   The manual client token and long-lived bridge workflow below remains supported
   for standalone CLI hosts.
