@@ -10,8 +10,20 @@ This experiment uses a single file-backed personal Google login on the router
 and a revocable client token per execution host. Google determines subscription
 access. A loopback test streamed a reply through Yep Anywhere, `agy acp`, the
 bridge and AAR. A separate loopback OAuth fixture verified that `agy models`
-renewed and saved an expired credential. Live subscription access still needs
-qualification.
+renewed and saved an expired credential.
+
+One live run on 2026-11-25 used a personal Google subscription, `agy` 1.5.14
+on macOS arm64, a local router at `d270e9c` and a paired Yep Anywhere at
+`9793c4832` with an account grant. Sign-in used the command printed by `aar
+account add`. `aar owner accounts/refresh` returned eight models, and `aar
+account quotas` returned four windows. Two text turns and one file-read tool
+turn succeeded, and the session resumed after its `agy` process was killed.
+Every registered Antigravity call in the request log returned 200.
+
+`agy` also sent `writeTrajectoryAcls`, which this router answered with 404
+before checking the token, and the session went on. This run did not exercise
+renewal of an expired login, a pool, a hosted origin or the standalone
+bridge.
 
 ## On the router host
 
@@ -19,6 +31,14 @@ Use the AAR CLI to add an account and run the sign-in command it prints:
 
 ```sh
 aar account add google --provider antigravity
+```
+
+For a paired Yep Anywhere, grant the integration the account or a pool that
+holds it, in the dashboard or with the `grants/save` owner operation. YA
+starts its own loopback proxy for each routed session and needs none of the
+standalone steps below. A standalone host needs a client token instead:
+
+```sh
 aar client add devbox --antigravity google
 ```
 
@@ -30,7 +50,7 @@ whether the official CLI persisted a replacement. Use a fresh client grant
 and token file per host. Hosted gateways use the same TLS reverse proxy and
 public origin as [other AAR routes](remote.md).
 
-## On each execution host
+## On each standalone execution host
 
 Save the token from `aar client add` in an owner-only file. Start the bridge
 with a dedicated profile directory and an available loopback port:
@@ -73,5 +93,5 @@ account on the router and supports both:
   route the binding describes and leaves it to this router to decide which
   calls that route serves.
 - **Standalone manual clients (`aar client add` + `aar antigravity bridge`):**
-  The manual client token and long-lived bridge workflow below remains supported
+  The manual client token and long-lived bridge workflow above remains supported
   for standalone CLI hosts.

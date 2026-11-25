@@ -119,7 +119,8 @@ The control and hosted tests act as the integration: they reach inference and
 the model catalog only through the returned paths, with both auth methods.
 Yep Anywhere launches Claude and Codex from this field as of its commit
 `f4c106fb1`, and Antigravity as of `9793c4832`, where its loopback listener
-dropped its own list of Cloud Code calls. No release carries either yet. The
+dropped its own list of Cloud Code calls. No released AAR build advertises
+`binding-transport-v1` yet. The
 [cross-repository suite](../integration/yepanywhere/README.md) runs
 `9793c4832` against these sources over the local control socket. It does not
 cover the hosted origin.
