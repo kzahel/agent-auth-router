@@ -87,6 +87,43 @@ describe("crash banner", () => {
   });
 });
 
+describe("Fable quota display", () => {
+  it("hides and restores the Fable meter even when a live snapshot includes it", async () => {
+    const at = Date.now();
+    const windows = [
+      { bucket: "five_hour", windowMinutes: 300, usedPercent: 20, remainingPercent: 80, resetsAt: null, scope: "all" },
+      { bucket: "seven_day", windowMinutes: 10080, usedPercent: 45, remainingPercent: 55, resetsAt: null, scope: "all" },
+      { bucket: "seven_day_fable", windowMinutes: 10080, usedPercent: 100, remainingPercent: 0, resetsAt: null, scope: "fable" },
+    ];
+    let showFableQuota = true;
+    const app = await fakeApp({
+      overview: () => overview({ showFableQuota, accounts: [account("work", { provider: "claude", windows })] }),
+      "settings/show-fable-quota": body => ({ enabled: showFableQuota = body.enabled === true }),
+    }, { snapshots: { ...snapshots, live: () => ({ at, scopes: {}, quotaAt: { work: at }, quota: { work: windows } }) } });
+    await app.router.reload();
+    app.render(<App />);
+    const navigate = (name: string) => userEvent.click(screen.getByRole("tab", { name }));
+    const panel = () => within(screen.getByRole("tabpanel"));
+    const setting = () => panel().getByRole<HTMLInputElement>("checkbox", { name: "Show Fable weekly quota" });
+    expect(panel().getByRole("meter", { name: "7d Fable" }).getAttribute("aria-valuenow")).toBe("100");
+
+    await navigate("Settings");
+    expect(setting().checked).toBe(true);
+    await userEvent.click(setting());
+    await navigate("Dashboard");
+    expect(panel().queryByRole("meter", { name: "7d Fable" })).toBeNull();
+    expect(panel().getAllByRole("meter").map(m => m.getAttribute("aria-label"))).toEqual(["5h", "7d all"]);
+    await navigate("Accounts");
+    expect(panel().queryByRole("progressbar", { name: "7d Fable remaining" })).toBeNull();
+
+    await navigate("Settings");
+    expect(setting().checked).toBe(false);
+    await userEvent.click(setting());
+    await navigate("Accounts");
+    expect(panel().getByRole("progressbar", { name: "7d Fable remaining" }).getAttribute("value")).toBe("0");
+  });
+});
+
 describe("limit resets", () => {
   it("badges resets expiring within a week, and opens an account from the Resets tab", async () => {
     const soon = new Date(Date.now() + 3 * 86_400_000).toISOString(), later = new Date(Date.now() + 40 * 86_400_000).toISOString();

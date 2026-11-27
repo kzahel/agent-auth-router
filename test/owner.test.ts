@@ -190,9 +190,12 @@ test("an open dashboard probes unknown or stale quota once per interval, one acc
     await new Promise((resolve) => setTimeout(resolve, 5));
     running--;
     const failing = accountId === "failing";
+    const observedAt = new Date(Date.now()).toISOString();
     return { accountId, provider: "claude" as const, status: failing ? "unavailable" as const : "ok" as const,
-      observedAt: new Date().toISOString(), windows: [], ...(failing ? { error: "usage unavailable" } : {}) };
+      observedAt, windows: [], ...(failing ? { error: "usage unavailable" } : {}) };
   });
+  await evidence.refresh("fresh");
+  probes.length = 0;
   evidence.observe("fresh", "claude", { "anthropic-ratelimit-unified-5h-utilization": "0.2" });
   const owner = new OwnerService(store, new ControlRegistry(store), new Map(), evidence, () => {}, "http://127.0.0.1",
     { active: () => 0, stop: () => {} });
@@ -211,13 +214,14 @@ test("an open dashboard probes unknown or stale quota once per interval, one acc
   const realNow = Date.now;
   Date.now = () => realNow() + DISPLAY_QUOTA_STALE_MS;
   try {
+    evidence.observe("fresh", "claude", { "anthropic-ratelimit-unified-5h-utilization": "0.3" });
     owner.refreshStaleQuota(() => settled++);
     await wait();
   } finally { Date.now = realNow; }
-  assert.deepEqual(probes.slice(2).sort(), ["failing", "fresh", "unknown"]);
+  assert.deepEqual(probes.slice(2).sort(), ["failing", "fresh", "unknown"], "fresh inference cannot postpone a stale Claude CLI reading");
 });
 
-test("an open dashboard rereads a fresh quota once a window resets after it was read", async () => {
+test("an open dashboard rereads Fable quotas after reset even with fresh shared headers", async () => {
   const store = new StateStore(tempDir("owner-"));
   store.init();
   store.saveAccounts([{ id: "a", provider: "claude", home: join(store.profilesDir, "a") }]);
@@ -226,10 +230,12 @@ test("an open dashboard rereads a fresh quota once a window resets after it was 
   const evidence = new PoolEvidence(async () => [], async (accountId) => {
     probes.push(accountId);
     // The provider may still report the passed reset; that must not reprobe.
-    return { accountId, provider: "claude" as const, status: "ok" as const, observedAt: new Date(Date.now()).toISOString(),
-      windows: [{ bucket: "five_hour", windowMinutes: 300, usedPercent: 100, remainingPercent: 0, resetsAt: new Date(reset * 1000).toISOString() }] };
+    const observedAt = new Date(Date.now()).toISOString();
+    return { accountId, provider: "claude" as const, status: "ok" as const, observedAt,
+      windows: [{ bucket: "seven_day_fable", windowMinutes: 10080, usedPercent: 100, remainingPercent: 0, resetsAt: new Date(reset * 1000).toISOString() }] };
   });
-  evidence.observe("a", "claude", { "anthropic-ratelimit-unified-5h-utilization": "1", "anthropic-ratelimit-unified-5h-reset": String(reset) });
+  await evidence.refresh("a");
+  probes.length = 0;
   const owner = new OwnerService(store, new ControlRegistry(store), new Map(), evidence, () => {}, "http://127.0.0.1",
     { active: () => 0, stop: () => {} });
   const wait = async () => { while (owner.quotaChecking().length) await new Promise((resolve) => setTimeout(resolve, 2)); };
@@ -239,6 +245,7 @@ test("an open dashboard rereads a fresh quota once a window resets after it was 
   const realNow = Date.now;
   Date.now = () => realNow() + 61_000;
   try {
+    evidence.observe("a", "claude", { "anthropic-ratelimit-unified-5h-utilization": "0.2" });
     owner.refreshStaleQuota(() => {});
     await wait();
     assert.deepEqual(probes, ["a"], "the reset passed after the reading");

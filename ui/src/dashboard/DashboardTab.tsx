@@ -8,7 +8,7 @@ import type { GraphMessage, TrafficGraph } from "../chart/traffic-graph.ts";
 import { useApp, useRouterView } from "../app/context.tsx";
 import { accountName } from "../lib/accounts.ts";
 import { formatBytes, formatCost, formatNumber } from "../lib/format.ts";
-import { quotaLabel } from "../lib/quota.ts";
+import { quotaLabel, quotaVisible } from "../lib/quota.ts";
 import type { ActivityData, Counter, LiveSnapshot, Overview, RangeCost, RequestEntry, SessionSummary } from "../protocol/types.ts";
 import ui from "../styles/ui.module.css";
 import { AccountsTable } from "./AccountsTable.tsx";
@@ -42,7 +42,9 @@ export function DashboardTab({ visible, onAddAccount }: { visible: boolean; onAd
   const [traffic, setTraffic] = useState<ActivityData>();
   const [stored, setStored] = useState<Stored>({ sessions: undefined, stored: true, cost: undefined });
   const [quotaKeys, setQuotaKeys] = useState<string[]>([]);
-  const [quotaSamples, setQuotaSamples] = useState(false);
+  const [quotaSampleKeys, setQuotaSampleKeys] = useState<string[]>([]);
+  const showFableQuota = overview?.showFableQuota;
+  const shownQuotaKeys = useMemo(() => quotaKeys.filter(key => quotaVisible(key.slice(6), showFableQuota)), [quotaKeys, showFableQuota]);
   // Bumped when the graph's data changes, which the legend and values read.
   const [, setHistoryVersion] = useState(0);
   // Bumped to subscribe again when an append does not continue the data.
@@ -108,13 +110,15 @@ export function DashboardTab({ visible, onAddAccount }: { visible: boolean; onAd
     const quotaGraph = quota.graph;
     if (scope.startsWith("account:") && quotaGraph) {
       setQuotaKeys([]);
+      setQuotaSampleKeys([]);
       stops.push(client.subscribe("history", { range, scope, metrics: ["quota"] }, (message) => {
         if (message.type === "error") return;
         if (!quotaGraph.update(message as GraphMessage)) { setRestart(n => n + 1); return; }
         const series = quotaGraph.data!.series;
         const keys = Object.keys(series).filter(k => k.startsWith("quota:")).sort();
-        setQuotaSamples(keys.some(k => series[k]!.some(v => v !== null)));
+        const samples = keys.filter(k => series[k]!.some(v => v !== null));
         setQuotaKeys(current => current.join() === keys.join() ? current : keys);
+        setQuotaSampleKeys(current => current.join() === samples.join() ? current : samples);
       }));
     }
     return () => { for (const stop of stops) stop(); };
@@ -137,10 +141,10 @@ export function DashboardTab({ visible, onAddAccount }: { visible: boolean; onAd
       context: p.series.filter(key => hidden.has(key)).map(key => ({ key, label: SERIES[key].label })) })), { live: LIVE_RANGES.has(range) });
   }, [main.graph, units, hidden, range, scheme]);
   useEffect(() => {
-    quota.graph?.configure(quotaKeys.length ? [{ title: "Quota used · %", maximum: 100, format: (v) => `${Math.round(v)}%`, unit: "",
-      series: quotaKeys.slice(0, 4).map((key, i) => ({ key, label: quotaLabel({ bucket: key.slice(6) }), color: cssVariable(`--series-${i + 1}`) })) }] : [],
+    quota.graph?.configure(shownQuotaKeys.length ? [{ title: "Quota used · %", maximum: 100, format: (v) => `${Math.round(v)}%`, unit: "",
+      series: shownQuotaKeys.slice(0, 4).map((key, i) => ({ key, label: quotaLabel({ bucket: key.slice(6) }), color: cssVariable(`--series-${i + 1}`) })) }] : [],
     { live: LIVE_RANGES.has(range), rate: false });
-  }, [quota.graph, quotaKeys, range, scheme]);
+  }, [quota.graph, shownQuotaKeys, range, scheme]);
   useEffect(() => {
     if (main.graph) main.graph.visible = visible;
     if (quota.graph) quota.graph.visible = visible;
@@ -237,12 +241,12 @@ export function DashboardTab({ visible, onAddAccount }: { visible: boolean; onAd
           <canvas ref={quota.canvas} tabIndex={0} role="img" aria-label="Quota used over time" />
           <div ref={quota.tooltip} className={styles.tooltip} role="status" hidden />
         </div>
-        <p id="dash-quota-empty" className={ui.hint} hidden={quotaSamples}>No quota samples in this range yet. Samples come from usage refreshes and proxied responses.</p>
+        <p id="dash-quota-empty" className={ui.hint} hidden={quotaSampleKeys.some(key => quotaVisible(key.slice(6), showFableQuota))}>No quota samples in this range yet. Samples come from usage refreshes and proxied responses.</p>
       </div>
       <h2 className={styles.heading}>Accounts</h2>
       {accounts.length ? (
         <AccountsTable accounts={accounts} live={live} traffic={traffic} requests={requests} units={units} span={span}
-          seriesNames={shown.map(key => SERIES[key].label.toLowerCase())} inScope={(id) => inScope(id)} />
+          seriesNames={shown.map(key => SERIES[key].label.toLowerCase())} showFableQuota={showFableQuota} inScope={(id) => inScope(id)} />
       ) : (
         <p className={ui.hint}>No accounts yet. <button type="button" onClick={onAddAccount}>Add an account</button></p>
       )}

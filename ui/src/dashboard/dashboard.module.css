@@ -97,8 +97,7 @@
 @media (prefers-reduced-motion: reduce) { .meterFill, .meterPace { transition: none; } }
 @media (max-width: 560px) {
   .sparkline { width: 60px; }
-  .accounts { min-width: 420px; }
-  .accounts th:nth-child(4), .accounts td:nth-child(4) { display: none; }
+  .accounts { min-width: 552px; }
   .accounts th:nth-child(2) { width: 92px; }
   .accounts th:nth-child(3) { width: 58px; }
   .accounts th:nth-child(5) { width: 72px; }

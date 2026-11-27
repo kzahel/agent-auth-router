@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useConfirm } from "../app/ConfirmDialog.tsx";
-import { useApp } from "../app/context.tsx";
+import { useApp, useRouterView } from "../app/context.tsx";
 import { useAction } from "../app/use-action.ts";
 import { ActionButton } from "../components/ActionButton.tsx";
 import { errorText } from "../lib/format.ts";
@@ -24,6 +24,7 @@ export function SettingsTab({ visible, presentation, onPresentation, onNavigate 
     <div className={styles.settings}>
       <HistorySettings visible={visible} />
       <CompressionSettings visible={visible} />
+      <QuotaDisplaySettings />
       <LimitResetSettings visible={visible} />
       <ExperimentalSettings visible={visible} />
       <Diagnostics onNavigate={onNavigate} />
@@ -35,6 +36,35 @@ export function SettingsTab({ visible, presentation, onPresentation, onNavigate 
         </div>
       )}
       <RouterSettings />
+    </div>
+  );
+}
+
+function QuotaDisplaySettings() {
+  const { api, router } = useApp();
+  const { overview } = useRouterView();
+  const [pending, run] = useAction();
+  const [desired, setDesired] = useState<boolean>();
+  const enabled = overview?.showFableQuota;
+  return (
+    <div className={styles.group}>
+      <h3>Quota display</h3>
+      <label className={styles.row}>Show Fable weekly quota
+        <input type="checkbox" checked={desired ?? enabled ?? true} disabled={enabled === undefined || pending}
+          aria-describedby="fable-quota-hint" onChange={(event) => {
+            const enabled = event.target.checked;
+            setDesired(enabled);
+            void run(async () => {
+              try {
+                await api("settings/show-fable-quota", { enabled });
+                await router.reload();
+              } finally {
+                setDesired(undefined);
+              }
+            });
+          }} />
+      </label>
+      <p id="fable-quota-hint" className={ui.hint}>Show the Fable meter alongside the 5-hour and all-models weekly meters when Claude reports it.</p>
     </div>
   );
 }

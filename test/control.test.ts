@@ -199,14 +199,14 @@ test("failed launches can be cancelled after their account is disabled", {skip: 
   assert.equal(registry.clients().length,0);
 });
 
-test("pool HTTP overview is cached metadata and shares eligibility with native allocation", { skip: process.platform === "win32" }, async t => {
+test("pool HTTP overview is cached metadata and applies the reported Fable quota to allocation", { skip: process.platform === "win32" }, async t => {
   const store = storeFixture();
   const upstream = await mockUpstream((_req, res, recorded) => {
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(recorded.url === "/v1/models" ? { data: [{ id: "claude-sonnet-fixture" }] } : { ok: true }));
+    res.end(JSON.stringify(recorded.url === "/v1/models" ? { data: [{ id: "claude-sonnet-fixture" }, { id: "claude-fable-5-2" }] } : { ok: true }));
   });
   writePrivateJson(store.configPath, { listen: { host: "127.0.0.1", port: 0 }, upstreams: { claude: upstream.origin } });
-  const router = await startRouter(store, fakeClaude); t.after(() => router.close());
+  const router = await startRouter(store, { ...fakeClaude, claudeArgs: [fakeClaude.claudeArgs[0]!, "fable"] }); t.after(() => router.close());
   const token = ctlToken(), socket = router.controlSocket!;
   const integrationId = randomUUID();
   await request(socket, "/v1/pair", undefined, { id: integrationId, name: "YA", tokenHash: hashGatewayToken(token) });
@@ -215,14 +215,27 @@ test("pool HTTP overview is cached metadata and shares eligibility with native a
   assert.equal((await request(socket, "/v1/pools/save", token, pool)).status, 403);
   await ownerRequest(store, "pools/save", pool);
   await ownerRequest(store, "grants/save", { id: integrationId, revision: 1, poolIds: [pool.id] });
-  const read = () => request(socket, "/v1/overview", token, { poolId: pool.id, model: "claude-sonnet-fixture" });
+  const read = (model = "claude-sonnet-fixture") => request(socket, "/v1/overview", token, { poolId: pool.id, model });
   assert.equal((await read()).value.selection.decisions[0].reason, "catalog-unknown"); assert.equal(upstream.requests.length, 0);
   await request(socket, "/v1/overview/refresh", token, { accountId: "fixture" });
   const overview = await read(); assert.equal(overview.value.selection.decisions[0].reason, "eligible");
-  assert.equal(overview.value.accounts[0].windows[0].remainingPercent, 80);
+  assert.deepEqual(overview.value.accounts[0].windows.map((w: { bucket: string; scope: string; usedPercent: number }) =>
+    [w.bucket, w.scope, w.usedPercent]), [
+    ["five_hour", "all", 20], ["seven_day", "all", 45], ["seven_day_fable", "fable", 100],
+  ]);
+  const displaySetting = "settings/show-fable-quota";
+  assert.equal((await ownerRequest(store, "overview")).showFableQuota, true);
+  await assert.rejects(ownerRequest(store, displaySetting, { enabled: "no" }), /true or false/);
+  await ownerRequest(store, displaySetting, { enabled: false });
+  assert.equal((await ownerRequest(store, "overview")).showFableQuota, false);
+  assert.equal(new StateStore(store.dir).loadSettings().showFableQuota, false);
+  assert.equal((await read("claude-fable-5-2")).value.selection.decisions[0].reason, "exhausted");
+  assert.equal((await read()).value.selection.decisions[0].reason, "eligible");
   assert.doesNotMatch(JSON.stringify(overview.value), /synthetic-provider-secret|tokenHash|home|socketPath/);
   const reads = upstream.requests.length; await read(); assert.equal(upstream.requests.length, reads);
   const allocation = { id: randomUUID(), poolId: pool.id, provider: "claude", model: "claude-sonnet-fixture", tokenHash: hashGatewayToken(generateGatewayToken()) };
+  const exhausted = await request(socket, "/v1/pools/prepare", token, { ...allocation, id: randomUUID(), model: "claude-fable-5-2" });
+  assert.equal(exhausted.status, 409);
   assert.equal((await request(socket, "/v1/pools/prepare", token, allocation)).value.accountId, "fixture");
   assert.equal((await request(socket, "/v1/bindings/commit", token, { id: allocation.id })).status, 200);
   await ownerRequest(store, "pools/remove", { id: pool.id, revision: 1 });

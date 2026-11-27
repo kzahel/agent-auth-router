@@ -1,6 +1,6 @@
 // Pool observations are metadata only. Reading an overview never runs a provider.
 import type { CatalogModel, CliModel } from "./contract.ts";
-import { normalizeResponseHeaderQuotas, type QuotaRead, type QuotaSnapshot, type QuotaWindow, type ResponseHeaders } from "./quotas.ts";
+import { CLAUDE_FABLE_WEEKLY_BUCKET, normalizeResponseHeaderQuotas, type QuotaRead, type QuotaSnapshot, type QuotaWindow, type ResponseHeaders } from "./quotas.ts";
 import type { Provider, UsageCeiling } from "./types.ts";
 
 export const POOL_POLICIES = ["manual", "round-robin", "most-remaining", "weekly-pace"] as const;
@@ -60,6 +60,8 @@ const CLI_MODELS_RETRY_MS = 300_000;
 export type EligibilityReason = "eligible" | "disabled" | "model-required" | "catalog-unknown" | "catalog-stale" | "model-unavailable" | "quota-unknown" | "quota-stale" | "scope-unknown" | "exhausted" | "reset-unverified" | "cooldown" | "auth-unavailable";
 export interface Observation {
   quota: QuotaSnapshot | null;
+  /** When the CLI last reported Claude usage, including model-scoped windows. */
+  claudeUsageObservedAt?: string;
   models: CatalogModel[];
   catalogAt: string | null;
   /** The Claude CLI's own model rows and when they were read. Display and
@@ -79,7 +81,7 @@ const cliModelsFresh = (o: Observation, now: number): boolean =>
   !!o.cliModelsAt && now - Date.parse(o.cliModelsAt) < CLI_MODELS_FRESH_MS && now >= Date.parse(o.cliModelsAt);
 
 /** Unknown scopes are never guessed to grant model access. */
-export type WindowScope = "all" | "opus" | "sonnet" | "gemini" | "gemini-argon" | "gemini-carbon" | "3p" | "unknown";
+export type WindowScope = "all" | "opus" | "sonnet" | "fable" | "gemini" | "gemini-argon" | "gemini-carbon" | "3p" | "unknown";
 export function windowScope(provider: Provider, bucket: string): WindowScope {
   if (provider === "codex") return /^codex:(primary|secondary)$/.test(bucket) ? "all" : "unknown";
   if (provider === "antigravity") {
@@ -92,6 +94,7 @@ export function windowScope(provider: Provider, bucket: string): WindowScope {
   if (["five_hour", "seven_day", "seven_day_oauth_apps"].includes(bucket)) return "all";
   if (bucket === "seven_day_opus") return "opus";
   if (bucket === "seven_day_sonnet") return "sonnet";
+  if (bucket === CLAUDE_FABLE_WEEKLY_BUCKET) return "fable";
   return "unknown";
 }
 function antigravityModelScope(model: string, windows: readonly QuotaWindow[]): WindowScope {
@@ -109,13 +112,22 @@ function antigravityModelScope(model: string, windows: readonly QuotaWindow[]): 
   if (/^(?:claude|gpt)-/.test(lower)) return "3p";
   return "unknown";
 }
+const isClaudeFamilyModel = (model: string) => /^claude-(opus|sonnet|haiku|fable)-/.test(model);
+
+function fableQuotaStale(observation: Observation, model: string, now: number): boolean {
+  if (observation.quota?.provider !== "claude" || !model.startsWith("claude-fable-")) return false;
+  const at = Date.parse(observation.claudeUsageObservedAt ?? "");
+  return !Number.isFinite(at) || now - at >= QUOTA_FRESH_MS || now < at;
+}
+
 function applies(provider: Provider, window: QuotaWindow, model: string, allWindows: readonly QuotaWindow[]): boolean {
   const scope = windowScope(provider, window.bucket);
   if (provider === "antigravity") {
     const target = antigravityModelScope(model, allWindows);
     return target === "unknown" ? true : scope === target || scope === "unknown";
   }
-  return scope === "all" || scope === "unknown" || !/^claude-(opus|sonnet|haiku)-/.test(model) || model.startsWith(`claude-${scope}-`);
+  if (scope === "fable") return model.startsWith("claude-fable-");
+  return scope === "all" || scope === "unknown" || !isClaudeFamilyModel(model) || model.startsWith(`claude-${scope}-`);
 }
 export function applicableWindows(provider: Provider, observation: Observation, model: string): QuotaWindow[] {
   const all = observation.quota?.windows ?? [];
@@ -241,8 +253,8 @@ export function eligibility(provider: Provider, enabled: boolean, model: string 
     !(permission === true && windowScope(provider, w.bucket) === "all"))) return "exhausted";
   if (!automatic) return "eligible";
   if (!quota || observation.error || !windows.length || windows.some((w) => w.remainingPercent === null)) return "quota-unknown";
-  if (now - Date.parse(quota.observedAt) >= QUOTA_FRESH_MS || now < Date.parse(quota.observedAt)) return "quota-stale";
-  if (windows.some((w) => windowScope(provider, w.bucket) === "unknown" || (provider === "claude" && ["opus", "sonnet"].includes(windowScope(provider, w.bucket)) && !/^claude-(opus|sonnet|haiku)-/.test(model))) || (provider === "antigravity" && antigravityModelScope(model, quota.windows) === "unknown")) return "scope-unknown";
+  if (now - Date.parse(quota.observedAt) >= QUOTA_FRESH_MS || now < Date.parse(quota.observedAt) || fableQuotaStale(observation, model, now)) return "quota-stale";
+  if (windows.some((w) => windowScope(provider, w.bucket) === "unknown" || (provider === "claude" && ["opus", "sonnet"].includes(windowScope(provider, w.bucket)) && !isClaudeFamilyModel(model))) || (provider === "antigravity" && antigravityModelScope(model, quota.windows) === "unknown")) return "scope-unknown";
   // A window with no recorded use and no reset time has not started yet; its
   // full headroom is observed, not inferred from a passed reset.
   if (permission !== true && windows.some((w) => w.resetsAt ? Date.parse(w.resetsAt) <= now : w.usedPercent !== 0)) return "reset-unverified";
@@ -324,6 +336,7 @@ export class PoolEvidence {
     const reason = eligibility(provider, true, model, o, true, now);
     return !!o.blocked || !!o.error || !o.catalogAt || now - Date.parse(o.catalogAt) >= CATALOG_FRESH_MS || now < Date.parse(o.catalogAt) ||
       !o.quota || now - Date.parse(o.quota.observedAt) >= QUOTA_FRESH_MS || now < Date.parse(o.quota.observedAt) ||
+      fableQuotaStale(o, model, now) ||
       applicableWindows(provider, o, model).some(w => !!w.resetsAt && Date.parse(w.resetsAt) <= now) ||
       ["quota-unknown", "quota-stale", "reset-unverified"].includes(reason);
   }
@@ -404,6 +417,7 @@ export class PoolEvidence {
         const previous = this.get(id), snapshot = snapshotOf(read), ok = snapshot.status === "ok";
         this.values.set(id, { ...previous,
           ...(ok ? { quota: { ...snapshot, source: "probe" }, error: quotaRefreshFailed(previous.error) ? null : previous.error } : {}),
+          ...(ok && snapshot.provider === "claude" ? { claudeUsageObservedAt: snapshot.observedAt } : {}),
           ...(read.cliModels ? { cliModels: read.cliModels, cliModelsAt: new Date(Date.now()).toISOString() } : {}) });
         if (ok) { this.sample(id, snapshot.windows, Date.now()); this.onQuota?.(id, this.get(id), { source: "probe", windows: snapshot.windows }); }
         if (!read.cliModels) this.cliRetryAt.set(id, Date.now() + CLI_MODELS_RETRY_MS);
@@ -434,8 +448,10 @@ export class PoolEvidence {
         : refusal?.details?.code === "provider_disabled" && typeof refusal.message === "string" ? refusal.message
         : catalog.status === "rejected" ? "Account catalog unavailable"
         : !snapshot ? (reason ? `${QUOTA_REFRESH_UNAVAILABLE}: ${reason}` : QUOTA_REFRESH_UNAVAILABLE) : null;
+      const claudeUsageObservedAt = snapshot?.provider === "claude" ? snapshot.observedAt : previous.claudeUsageObservedAt;
       const result: Observation = {
         quota: snapshot ? { ...snapshot, source: "probe" } : previous.quota,
+        ...(claudeUsageObservedAt ? { claudeUsageObservedAt } : {}),
         models: catalog.status === "fulfilled" ? catalog.value : previous.models,
         catalogAt: catalog.status === "fulfilled" ? attemptedAt : null,
         attemptedAt, error,

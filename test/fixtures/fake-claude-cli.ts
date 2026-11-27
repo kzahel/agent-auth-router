@@ -1,6 +1,6 @@
 // Stand-in for `claude -p --input-format stream-json --output-format stream-json`.
 // Usage: node fake-claude-cli.ts <mode>
-// Modes: ok | renew | logged-out | no-usage | reject-usage | hang | oversized | callback | slow | api-key | odd-models
+// Modes: ok | fable | renew | logged-out | no-usage | reject-usage | hang | oversized | callback | slow | api-key | odd-models
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -72,6 +72,9 @@ rl.on("line", async (line) => {
         five_hour: { utilization: 20, resets_at: new Date(Date.now() + 3600_000).toISOString().replace("Z", "+00:00"), locked_reason: null },
         seven_day: { utilization: 45, resets_at: new Date(Date.now() + 86400_000).toISOString().replace("Z", "+00:00") },
         seven_day_opus: null, codename_bucket: null,
+        ...(mode === "fable" ? {
+          model_scoped: [{ display_name: "Fable", utilization: 100, resets_at: new Date(Date.now() + 86400_000).toISOString() }],
+        } : {}),
         extra_usage: { is_enabled: false, utilization: null },
       },
       token: "SECRET-token",

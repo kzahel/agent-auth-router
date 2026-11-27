@@ -120,6 +120,16 @@ traffic only. Completed entries, quota observations and
 binding decisions also go to the [event log](events.md), which keeps full
 resolution where these tiers keep sums and last samples.
 
+## Claude quota meters
+
+Claude accounts can show three quota meters in the Dashboard and Accounts
+tabs: five hours, seven days across all models, and seven days for Fable.
+AAR shows the Fable meter when the Claude CLI reports a separate allowance.
+**Settings → Quota display → Show Fable weekly quota** is on by default.
+Turning it off hides that meter and its Dashboard history series. The router
+still reads the allowance with the same usage probe and applies it to Fable
+account selection.
+
 ## App protocol
 
 Both shells run one UI against one message protocol (`src/app.ts`). Only the

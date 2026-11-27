@@ -88,6 +88,7 @@ export interface Overview {
   routerId: string;
   build?: { version?: string; source?: string };
   activeRequests: number;
+  showFableQuota?: boolean;
   accounts: Account[];
   pools: Pool[];
   integrations: Integration[];

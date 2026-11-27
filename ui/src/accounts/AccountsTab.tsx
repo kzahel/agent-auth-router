@@ -39,7 +39,7 @@ export function AccountsTab({ presentation, focus }: { presentation: TerminalPre
       </details>
       <div id="accounts" className={ui.cards}>
         {accounts.map(a => (
-          <AccountCard key={a.id} account={a} login={overview?.logins.find(l => l.id === a.id)} presentation={presentation}
+          <AccountCard key={a.id} account={a} login={overview?.logins.find(l => l.id === a.id)} presentation={presentation} showFableQuota={overview?.showFableQuota}
             onEditNickname={() => setNickname(current => ({ account: a, opened: (current?.opened ?? 0) + 1 }))}
             onRemove={async () => {
               const preview = await api<RemovalPreview>("accounts/removal-preview", { id: a.id });

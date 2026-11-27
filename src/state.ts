@@ -19,6 +19,8 @@ export interface RouterSettings {
   requestCompression: Partial<Record<"claude" | "codex", RequestCompression>>;
   /** Read granted usage-limit resets with each quota read. Off unless the owner turns it on. */
   limitResets?: boolean;
+  /** Display the Fable quota meter. On unless the owner hides it. */
+  showFableQuota?: false;
   /** Experimental adapters the owner turned on. An absent one is off. */
   experimentalProviders?: Partial<Record<ExperimentalProvider, true>>;
 }
@@ -91,7 +93,7 @@ export class StateStore {
   /** Owner-adjustable router settings; the router reads them per request, so they are cached. */
   loadSettings(fresh = false): RouterSettings {
     if (this.settingsCache && !fresh) return this.settingsCache;
-    const raw = readJsonFile<{ version?: number; requestCompression?: Record<string, unknown>; limitResets?: unknown; experimentalProviders?: Record<string, unknown> }>(this.settingsPath, {});
+    const raw = readJsonFile<{ version?: number; requestCompression?: Record<string, unknown>; limitResets?: unknown; showFableQuota?: unknown; experimentalProviders?: Record<string, unknown> }>(this.settingsPath, {});
     const compression: RouterSettings["requestCompression"] = {};
     for (const [provider, value] of Object.entries(raw.requestCompression ?? {})) {
       if ((provider === "claude" || provider === "codex") && typeof value === "string" && (COMPRESSION_CHOICES[provider] as readonly string[]).includes(value)) compression[provider] = value as RequestCompression;
@@ -99,6 +101,7 @@ export class StateStore {
     const experimental: NonNullable<RouterSettings["experimentalProviders"]> = {};
     for (const provider of EXPERIMENTAL_PROVIDERS) if (raw.experimentalProviders?.[provider] === true) experimental[provider] = true;
     return this.settingsCache = { requestCompression: compression, ...(raw.limitResets === true ? { limitResets: true } : {}),
+      ...(raw.showFableQuota === false ? { showFableQuota: false } : {}),
       ...(Object.keys(experimental).length ? { experimentalProviders: experimental } : {}) };
   }
   /**
@@ -112,6 +115,7 @@ export class StateStore {
   saveSettings(settings: RouterSettings): void {
     writePrivateJson(this.settingsPath, { version: 1, ...settings });
     this.settingsCache = settings;
+    this.onWrite?.();
   }
 
   loadConfig(): RouterConfig {

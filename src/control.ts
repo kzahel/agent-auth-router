@@ -267,7 +267,7 @@ export class ControlRegistry {
     const now = Date.now(), model = body.model === undefined ? undefined : field(body, "model");
     const disabled = this.disabledProviders().filter(p => !about || p === about);
     const showResets = this.store.loadSettings().limitResets === true;
-    const accounts = this.accounts(integration, true).map(a => { const o = evidence.get(a.id); return { ...a, ...o,
+    const accounts = this.accounts(integration, true).map(a => { const { claudeUsageObservedAt: _claudeUsageObservedAt, ...o } = evidence.get(a.id); return { ...a, ...o,
       // Resets read before the owner turned the setting off are not shown.
       ...(o.quota?.limitResets && !showResets ? { quota: withoutResets(o.quota) } : {}),
       freshness: !o.quota ? "unknown" : o.error || now - Date.parse(o.quota.observedAt) >= QUOTA_FRESH_MS ? "stale" : "fresh",

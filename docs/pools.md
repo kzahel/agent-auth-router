@@ -350,7 +350,7 @@ headers to the evidence store, which records Claude's unified five-hour and
 seven-day windows (utilization fraction and epoch reset) and Codex's primary
 and secondary windows, stamps the snapshot `source: "inference"` at the
 response time, and keeps any probed bucket the headers do not carry, such as
-Claude's Opus and Sonnet weeklies. A 2xx also clears an earlier rejection
+Claude's Opus, Sonnet and Fable weeklies. A 2xx also clears an earlier rejection
 cooldown and a failed quota probe, because the credential has just worked;
 catalog failures stay. Probe results carry `source: "probe"`. Non-2xx responses
 only feed the existing rejection path. This makes a recently used account
@@ -358,8 +358,12 @@ fresh for automatic admission without a probe; an idle account still needs
 one. Codex header names come from source inspection and are unverified live. A reset
 passing never fabricates restored capacity. Refresh concurrency is bounded.
 Unknown model scope blocks automatic admission; it is never inferred from a
-quota percentage. Claude's explicit Opus/Sonnet windows apply to their model
-families; unknown Codex limit IDs remain unknown rather than model entitlements.
+quota percentage. Claude's explicit Opus and Sonnet windows apply to their
+model families. A reported Fable weekly window (bucket `seven_day_fable`,
+scope `fable`) applies to Claude Fable models alongside the shared windows.
+Fable admission uses the usage probe's own timestamp because inference
+headers refresh only the shared windows. Unknown Codex limit IDs remain
+unknown rather than model entitlements.
 Claude's `extra_usage` paid-overage credit meter is not recorded as a quota
 window. A window reporting 0% used with no reset time has not started; that is
 observed full headroom, while a used window without a reset time stays

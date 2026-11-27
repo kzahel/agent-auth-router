@@ -21,7 +21,7 @@ describe("quota cell", () => {
     const fresh = cell({ windows: [window, { ...window, bucket: "seven_day", usedPercent: 120 }], at: Date.now(), checking: false, error: undefined });
     const meters = fresh.querySelectorAll("[data-bucket]");
     expect([...meters].map(m => m.getAttribute("data-level"))).toEqual(["warning", "critical"]);
-    expect([...meters].map(m => m.textContent)).toEqual(["5h85%", "7d100%"]);
+    expect([...meters].map(m => m.textContent)).toEqual(["5h85%", "7d all100%"]);
     expect(within(fresh).queryByText(/as of/)).toBeNull();
     const old = cell({ windows: [window], at: Date.now() - 20 * 60_000, checking: false, error: undefined });
     expect(within(old).getByText("as of 20 min ago")).toBeTruthy();

@@ -2,6 +2,7 @@ import { useRef, useState, type ReactNode } from "react";
 import { useConfirm } from "../app/ConfirmDialog.tsx";
 import { useApp } from "../app/context.tsx";
 import { ActionButton } from "../components/ActionButton.tsx";
+import { FABLE_QUOTA_BUCKET, quotaLabel, quotaVisible } from "../lib/quota.ts";
 import type { Account, LimitResets, LoginStatus } from "../protocol/types.ts";
 import { ExpiryBadge } from "../resets/ExpiryBadge.tsx";
 import { useNow } from "../resets/use-now.ts";
@@ -58,10 +59,11 @@ function LimitResetList({ resets: r }: { resets: LimitResets }) {
  * One enrolled account: its quota windows and actions. Sign in, Refresh
  * usage and Cancel sign-in stay in view; the rest sit under More.
  */
-export function AccountCard({ account: a, login, presentation, onEditNickname, onRemove }: {
+export function AccountCard({ account: a, login, presentation, showFableQuota, onEditNickname, onRemove }: {
   account: Account;
   login: { status: string } | undefined;
   presentation: TerminalPresentation;
+  showFableQuota?: boolean | undefined;
   onEditNickname(): void;
   onRemove(): Promise<void>;
 }) {
@@ -70,6 +72,7 @@ export function AccountCard({ account: a, login, presentation, onEditNickname, o
   const [command, setCommand] = useState<string>();
   const [notes, setNotes] = useState<ReactNode[]>([]);
   const more = useRef<HTMLDetailsElement>(null);
+  const windows = a.windows.filter(w => quotaVisible(w.bucket, showFableQuota));
   const notice = a.retired ? undefined : loginNotice(a.loginExpiresAt);
 
   const signIn = async () => {
@@ -102,14 +105,17 @@ export function AccountCard({ account: a, login, presentation, onEditNickname, o
       <h3 className={ui.profilePath}>{a.home ?? a.id}</h3>
       {a.nickname && <p className={styles.nickname}>{a.nickname}</p>}
       <span className={ui.badge}>{`${a.provider} · ${a.retired ? "retired" : a.enabled ? "enabled" : "disabled"} · usage ${a.freshness}`}</span>
-      {a.windows.map(w => (
-        <div key={w.bucket} className={styles.quota}>
-          <span>{`${w.bucket} · ${w.remainingPercent == null ? "Remaining unknown" : `${w.remainingPercent}% left`}`}</span>
-          <progress max={100} value={w.remainingPercent ?? undefined} aria-label={`${w.bucket} remaining`} />
-          <small>{`${w.resetsAt ? `Resets ${new Date(w.resetsAt).toLocaleString()}` : "Reset time unknown"} · scope: ${w.scope}`}</small>
-        </div>
-      ))}
-      {!a.windows.length && <p className={ui.hint}>Quota not checked</p>}
+      {windows.map(w => {
+        const label = w.bucket === FABLE_QUOTA_BUCKET ? quotaLabel(w) : w.bucket;
+        return (
+          <div key={w.bucket} className={styles.quota}>
+            <span>{`${label} · ${w.remainingPercent == null ? "Remaining unknown" : `${w.remainingPercent}% left`}`}</span>
+            <progress max={100} value={w.remainingPercent ?? undefined} aria-label={`${label} remaining`} />
+            <small>{`${w.resetsAt ? `Resets ${new Date(w.resetsAt).toLocaleString()}` : "Reset time unknown"} · scope: ${w.scope}`}</small>
+          </div>
+        );
+      })}
+      {!windows.length && <p className={ui.hint}>Quota not checked</p>}
       {a.quota?.limitResets && <LimitResetList resets={a.quota.limitResets} />}
       {(a.error || a.blocked) && <p className={ui.unknown}>{a.blocked ?? a.error}</p>}
       {notice && <p className={notice.urgent ? ui.unknown : ui.hint}>{notice.text}</p>}

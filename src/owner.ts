@@ -20,6 +20,7 @@ import { CredentialCoordinator } from "./coordinator.ts";
 import { credentialReaderFor } from "./credentials.ts";
 import { accountHelper } from "./helpers.ts";
 import type { PoolEvidence } from "./pools.ts";
+import { CLAUDE_FABLE_WEEKLY_BUCKET } from "./quotas.ts";
 import { accountEnv, helperEnv, startBounded, type BoundedProcess } from "./process.ts";
 import { ensurePrivateDir, isUsageCeiling, type StateStore, validateAccounts } from "./state.ts";
 import { EXPERIMENTAL_PROVIDERS, isExperimentalProvider, isProvider, type AccountConfig, type GatewayClientRecord } from "./types.ts";
@@ -291,6 +292,7 @@ export class OwnerService {
         node: process.version,
         origin: this.origin,
         activeRequests: this.lifecycle.active(),
+        showFableQuota: this.store.loadSettings().showFableQuota !== false,
         integrations: this.registry.ownerIntegrations(),
         pairings: this.registry.pendingPairings(),
         ...(this.extensions.publicOrigin ? { publicOrigin: this.extensions.publicOrigin } : {}),
@@ -353,6 +355,16 @@ export class OwnerService {
         this.store.saveSettings(body.enabled ? { ...rest, limitResets: true } : rest);
       }
       return { enabled: this.store.loadSettings().limitResets === true };
+    }
+    if (operation === "settings/show-fable-quota") {
+      const { showFableQuota, ...rest } = this.store.loadSettings();
+      if (body.enabled !== undefined) {
+        if (typeof body.enabled !== "boolean") throw new ControlError(400, "enabled must be true or false");
+        if ((showFableQuota !== false) !== body.enabled) {
+          this.store.saveSettings(body.enabled ? rest : { ...rest, showFableQuota: false });
+        }
+      }
+      return { enabled: this.store.loadSettings().showFableQuota !== false };
     }
     if (operation === "settings/experimental-providers") {
       // Off by default. Turning a provider on or off changes no account, pool, grant or pin; see docs/antigravity.md.
@@ -778,7 +790,8 @@ export class OwnerService {
   /**
    * Dashboard demand: probes enabled accounts whose quota is unknown, was
    * last observed or attempted DISPLAY_QUOTA_STALE_MS ago, or has a window
-   * that reset since then, one at a time. A failed attempt counts, so an open
+   * that reset since then, one at a time. Claude's Fable window has its own
+   * observation time because inference only updates shared windows. A failed attempt counts, so an open
    * dashboard costs at most one probe per account per interval or reset.
    * Routing never waits on this; admission refreshes what it needs itself.
    */
@@ -800,11 +813,14 @@ export class OwnerService {
   quotaChecking(): string[] { return this.displayChecking ? [this.displayChecking] : []; }
   private quotaStale(id: string): boolean {
     const o = this.evidence.get(id), now = Date.now();
-    const last = Math.max(Date.parse(o.quota?.observedAt ?? "") || 0, Date.parse(o.attemptedAt ?? "") || 0);
+    const attempted = Date.parse(o.attemptedAt ?? "") || 0;
+    const last = Math.max(Date.parse(o.quota?.observedAt ?? "") || 0, attempted);
+    const fableAt = o.quota?.provider === "claude"
+      ? Math.max(Date.parse(o.claudeUsageObservedAt ?? "") || 0, attempted) : last;
     // A reset after the last read or attempt makes the reading wrong, not just old.
-    return now - last >= DISPLAY_QUOTA_STALE_MS || !!o.quota?.windows.some(w => {
+    return now - Math.min(last, fableAt) >= DISPLAY_QUOTA_STALE_MS || !!o.quota?.windows.some(w => {
       const reset = Date.parse(w.resetsAt ?? "");
-      return reset <= now && reset > last;
+      return reset <= now && reset > (w.bucket === CLAUDE_FABLE_WEEKLY_BUCKET ? fableAt : last);
     });
   }
   /** Requests, usage and catalog reads, renewals, sign-ins and terminal logins. */

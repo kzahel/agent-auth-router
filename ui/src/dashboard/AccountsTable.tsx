@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { sparkline } from "../chart/traffic-graph.ts";
 import { accountName } from "../lib/accounts.ts";
 import { ago, formatBytes, formatNumber } from "../lib/format.ts";
-import { QUOTA_STALE_MS, elapsedPercent, quotaLabel, tenth } from "../lib/quota.ts";
+import { QUOTA_STALE_MS, elapsedPercent, quotaLabel, quotaVisible, tenth } from "../lib/quota.ts";
 import type { Account, ActivityData, Counter, LiveSnapshot, QuotaWindow, RequestEntry } from "../protocol/types.ts";
 import ui from "../styles/ui.module.css";
 import styles from "./dashboard.module.css";
@@ -15,7 +15,7 @@ const sent = (rate: Record<Counter, number>) => rate.input + rate.cacheRead + ra
  * One row per account: rates, streams, quota and recent traffic. Rows in
  * the selected scope are highlighted; the table itself is not interactive.
  */
-export function AccountsTable({ accounts, live, traffic, requests, units, span, seriesNames, inScope }: {
+export function AccountsTable({ accounts, live, traffic, requests, units, span, seriesNames, showFableQuota, inScope }: {
   accounts: Account[];
   live: LiveSnapshot | undefined;
   /** Per account, the chart's shown series per second over the range. */
@@ -25,6 +25,7 @@ export function AccountsTable({ accounts, live, traffic, requests, units, span, 
   span: string;
   /** The chart's shown series, for the sparkline's description. */
   seriesNames: string[];
+  showFableQuota: boolean | undefined;
   inScope(accountId: string): boolean;
 }) {
   const scheme = useColorScheme();
@@ -67,7 +68,7 @@ export function AccountsTable({ accounts, live, traffic, requests, units, span, 
                   ? (s ? `${formatNumber(sent(s.rate))} / ${formatNumber(s.rate.output)}` : "0 / 0")
                   : `${formatBytes(s?.rate.bytesUp ?? 0)} / ${formatBytes(s?.rate.bytesDown ?? 0)}`}</td>
                 <td>{s ? String(s.active) : "0"}</td>
-                <QuotaCell windows={recent ?? a.windows} at={recent ? live?.quotaAt?.[a.id] ?? NaN : Date.parse(a.quota?.observedAt ?? "")}
+                <QuotaCell windows={(recent ?? a.windows).filter(w => quotaVisible(w.bucket, showFableQuota))} at={recent ? live?.quotaAt?.[a.id] ?? NaN : Date.parse(a.quota?.observedAt ?? "")}
                   checking={!!live?.quotaChecking?.includes(a.id)} error={a.error ?? undefined} />
                 <td>{last ? ago(last.startedAt) : "–"}</td>
                 <td title={traffic ? `${accountName(a)}: ${format(total)}${units === "tokens" ? " tokens" : ""}, peak ${format(Math.max(0, ...values.map(v => v ?? 0)))}/s, in the last ${span} (${seriesNames.join(", ") || "no series shown"})` : ""}>
@@ -127,12 +128,14 @@ function Meter({ window: w, now }: { window: QuotaWindow; now: number }) {
   const used = Math.min(100, w.usedPercent!), passed = resetPassed(w, now);
   const pace = elapsedPercent(w, now);
   const when = w.resetsAt && new Date(w.resetsAt).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
-  const title = [`${w.bucket}: ${tenth(used)}% used, ${tenth(Math.max(0, 100 - used))}% left`,
+  const label = quotaLabel(w);
+  const title = [`${label}: ${tenth(used)}% used, ${tenth(Math.max(0, 100 - used))}% left`,
     passed ? `reset ${when}, not reread since` : when ? `resets ${when}` : "reset time unknown",
     ...(pace === null ? [] : [`mark: ${Math.round(pace)}% of the window has passed`])].join(" · ");
   return (
-    <div className={styles.meter} data-bucket={w.bucket} data-level={passed ? "" : used >= 95 ? "critical" : used >= 80 ? "warning" : ""} title={title}>
-      <span className={styles.meterLabel}>{quotaLabel(w)}</span>
+    <div className={styles.meter} data-bucket={w.bucket} data-level={passed ? "" : used >= 95 ? "critical" : used >= 80 ? "warning" : ""} title={title}
+      role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={used}>
+      <span className={styles.meterLabel}>{label}</span>
       <span className={styles.meterTrack}>
         <span className={styles.meterFill} style={{ width: `${used}%` }} />
         <span className={styles.meterPace} hidden={pace === null} style={pace === null ? undefined : { left: `${pace}%` }} />

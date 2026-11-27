@@ -15,6 +15,8 @@ import { helperEnv, startBounded } from "./process.ts";
 import { ADAPTERS } from "./providers.ts";
 import type { AccountConfig, Provider } from "./types.ts";
 
+export const CLAUDE_FABLE_WEEKLY_BUCKET = "seven_day_fable";
+
 export interface QuotaWindow {
   bucket: string;
   windowMinutes: number | null;
@@ -209,6 +211,8 @@ export function normalizeClaudeQuotas(value: unknown): QuotaWindow[] {
     const data = object(result[bucket]);
     if (data) windows.push(window(bucket, bucket === "five_hour" ? 300 : 10080, data.utilization, iso(data.resets_at)));
   }
+  const fable = claudeFableWindow(result);
+  if (fable) windows.push(fable);
   for (const [bucket, value] of Object.entries(result).slice(0, 64)) {
     // extra_usage meters paid overage credits, not a rate-limit window. The
     // router never enables overage, so it is neither headroom nor a limit.
@@ -217,6 +221,25 @@ export function normalizeClaudeQuotas(value: unknown): QuotaWindow[] {
     if (data && "utilization" in data) windows.push(window(bucket, null, data.utilization, iso(data.resets_at)));
   }
   return windows;
+}
+
+function claudeFableWindow(result: Record<string, unknown>): QuotaWindow | undefined {
+  const isFable = (name: unknown) => typeof name === "string" && /^(?:claude )?fable(?: \d+(?:\.\d+)*)?$/i.test(name.trim());
+  // The usage summary and the server's display meters can report the same
+  // limit. Emit one bucket regardless of which representation is present.
+  const summary = Array.isArray(result.model_scoped) ? result.model_scoped.slice(0, 64).map(object).find(
+    row => isFable(row?.display_name) && nonnegative(row?.utilization) !== null,
+  ) : undefined;
+  if (summary) return window(CLAUDE_FABLE_WEEKLY_BUCKET, 10080, summary.utilization, iso(summary.resets_at));
+
+  const meter = Array.isArray(result.limits) ? result.limits.slice(0, 64).map(object).find(
+    row => row?.kind === "weekly_scoped" && row.is_active !== false &&
+      isFable(object(object(row.scope)?.model)?.display_name) && nonnegative(row.percent) !== null,
+  ) : undefined;
+  if (meter) return window(CLAUDE_FABLE_WEEKLY_BUCKET, 10080, meter.percent, iso(meter.resets_at));
+
+  const keyed = object(result[CLAUDE_FABLE_WEEKLY_BUCKET]);
+  if (keyed) return window(CLAUDE_FABLE_WEEKLY_BUCKET, 10080, keyed.utilization, iso(keyed.resets_at));
 }
 
 const MAX_RESET_ROWS = 32;

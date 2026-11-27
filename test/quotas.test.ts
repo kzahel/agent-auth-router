@@ -36,6 +36,17 @@ test("Claude usage percentages are not header fractions; absent buckets and inva
   assert.deepEqual(normalizeClaudeQuotas(null), []);
 });
 
+test("Claude reports one Fable weekly window from the usage summary or active display meter", () => {
+  const reset = "2026-11-29T01:23:45.000Z";
+  const model = { display_name: "Fable" };
+  const summary = { ...model, utilization: 100, resets_at: reset };
+  const meter = { kind: "weekly_scoped", is_active: true, scope: { model }, percent: 100, resets_at: reset };
+  const expected = [{ bucket: "seven_day_fable", windowMinutes: 10080, usedPercent: 100, remainingPercent: 0, resetsAt: reset }];
+  assert.deepEqual(normalizeClaudeQuotas({ model_scoped: [summary], limits: [meter] }), expected);
+  assert.deepEqual(normalizeClaudeQuotas({ model_scoped: [null, { ...summary, utilization: "unknown" }], limits: [meter] }), expected);
+  assert.deepEqual(normalizeClaudeQuotas({ model_scoped: [{ ...summary, display_name: "Mythos" }], limits: [{ ...meter, is_active: false }] }), []);
+});
+
 test("Claude paid overage credits are not a quota window, whether disabled or in use", () => {
   const five = { utilization: 0, resets_at: null };
   for (const extra of [{ is_enabled: false, monthly_limit: null, used_credits: null, utilization: null },
